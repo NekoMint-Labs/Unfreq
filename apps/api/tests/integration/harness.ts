@@ -16,12 +16,17 @@ type CoreModules = {
   app: typeof import("../../src/app.js");
   env: typeof import("../../src/config/env.js");
   repository: typeof import("../../src/modules/signals/repository.js");
+  publicationRepository: typeof import("../../src/modules/signals/publication-repository.js");
+  audioRepository: typeof import("../../src/modules/signals/audio-repository.js");
+  generationWorker: typeof import("../../src/modules/signals/generation-worker.js");
   mappers: typeof import("../../src/modules/signals/service-mappers.js");
   audioStorage: typeof import("../../src/modules/signals/audio-storage.js");
 };
 const coreModulePaths: Record<keyof CoreModules, string> = {
   app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
   mappers: "modules/signals/service-mappers.js", audioStorage: "modules/signals/audio-storage.js",
+  publicationRepository: "modules/signals/publication-repository.js",
+  audioRepository: "modules/signals/audio-repository.js", generationWorker: "modules/signals/generation-worker.js",
 };
 
 type CoreSetupPhase =
@@ -143,6 +148,7 @@ export type IntegrationHarness = {
   app: FastifyInstance;
   sql: IntegrationSql;
   provider: IntegrationProvider;
+  readonly generationActiveCount: number;
   loadModule: <K extends keyof CoreModules>(name: K) => Promise<CoreModules[K]>;
   takeLocalLoginCode: () => string | undefined;
   close: () => Promise<void>;
@@ -161,6 +167,7 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     connection: { application_name: `unfreq-integration-harness-${managed.runId}` },
   });
   let app: FastifyInstance | undefined;
+  let generationWorker: ReturnType<CoreModules["generationWorker"]["createSignalGenerationWorker"]> | undefined;
   let lastLocalLoginCode: string | undefined;
   async function loadModule<K extends keyof CoreModules>(name: K): Promise<CoreModules[K]> {
     if (!Object.hasOwn(coreModulePaths, name)) throw new Error("Unrecognized core integration module.");
@@ -196,9 +203,17 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
       throw new Error("Owned integration app export is unavailable.");
     }
     const { buildApp } = appModule;
+    const { createSignalGenerationWorker } = await loadModule("generationWorker");
     await recordCoreSetupPhase("app-import-complete");
     await recordCoreSetupPhase("app-build-start");
-    app = await buildApp({ logger: { level: "info", stream: { write(line: string) {
+    app = await buildApp({
+      generationWorkerFactory(options) {
+        if (generationWorker !== undefined) throw new Error("Core generation worker was already captured.");
+        // Observe the original compiled worker; all options and work remain real.
+        generationWorker = createSignalGenerationWorker(options);
+        return generationWorker;
+      },
+      logger: { level: "info", stream: { write(line: string) {
       // Observe only this synthetic local delivery channel in bounded memory.
       // Do not replace randomness/services or emit codes to stdout/files/HTTP.
       try {
@@ -234,6 +249,10 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     app: readyApp,
     sql,
     provider,
+    get generationActiveCount() {
+      if (generationWorker === undefined) throw new Error("Core generation worker has not been captured.");
+      return generationWorker.activeCount;
+    },
     loadModule,
     takeLocalLoginCode() { const code = lastLocalLoginCode; lastLocalLoginCode = undefined; return code; },
     async close() {

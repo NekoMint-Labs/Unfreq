@@ -1,9 +1,11 @@
 export type * from "./admin.js";
 export type * from "./api.js";
 export type * from "./auth.js";
+export type * from "./signal-publication.js";
 export type * from "./signals.js";
 export type * from "./theme-radio.js";
 export {
+  maxSignalPublicationVersion,
   signalGenerationStatuses,
   signalPrimaryBands,
   signalSubFeelings,
