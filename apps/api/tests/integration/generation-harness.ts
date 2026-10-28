@@ -10,7 +10,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { assertManagedIntegrationEnvironment, installFetchBoundary } from "./harness.js";
 import { createProviderStub, type IntegrationProvider, type ProviderRequestHold } from "./provider-stub.js";
 import { fixtureSeed } from "./fixtures.js";
-import type { GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage } from "./generation-process-fixture.js";
+import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage } from "./generation-process-fixture.js";
 
 type Sql = ReturnType<typeof postgres>;
 type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure";
@@ -26,6 +26,16 @@ const sleep = (milliseconds: number) => new Promise<void>((resolveSleep) => setT
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const emptyEnvironment = "# Owned generation integration environment; no project dotenv.\n";
+// run 41f0ea0dec43 hit the original 10s startup watchdog; successful cases
+// reached their first accepted request at around 10s including route work.
+// Allow 20s for loader/import/guard setup, while retaining each
+// business observation budget. This is fixture headroom, not a recovery SLA.
+const coldReadyBudgetMs = 20_000;
+const bootPhases: ReadonlySet<GenerationBootPhase> = new Set([
+  "validation-start", "validation-complete", "db-guard-start", "db-guard-complete",
+  "app-import-start", "app-import-complete", "app-build-start", "app-build-complete",
+  "app-ready-start", "app-ready-complete",
+]);
 
 function safeSystemEnvironment(): NodeJS.ProcessEnv {
   const allowed = new Set([
@@ -45,6 +55,7 @@ export class GenerationProcess {
   private pending = new Map<number, PendingReply>();
   private sequence = 0;
   private didClose = false;
+  private lastBootPhase: GenerationBootPhase | undefined;
   private stopPromise: Promise<void> | undefined;
 
   constructor(environment: NodeJS.ProcessEnv, private journal: Journal, label: string) {
@@ -61,7 +72,7 @@ export class GenerationProcess {
     this.closed = new Promise<void>((resolveClosed) => { closeResolve = resolveClosed; });
     // A boot error may arrive before the caller reaches its await.
     void this.ready.catch(() => {});
-    this.journal.push({ event: "spawn", label, pid: this.pid, at: Date.now() });
+    this.journal.push({ event: "spawn", label, pid: this.pid, readyBudgetMs: coldReadyBudgetMs, at: Date.now() });
     let capturedBytes = 0;
     const capture = (chunk: Buffer) => {
       capturedBytes += chunk.length;
@@ -88,11 +99,22 @@ export class GenerationProcess {
     child.on("message", (input: unknown) => {
       if (!input || typeof input !== "object" || !("kind" in input)) return;
       const message = input as GenerationMessage;
-      if (message.kind === "ready") {
+      if (message.kind === "boot") {
+        if (message.pid !== this.pid || !bootPhases.has(message.phase) || !Number.isSafeInteger(message.at) || message.at < 0) {
+          this.errors.push("INVALID_CHILD_BOOT_CHECKPOINT");
+          void this.hardStop("invalid-boot-checkpoint").catch(() => {});
+        } else {
+          this.lastBootPhase = message.phase;
+          this.journal.push({ event: "child-boot", phase: message.phase, pid: message.pid, at: message.at, receivedAt: Date.now() });
+        }
+      } else if (message.kind === "ready") {
         if (message.pid !== this.pid) {
           this.errors.push("CHILD_PID_MISMATCH");
           void this.hardStop("pid-mismatch").catch(() => {});
-        } else readyResolve();
+        } else {
+          this.journal.push({ event: "child-ready", pid: this.pid, at: Date.now() });
+          readyResolve();
+        }
       } else if (message.kind === "fatal") {
         this.errors.push(message.error);
         readyReject(new Error(`Generation fixture failed: ${message.error}`));
@@ -115,8 +137,9 @@ export class GenerationProcess {
     const watchdog = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         this.errors.push("CHILD_READY_TIMEOUT");
+        this.journal.push({ event: "child-ready-timeout", pid: this.pid, budgetMs: coldReadyBudgetMs, lastBootPhase: this.lastBootPhase ?? null, at: Date.now() });
         void this.hardStop("ready-timeout").then(() => reject(new Error("Generation child cold start timed out after it was terminated.")), reject);
-      }, 10_000);
+      }, coldReadyBudgetMs);
     });
     try { await Promise.race([this.ready, watchdog]); }
     catch (error) { await this.hardStop("failed-ready"); throw error; }
@@ -171,7 +194,7 @@ export type GenerationHarness = {
   waitHold: (hold: ProviderRequestHold, child: GenerationProcess) => Promise<void>;
   waitIdle: () => Promise<void>;
   record: (event: string, values?: Record<string, string | number | boolean | null>) => void;
-  close: () => Promise<void>;
+  close: (workFailed?: boolean) => Promise<void>;
 };
 
 export async function createGenerationHarness(caseId: CaseId): Promise<GenerationHarness> {
@@ -198,9 +221,12 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
   let closePromise: Promise<void> | undefined;
   const record = (event: string, values: Record<string, string | number | boolean | null> = {}) => journal.push({ event, ...values, at: Date.now() });
 
-  const close = () => closePromise ??= (async () => {
-    const errors: unknown[] = [];
-    const attempt = async (work: () => Promise<unknown>) => { try { await work(); } catch (error) { errors.push(error); } };
+  const close = (workFailed = false) => closePromise ??= (async () => {
+    const cleanupErrors: unknown[] = [];
+    const experimentErrors: unknown[] = [];
+    const attempt = async (work: () => Promise<unknown>, bucket: unknown[] = cleanupErrors) => {
+      try { await work(); } catch (error) { bucket.push(error); }
+    };
     // Fault cases may deliberately leave a real provider hold and lost pending
     // row. Stop the owned workers before releasing holds; do not repair rows to
     // satisfy A2's normal-generation drain or claim graceful shutdown here.
@@ -210,20 +236,20 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
           const diagnostics = await child.request<GenerationDiagnostics>({ kind: "diagnostics" }, 1_000);
           record("child-diagnostics", { pid: child.pid, ...diagnostics });
           if (diagnostics.blockedHttp !== 0 || diagnostics.unhandled !== 0) throw new Error("Generation child violated its outbound/error boundary.");
-        });
+        }, experimentErrors);
       }
       await attempt(() => child.hardStop("test-teardown"));
-      if (child.errors.length !== 0) errors.push(new Error(`Generation child infrastructure errors: ${child.errors.join(",")}`));
+      if (child.errors.length !== 0) experimentErrors.push(new Error(`Generation child infrastructure errors: ${child.errors.join(",")}`));
       const logs = child.logs.join("");
       record("child-log-summary", { pid: child.pid, bytes: Buffer.byteLength(logs), sha256: hash(logs) });
-      if ([...secrets].some((secret) => secret.length > 0 && logs.includes(secret))) errors.push(new Error("Generation child log contained a synthetic sensitive marker."));
+      if ([...secrets].some((secret) => secret.length > 0 && logs.includes(secret))) experimentErrors.push(new Error("Generation child log contained a synthetic sensitive marker."));
     }
     if (provider) {
       provider.releaseAll();
       await attempt(() => provider!.close());
-      if (provider.blockedRequests.length || provider.tasks.includes("unsupported")) errors.push(new Error("Generation provider boundary or synthetic task contract failed."));
+      if (provider.blockedRequests.length || provider.tasks.includes("unsupported")) experimentErrors.push(new Error("Generation provider boundary or synthetic task contract failed."));
       record("provider-closed", { requests: provider.tasks.length, inFlight: provider.inFlight });
-      if (provider.inFlight !== 0) errors.push(new Error("Generation provider work remained after close."));
+      if (provider.inFlight !== 0) cleanupErrors.push(new Error("Generation provider work remained after close."));
     }
     let dropAllowed = false;
     if (databaseCreated && admin) {
@@ -234,17 +260,20 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
           const markers = await sql<{ run_id: string; case_id: string; nonce: string }[]>`select run_id, case_id, nonce from generation_test_ownership`;
           if (markers.length !== 1 || markers[0].run_id !== managed.runId || markers[0].case_id !== caseId || markers[0].nonce !== nonce) throw new Error("Refusing to drop a generation database with a changed run marker.");
           dropAllowed = true;
-          if (ownedIds.size) {
-            const rows = await sql<GenerationRow[]>`
-              select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned
-              from signals where id in ${sql([...ownedIds])}
-            `;
-            for (const row of rows) record("final-owned-row", { id: row.id, status: row.status, generationStatus: row.generation_status, contentSha256: hash(row.expanded_text) });
-          }
-          if (migrationsFinished) {
-            const [reviews] = await sql<{ count: number }[]>`select count(*)::integer as count from ai_reviews where status = 'FALLBACK'`;
-            if (reviews?.count !== 0) errors.push(new Error("Generation fixture unexpectedly used a provider fallback."));
-          }
+          const observer = sql;
+          await attempt(async () => {
+            if (ownedIds.size) {
+              const rows = await observer<GenerationRow[]>`
+                select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned
+                from signals where id in ${observer([...ownedIds])}
+              `;
+              for (const row of rows) record("final-owned-row", { id: row.id, status: row.status, generationStatus: row.generation_status, contentSha256: hash(row.expanded_text) });
+            }
+            if (migrationsFinished) {
+              const [reviews] = await observer<{ count: number }[]>`select count(*)::integer as count from ai_reviews where status = 'FALLBACK'`;
+              if (reviews?.count !== 0) throw new Error("Generation fixture unexpectedly used a provider fallback.");
+            }
+          }, experimentErrors);
         } else {
           // Only a positively acknowledged CREATE DATABASE by this invocation
           // may be cleaned before marker setup. Never adopt a preexisting DB.
@@ -278,26 +307,35 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       await rm(target, { recursive: true, force: true });
       record("media-directory-removed");
     });
-    record("cleanup-finished", { errors: errors.length });
+    // A killed cold boot is an experiment infrastructure failure even when
+    // every owned process/database/file was removed. Preserve the primary
+    // work error outside close and report resource cleanup independently.
+    record("cleanup-finished", { cleanupErrors: cleanupErrors.length, experimentErrors: experimentErrors.length, workFailed });
     await attempt(async () => {
       const evidenceDirectory = join(root, "test-results", "b1");
       await mkdir(evidenceDirectory, { recursive: true });
-      await writeFile(join(evidenceDirectory, `baseline-${managed.runId}-${caseId}-${nonce.slice(0, 8)}.json`), `${JSON.stringify({ caseId, runId: managed.runId, journal, cleanupErrors: errors.length }, null, 2)}\n`);
-    });
-    if (errors.length) throw new AggregateError(errors, "Generation isolation cleanup or boundary verification failed.");
+      await writeFile(join(evidenceDirectory, `baseline-${managed.runId}-${caseId}-${nonce.slice(0, 8)}.json`), `${JSON.stringify({
+        caseId, runId: managed.runId, journal, workFailed,
+        experimentErrors: experimentErrors.length, experimentFailed: workFailed || experimentErrors.length > 0,
+        cleanupErrors: cleanupErrors.length,
+      }, null, 2)}\n`);
+    }, experimentErrors);
+    if (cleanupErrors.length || experimentErrors.length) throw new AggregateError([...experimentErrors, ...cleanupErrors], `Generation experiment or resource cleanup verification failed (experiment=${experimentErrors.length}, cleanup=${cleanupErrors.length}).`);
   })();
 
   try {
     await writeFile(join(directory, "empty.env"), emptyEnvironment);
     provider = await createProviderStub();
     restoreFetch = installFetchBoundary(provider);
-    admin = postgres(managed.databaseUrl, { max: 1, prepare: false, connect_timeout: 2, connection: { application_name: `unfreq-b1-admin-${nonce}`, statement_timeout: 2500 } });
+    // Five seconds is the healthy disposable-service setup budget. The real
+    // application still receives its existing 500ms health configuration.
+    admin = postgres(managed.databaseUrl, { max: 1, prepare: false, connect_timeout: 5, connection: { application_name: `unfreq-b1-admin-${nonce}`, statement_timeout: 2500 } });
     const [identity] = await admin<{ database: string; owner: string }[]>`select current_database() as database, current_user as owner`;
     if (identity?.database !== "unfreq_integration" || identity.owner !== "unfreq_test") throw new Error("Generation runner database identity mismatch.");
     if ((await admin`select datname from pg_database where datname = ${databaseName}`).length) throw new Error("Generation test refuses an existing database.");
     await admin`create database ${admin(databaseName)}`;
     databaseCreated = true;
-    sql = postgres(databaseUrl.toString(), { max: 1, prepare: false, connect_timeout: 2, connection: { application_name: `unfreq-b1-observer-${nonce}`, statement_timeout: 2500 } });
+    sql = postgres(databaseUrl.toString(), { max: 1, prepare: false, connect_timeout: 5, connection: { application_name: `unfreq-b1-observer-${nonce}`, statement_timeout: 2500 } });
     const tables = await sql`select table_name from information_schema.tables where table_schema in ('public', 'drizzle')`;
     if (tables.length) throw new Error("Generation test requires a fresh empty database.");
     // Write the ownership marker before migrations, so failed migrations can
@@ -399,7 +437,8 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       },
     };
   } catch (error) {
-    try { await close(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Generation harness setup and cleanup failed."); }
+    record("setup-failed");
+    try { await close(true); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Generation harness setup and teardown verification failed."); }
     throw error;
   }
 }
@@ -409,10 +448,10 @@ export async function withGenerationHarness(caseId: CaseId, work: (harness: Gene
   let failure: unknown;
   let failed = false;
   try { await work(harness); }
-  catch (error) { failed = true; failure = error; }
-  try { await harness.close(); }
+  catch (error) { failed = true; failure = error; harness.record("work-failed"); }
+  try { await harness.close(failed); }
   catch (cleanupError) {
-    if (failed) throw new AggregateError([failure, cleanupError], "Generation assertion and cleanup both failed.");
+    if (failed) throw new AggregateError([failure, cleanupError], "Generation case and teardown verification both failed; inspect separate experiment/cleanup diagnostics.");
     throw cleanupError;
   }
   if (failed) throw failure;

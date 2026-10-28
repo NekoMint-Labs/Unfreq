@@ -25,7 +25,14 @@ const messageSchema = z.object({ id: z.number().int().positive(), command: comma
 export type GenerationCommand = z.infer<typeof commandSchema>;
 export type GenerationHttpResponse = { statusCode: number; body: unknown; cookie?: string };
 export type GenerationDiagnostics = { blockedHttp: number; unhandled: number };
+export type GenerationBootPhase =
+  | "validation-start" | "validation-complete"
+  | "db-guard-start" | "db-guard-complete"
+  | "app-import-start" | "app-import-complete"
+  | "app-build-start" | "app-build-complete"
+  | "app-ready-start" | "app-ready-complete";
 export type GenerationMessage =
+  | { kind: "boot"; phase: GenerationBootPhase; pid: number; at: number }
   | { kind: "ready"; pid: number }
   | { kind: "reply"; id: number; ok: true; value: unknown }
   | { kind: "reply"; id: number; ok: false; error: string }
@@ -40,6 +47,8 @@ async function send(message: GenerationMessage) {
     process.send!(message, (error) => error ? reject(error) : resolveSend());
   });
 }
+
+const checkpoint = (phase: GenerationBootPhase) => send({ kind: "boot", phase, pid: process.pid, at: Date.now() });
 
 async function validateEnvironment() {
   const env = process.env;
@@ -91,7 +100,12 @@ function allowedRequest(command: Extract<GenerationCommand, { kind: "inject" }>)
 }
 
 async function main() {
+  // The initial checkpoint follows the TS loader/static imports. Its gap from
+  // the parent's spawn timestamp therefore also reveals pre-validation cost.
+  // Boot IPC contains fixed phase names, PID and timestamps only.
+  await checkpoint("validation-start");
   const owned = await validateEnvironment();
+  await checkpoint("validation-complete");
   const originalFetch = globalThis.fetch;
   let blockedHttp = 0;
   let unhandled = 0;
@@ -108,7 +122,10 @@ async function main() {
 
   // No app/env/db module is imported until both endpoint validation and the
   // HTTP boundary are installed. This client only checks our owned database.
-  const guard = postgres(owned.databaseUrl, { max: 1, prepare: false, connect_timeout: 2 });
+  await checkpoint("db-guard-start");
+  // Healthy disposable-DB guard only: this is not the application's health
+  // connection budget, which stays at HEALTH_DEPENDENCY_TIMEOUT_MS=500.
+  const guard = postgres(owned.databaseUrl, { max: 1, prepare: false, connect_timeout: 5 });
   try {
     const [identity] = await guard<{ database: string; owner: string }[]>`
       select current_database() as database, current_user as owner
@@ -121,12 +138,19 @@ async function main() {
       throw new Error("Generation database ownership or provider configuration changed.");
     }
   } finally { await guard.end({ timeout: 0 }); }
+  await checkpoint("db-guard-complete");
 
+  await checkpoint("app-import-start");
   const { buildApp } = await import("../../src/app.js");
   const repository = await import("../../src/modules/signals/repository.js");
   const { getFingerprintFrequencyProfile, buildMinimalSignalProgram } = await import("../../src/modules/signals/service-mappers.js");
+  await checkpoint("app-import-complete");
+  await checkpoint("app-build-start");
   const app: FastifyInstance = await buildApp({ logger: false });
+  await checkpoint("app-build-complete");
+  await checkpoint("app-ready-start");
   await app.ready();
+  await checkpoint("app-ready-complete");
   const staged = new Map<"older" | "newer", { id: string; input: CreateSignalInput }>();
   let closing = false;
 

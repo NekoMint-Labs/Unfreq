@@ -5,6 +5,10 @@ import { withGenerationHarness, type GenerationHarness, type GenerationProcess }
 const terminal = (status: string) => status === "COMPLETED" || status === "FAILED";
 const completed = (row: { generation_status: string; positioned: boolean }) => row.generation_status === "COMPLETED" && row.positioned;
 const newerText = `${fixtureExpansion.expandedText}\n[synthetic-newer]`;
+// Two real cold boots can now consume 2 * 20s, plus owned DB setup, route/IPC
+// checks and teardown. Only the outer fixture watchdog gets this headroom;
+// recovery remains 3s, provider gates 3s and post-release completion 5s.
+const twoBootCaseTimeoutMs = 90_000;
 
 async function healthyControl(h: GenerationHarness, child: GenerationProcess) {
   const health = await h.inject(child, { method: "GET", url: "/health" });
@@ -45,7 +49,7 @@ describe("durable pending generation and late-write invariants", () => {
       // not a measurement of an infinite wait or of a production recovery SLA.
       await h.waitRow(originalId, (row) => terminal(row.generation_status), "original-pending-recovered-after-restart", 3_000);
     });
-  }, 45_000);
+  }, twoBootCaseTimeoutMs);
 
   it("bounds six independent accepted generations instead of sending all IDs into the provider together", async () => {
     await withGenerationHarness("parallel", async (h) => {
@@ -112,9 +116,8 @@ describe("durable pending generation and late-write invariants", () => {
       const publish = await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie });
       h.record("publish-after-late-completion", { id, status: after.status, responseCode: publish.statusCode });
       // The low-risk baseline resets this to DRAFT, not automatically
-      // PUBLISHED. The second assertion separately checks the publish bypass.
-      expect.soft(after.status).toBe(status);
-      expect(publish.statusCode).toBe(404);
+      // PUBLISHED. The publishCode field separately checks the publish bypass.
+      expect({ status: after.status, publishCode: publish.statusCode }).toEqual({ status, publishCode: 404 });
     });
   }, 45_000);
 
@@ -139,10 +142,9 @@ describe("durable pending generation and late-write invariants", () => {
       // repository writers in a deterministic order; it is not a fabricated
       // claim/lease test. Replace staged inputs with real attempt tokens once
       // B1/B2 defines those contracts and keep the same out-of-order invariant.
-      expect.soft(late.accepted).toBe(false);
-      expect(after.expanded_text).toBe(newerText);
+      expect({ accepted: late.accepted, expandedText: after.expanded_text }).toEqual({ accepted: false, expandedText: newerText });
     });
-  }, 45_000);
+  }, twoBootCaseTimeoutMs);
 
   it("rejects an older real FAILED write after a newer writer has completed", async () => {
     await withGenerationHarness("failure", async (h) => {
@@ -161,9 +163,10 @@ describe("durable pending generation and late-write invariants", () => {
       h.record("older-failure-observed", { id, generationStatus: after.generation_status, errorPresent: after.generation_error !== null });
       // Body preservation alone would miss the regression: the old failure
       // currently changes the terminal status even though newer text remains.
-      expect.soft(after.generation_status).toBe("COMPLETED");
-      expect.soft(after.generation_error).toBeNull();
-      expect(after.expanded_text).toBe(newerText);
+      // Keep these as one hard assertion: a soft-only failure would be held
+      // by Vitest while the coordinator incorrectly recorded workFailed=false.
+      expect({ status: after.generation_status, error: after.generation_error, expandedText: after.expanded_text })
+        .toEqual({ status: "COMPLETED", error: null, expandedText: newerText });
     });
-  }, 45_000);
+  }, twoBootCaseTimeoutMs);
 });
