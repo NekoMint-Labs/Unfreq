@@ -1,0 +1,180 @@
+diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
+--- a/node_modules/postgres/src/connection.js
++++ b/node_modules/postgres/src/connection.js
+@@ -434,10 +434,12 @@
+   }
+ 
+   async function closed(hadError) {
++    const err = errorResponse || Errors.connection('CONNECTION_CLOSED', options, socket)
+     incoming = Buffer.alloc(0)
+     remaining = 0
+     incomings = null
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+@@ -447,14 +449,15 @@
+     socket.removeAllListeners()
+     socket = null
+ 
+-    if (initial)
+-      return reconnect()
+-
+-    !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
++    errored(err)
++    while (sent.length)
++      queryError(sent.shift(), err)
++    query = results = errorResponse = null
++    rows = 0
+     closedTime = performance.now()
+     hadError && options.shared.retries++
+     delay = (typeof backoff === 'function' ? backoff(options.shared.retries) : backoff) * 1000
+-    onclose(connection, Errors.connection('CONNECTION_CLOSED', options, socket))
++    onclose(connection, err)
+   }
+ 
+   /* Handlers */
+@@ -549,7 +552,6 @@
+ 
+     query = results = errorResponse = null
+     result = new Result()
+-    connectTimer.cancel()
+ 
+     if (initial) {
+       if (target_session_attrs) {
+@@ -559,17 +561,22 @@
+           return terminate()
+       }
+ 
+-      if (needsTypes) {
+-        initial.reserve && (initial = null)
+-        return fetchArrayTypes()
+-      }
++      if (needsTypes)
++        return fetchArrayTypes().catch(noop)
+ 
+-      initial && !initial.reserve && execute(initial)
+-      options.shared.retries = retries = 0
++      const ready = initial
+       initial = null
+-      return
++      connectTimer.cancel()
++      options.shared.retries = retries = 0
++      return ready.reserve
++        ? ready.reserve(connection)
++        : ready.cancelled
++          ? onopen(connection)
++          : execute(ready)
+     }
+ 
++    connectTimer.cancel()
++
+     while (sent.length && (query = sent.shift()) && (query.active = true, query.cancelled))
+       Connection(options).cancel(query.state, query.cancelled.resolve, query.cancelled.reject)
+ 
+diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
+--- a/node_modules/postgres/src/index.js
++++ b/node_modules/postgres/src/index.js
+@@ -206,8 +206,9 @@
+       ? open.shift()
+       : await new Promise((resolve, reject) => {
+         const query = { reserve: resolve, reject }
+-        queries.push(query)
+-        closed.length && connect(closed.shift(), query)
++        closed.length
++          ? connect(closed.shift(), query)
++          : queries.push(query)
+       })
+ 
+     move(c, reserved)
+diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
+--- a/node_modules/postgres/cjs/src/connection.js
++++ b/node_modules/postgres/cjs/src/connection.js
+@@ -434,10 +434,12 @@
+   }
+ 
+   async function closed(hadError) {
++    const err = errorResponse || Errors.connection('CONNECTION_CLOSED', options, socket)
+     incoming = Buffer.alloc(0)
+     remaining = 0
+     incomings = null
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+@@ -447,14 +449,15 @@
+     socket.removeAllListeners()
+     socket = null
+ 
+-    if (initial)
+-      return reconnect()
+-
+-    !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
++    errored(err)
++    while (sent.length)
++      queryError(sent.shift(), err)
++    query = results = errorResponse = null
++    rows = 0
+     closedTime = performance.now()
+     hadError && options.shared.retries++
+     delay = (typeof backoff === 'function' ? backoff(options.shared.retries) : backoff) * 1000
+-    onclose(connection, Errors.connection('CONNECTION_CLOSED', options, socket))
++    onclose(connection, err)
+   }
+ 
+   /* Handlers */
+@@ -549,7 +552,6 @@
+ 
+     query = results = errorResponse = null
+     result = new Result()
+-    connectTimer.cancel()
+ 
+     if (initial) {
+       if (target_session_attrs) {
+@@ -559,17 +561,22 @@
+           return terminate()
+       }
+ 
+-      if (needsTypes) {
+-        initial.reserve && (initial = null)
+-        return fetchArrayTypes()
+-      }
++      if (needsTypes)
++        return fetchArrayTypes().catch(noop)
+ 
+-      initial && !initial.reserve && execute(initial)
+-      options.shared.retries = retries = 0
++      const ready = initial
+       initial = null
+-      return
++      connectTimer.cancel()
++      options.shared.retries = retries = 0
++      return ready.reserve
++        ? ready.reserve(connection)
++        : ready.cancelled
++          ? onopen(connection)
++          : execute(ready)
+     }
+ 
++    connectTimer.cancel()
++
+     while (sent.length && (query = sent.shift()) && (query.active = true, query.cancelled))
+       Connection(options).cancel(query.state, query.cancelled.resolve, query.cancelled.reject)
+ 
+diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
+--- a/node_modules/postgres/cjs/src/index.js
++++ b/node_modules/postgres/cjs/src/index.js
+@@ -206,8 +206,9 @@
+       ? open.shift()
+       : await new Promise((resolve, reject) => {
+         const query = { reserve: resolve, reject }
+-        queries.push(query)
+-        closed.length && connect(closed.shift(), query)
++        closed.length
++          ? connect(closed.shift(), query)
++          : queries.push(query)
+       })
+ 
+     move(c, reserved)

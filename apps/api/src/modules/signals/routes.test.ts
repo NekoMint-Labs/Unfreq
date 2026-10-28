@@ -73,6 +73,36 @@ vi.mock("../auth/service.js", () => {
   };
 });
 
+// These route unit tests use an in-memory signal repository. Keep provider
+// configuration local too: resolving embedding/TTS configuration otherwise
+// queries the real provider_configs table even when no API key is configured.
+vi.mock("../ai/provider-config.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../ai/provider-config.js")>();
+  const embedding = {
+    apiKey: "",
+    baseUrl: "",
+    dimensions: 1024,
+    model: "unit-test-disabled",
+    provider: "disabled",
+    version: "unit-test",
+  };
+  const tts = {
+    apiKey: "",
+    baseUrl: "",
+    model: "unit-test-disabled",
+    provider: "disabled",
+    voiceLeft: "unit-test-left",
+    voiceRight: "unit-test-right",
+  };
+
+  return {
+    ...original,
+    resolveEmbeddingProviderConfig: vi.fn(async () => embedding),
+    resolveEmbeddingProviderConfigs: vi.fn(async () => [embedding]),
+    resolveTtsProviderConfigs: vi.fn(async () => [tts]),
+  };
+});
+
 vi.mock("../ai/service.js", () => {
   const fingerprint: SignalFingerprint = {
     coreNeed: "希望被理解",
