@@ -74,6 +74,8 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1"]
       start_period: 20s
+    # Raise this if generation shutdown / DB I/O budgets are increased.
+    stop_grace_period: 40s
     restart: unless-stopped
 
   postgres:
