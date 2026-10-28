@@ -10,10 +10,13 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { assertManagedIntegrationEnvironment, installFetchBoundary } from "./harness.js";
 import { createProviderStub, type IntegrationProvider, type ProviderRequestHold } from "./provider-stub.js";
 import { fixtureSeed } from "./fixtures.js";
-import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage, GenerationWorkerState } from "./generation-process-fixture.js";
+import { installDispatchFault, readRetryHistory, type RetryHistory } from "./generation-test-db.js";
+import type { GenerationControlState } from "./generation-test-controls.js";
+import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage, GenerationWorkerState, GenerationShutdownDiagnostics } from "./generation-process-fixture.js";
 
 type Sql = ReturnType<typeof postgres>;
-type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure";
+type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure" |
+  "preclaim" | "predispatch" | "prewrite" | "capacity" | "aba" | "close" | "closeearly" | "retry" | "exhaust";
 type Journal = Array<Record<string, string | number | boolean | null>>;
 type PendingReply = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 export type GenerationSession = { id: string; cookie: string };
@@ -184,8 +187,8 @@ export class GenerationProcess {
     await this.stopPromise;
   }
 
-  async shutdown(): Promise<GenerationDiagnostics> {
-    const diagnostics = await this.request<GenerationDiagnostics>({ kind: "shutdown" });
+  async shutdown(): Promise<GenerationShutdownDiagnostics> {
+    const diagnostics = await this.request<GenerationShutdownDiagnostics>({ kind: "shutdown" });
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
@@ -213,6 +216,11 @@ export type GenerationHarness = {
   waitRow: (id: string, predicate: (row: GenerationRow) => boolean, label: string, milliseconds?: number) => Promise<GenerationRow>;
   waitHold: (hold: ProviderRequestHold, child: GenerationProcess) => Promise<void>;
   waitIdle: () => Promise<void>;
+  holdClaims: () => Promise<{ release: () => Promise<void> }>;
+  waitNoAppConnections: () => Promise<void>;
+  waitControl: (child: GenerationProcess, predicate: (state: GenerationControlState) => boolean, label: string) => Promise<GenerationControlState>;
+  installDispatchFault: (session: GenerationSession, mode: "twice" | "always") => Promise<void>;
+  retryHistory: () => Promise<RetryHistory[]>;
   record: (event: string, values?: Record<string, string | number | boolean | null>) => void;
   close: (workFailed?: boolean) => Promise<void>;
 };
@@ -229,6 +237,8 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
   databaseUrl.pathname = `/${databaseName}`;
   const children: GenerationProcess[] = [];
   const ownedIds = new Set<string>();
+  const registeredIds = new Set<string>();
+  let closeClaimGate: (() => Promise<void>) | undefined;
   const secrets = new Set([fixtureSeed, "generation-stub-only", "unfreq_integration_only", `generation-session-${nonce}`, `generation-provider-${nonce}`]);
   const journal: Journal = [{ event: "case-created", caseId, databaseName, runId: managed.runId, at: Date.now() }];
   let provider: IntegrationProvider | undefined;
@@ -259,7 +269,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         }, experimentErrors);
         await attempt(async () => {
           const diagnostics = await child.shutdown();
-          if (diagnostics.blockedHttp !== 0 || diagnostics.unhandled !== 0) throw new Error("Generation child failed its shutdown diagnostics.");
+          if (diagnostics.blockedHttp !== 0 || diagnostics.unhandled !== 0 || diagnostics.pendingHttp !== 0) throw new Error("Generation child failed its shutdown diagnostics.");
           record("child-drained-and-closed", { pid: child.pid });
         }, experimentErrors);
       }
@@ -269,6 +279,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       record("child-log-summary", { pid: child.pid, bytes: Buffer.byteLength(logs), sha256: hash(logs) });
       if ([...secrets].some((secret) => secret.length > 0 && logs.includes(secret))) experimentErrors.push(new Error("Generation child log contained a synthetic sensitive marker."));
     }
+    if (closeClaimGate) await attempt(closeClaimGate);
     if (provider) {
       provider.releaseAll();
       await attempt(() => provider!.close());
@@ -399,8 +410,8 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       SIGNAL_GENERATION_WORKER_ENABLED: "true", SIGNAL_GENERATION_CONCURRENCY: "2",
       SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000",
       SIGNAL_GENERATION_HEARTBEAT_MS: "200", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000",
-      SIGNAL_GENERATION_MAX_ATTEMPTS: "3", SIGNAL_GENERATION_RETRY_BASE_MS: "50",
-      SIGNAL_GENERATION_RETRY_MAX_MS: "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
+      SIGNAL_GENERATION_MAX_ATTEMPTS: "3", SIGNAL_GENERATION_RETRY_BASE_MS: ["retry", "exhaust"].includes(caseId) ? "200" : "50",
+      SIGNAL_GENERATION_RETRY_MAX_MS: ["retry", "exhaust"].includes(caseId) ? "300" : "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
       SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
     };
     const inject = async (child: GenerationProcess, command: Omit<Extract<GenerationCommand, { kind: "inject" }>, "kind">) => child.request<GenerationHttpResponse>({ kind: "inject", ...command });
@@ -433,6 +444,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         const body = response.body as { data?: { frequency?: { id?: string }; sessionToken?: string } };
         const id = body.data?.frequency?.id;
         if (!id || !/^[a-f0-9-]{36}$/u.test(id)) throw new Error("Synthetic registration did not return an identity.");
+        registeredIds.add(id);
         secrets.add(response.cookie);
         if (body.data?.sessionToken) secrets.add(body.data.sessionToken);
         if (administrator) {
@@ -443,9 +455,15 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       },
       async createPending(child, session) {
         const response = await inject(child, { method: "POST", url: "/api/signals", cookie: session.cookie, payload: { seedText: fixtureSeed } });
-        const body = response.body as { data?: { signal?: { id?: string; status?: string; generationStatus?: string; visibility?: string } } };
+        const body = response.body as { error?: { code?: string }; data?: { signal?: { id?: string; status?: string; generationStatus?: string; visibility?: string } } };
         const signal = body.data?.signal;
-        if (response.statusCode !== 201 || !signal?.id || !/^[a-f0-9-]{36}$/u.test(signal.id) || signal.status !== "DRAFT" || signal.generationStatus !== "RECEIVED" || signal.visibility !== "GENERATION_OWNER") throw new Error("Synthetic generation was not accepted as a durable pending signal.");
+        if (response.statusCode !== 201 || !signal?.id || !/^[a-f0-9-]{36}$/u.test(signal.id) || signal.status !== "DRAFT" || signal.generationStatus !== "RECEIVED" || signal.visibility !== "GENERATION_OWNER") {
+          const allowed = new Set(["DRAFT", "RECEIVED", "EXPANDING", "MATCHING", "WRITING", "COMPLETED", "FAILED", "GENERATION_OWNER", "PREVIEW_OWNER", "UNAUTHORIZED", "FORBIDDEN", "AI_UNAVAILABLE", "VALIDATION_ERROR", "INTERNAL_ERROR"]);
+          const safe = (value: string | undefined) => value !== undefined && allowed.has(value) ? value : "OTHER";
+          const diagnostic = { httpCode: response.statusCode, status: safe(signal?.status), generationStatus: safe(signal?.generationStatus), visibility: safe(signal?.visibility), errorCode: safe(body.error?.code), hasId: typeof signal?.id === "string" };
+          record("pending-response-rejected", diagnostic);
+          throw new Error(`Synthetic pending response failed: ${JSON.stringify(diagnostic)}`);
+        }
         ownedIds.add(signal.id);
         record("accepted-pending", { id: signal.id, pid: child.pid });
         return signal.id;
@@ -499,6 +517,55 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         } while (Date.now() < deadline);
         throw new Error("Synthetic provider or real generation worker did not settle within the bounded observation window.");
       },
+      async holdClaims() {
+        if (caseId !== "preclaim" || closeClaimGate) throw new Error("Claim gate is restricted to its dedicated checkpoint case.");
+        const gateClient = postgres(databaseUrl.toString(), { max: 1, prepare: false, connect_timeout: 5,
+          connection: { application_name: `unfreq-b1-gate-${nonce}`, statement_timeout: 2500 } });
+        const reserved = await gateClient.reserve().catch(async (error: unknown) => {
+          await gateClient.end({ timeout: 0 });
+          throw error;
+        });
+        let released = false;
+        const release = async () => {
+          if (released) return;
+          released = true;
+          try { await reserved`select pg_advisory_unlock(1431193169, 1)`; }
+          finally { reserved.release(); await gateClient.end({ timeout: 0 }); }
+        };
+        closeClaimGate = release;
+        const [identity] = await reserved<{ name: string }[]>`select current_database() as name`;
+        if (identity?.name !== databaseName) throw new Error("Claim gate database ownership changed.");
+        await reserved`select pg_advisory_lock(1431193169, 1)`;
+        record("owned-claim-gate-held");
+        return { release };
+      },
+      async waitNoAppConnections() {
+        const deadline = Date.now() + 3_000;
+        do {
+          const [connections] = await readySql<{ count: number }[]>`
+            select count(*)::int as count from pg_stat_activity where datname = current_database()
+              and pid <> pg_backend_pid() and application_name <> ${`unfreq-b1-gate-${nonce}`}
+          `;
+          if (connections?.count === 0) return;
+          await sleep(20);
+        } while (Date.now() < deadline);
+        throw new Error("Owned app database sessions did not actually close.");
+      },
+      async waitControl(child, predicate, label) {
+        const deadline = Date.now() + 3_000;
+        do {
+          const state = await child.request<GenerationControlState>({ kind: "control-state" }, 1_000);
+          if (predicate(state)) { record(label, { pid: child.pid }); return state; }
+          await sleep(20);
+        } while (Date.now() < deadline);
+        await child.hardStop("checkpoint-observation-timeout");
+        throw new Error(`Generation checkpoint was not reached: ${label}; owned process terminated.`);
+      },
+      async installDispatchFault(session, mode) {
+        if (!registeredIds.has(session.id) || !["retry", "exhaust"].includes(caseId)) throw new Error("Dispatch fault target is not owned by a retry case.");
+        await installDispatchFault(readySql, session.id, mode);
+      },
+      retryHistory() { return readRetryHistory(readySql); },
     };
   } catch (error) {
     record("setup-failed");
