@@ -125,6 +125,7 @@ export async function createImage(
       throw new AppError("RATE_LIMITED", "Daily image upload limit reached.", {
         limit: maxDailyImageUploadCount,
         limitType: "IMAGE_UPLOAD",
+        retryAfterSeconds: error.retryAfterSeconds,
       });
     }
 

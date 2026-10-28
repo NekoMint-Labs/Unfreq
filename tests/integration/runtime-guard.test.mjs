@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { prepareIntegrationRuntime, runtimeArtifactPaths, runtimeEntryRelative, verifyIntegrationRuntime } from "../../scripts/integration-runtime.mjs";
+import { prepareIntegrationRuntime, runtimeArtifactPaths, runtimeEntryRelative, runtimeEntryRelatives, runtimeSourcePaths, verifyIntegrationRuntime } from "../../scripts/integration-runtime.mjs";
 
 const actualGuard = await readFile(new URL("../../scripts/integration-runtime.mjs", import.meta.url));
 const runId = "012345abcdef";
@@ -14,10 +14,7 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "unfreq-runtime-guard-"));
   // This owns only its newly created synthetic directory, never the checkout.
   t.after(() => rm(root, { recursive: true, force: true }));
-  const sourceFiles = ["apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
-    "apps/api/tests/integration/generation-process-fixture.ts", "apps/api/tests/integration/generation-test-controls.ts",
-    "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts", "apps/api/src/shared/generation-execution.ts",
-    "apps/api/src/modules/signals/generation-worker.ts", "scripts/integration-runtime.mjs"];
+  const sourceFiles = runtimeSourcePaths;
   for (const name of sourceFiles) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), "// synthetic compile input\n");
@@ -32,11 +29,11 @@ async function fixture(t) {
     }
     // A tiny harmless Node entry exercises the actual emitted guard identity,
     // with no API/env/DB imports, credentials or service connections.
-    await writeFile(path.join(output, runtimeEntryRelative), `
+    for (const [entry, relative] of Object.entries(runtimeEntryRelatives)) await writeFile(path.join(output, relative), `
 import { fileURLToPath } from "node:url";
 import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 await verifyIntegrationRuntime({runId:process.env.RUNTIME_RUN, runtimeDirectory:process.env.RUNTIME_DIR,
-  ownershipToken:process.env.RUNTIME_TOKEN, executingEntry:fileURLToPath(import.meta.url)});
+  ownershipToken:process.env.RUNTIME_TOKEN, executingEntry:fileURLToPath(import.meta.url),entry:${JSON.stringify(entry)}});
 console.log("owned-runtime-verified");
 `);
   };
@@ -55,6 +52,13 @@ test("an owned compiled ESM entry validates in a fresh plain Node PID", async (t
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "owned-runtime-verified");
+  const abuse = await verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime, entry: "abuse" });
+  const second = spawnSync(process.execPath, [abuse.entryPath], { windowsHide: true, encoding: "utf8", timeout: 5_000,
+    env: { RUNTIME_RUN: runId, RUNTIME_DIR: runtime.runtimeDirectory, RUNTIME_TOKEN: runtime.ownershipToken,
+      ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}) } });
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(second.stdout.trim(), "owned-runtime-verified");
+  await assert.rejects(verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime, entry: "arbitrary" }));
 });
 
 test("foreign run, token and output paths are refused before use", async (t) => {

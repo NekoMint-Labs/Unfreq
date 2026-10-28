@@ -1,4 +1,5 @@
 import { AppError } from "../../shared/errors.js";
+import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
 import {
   assertGenerationActive,
   beforeGenerationDispatch,
@@ -82,6 +83,7 @@ export async function callChatProvider<TOutput>(
           : {}),
       };
 
+      await authorizeProviderDispatch("chat");
       await beforeGenerationDispatch("chat", type);
       const controller = new AbortController();
       combined = combineGenerationAbortSignal(controller.signal);

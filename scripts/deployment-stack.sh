@@ -149,6 +149,14 @@ preflight() {
   if [ "$code_response" != "disabled" ]; then
     fail_preflight "AUTH_LOGIN_CODE_RESPONSE must be disabled in server mode"
   fi
+  delivery_mode="$(read_env_value AUTH_LOGIN_DELIVERY_MODE)"
+  if [ "$delivery_mode" != "disabled" ]; then
+    fail_preflight "AUTH_LOGIN_DELIVERY_MODE must be disabled until a production mail transport is implemented"
+  fi
+  if [ "$(read_env_value ABUSE_PROTECTION_ENABLED)" != "true" ]; then
+    fail_preflight "ABUSE_PROTECTION_ENABLED must be true in server mode"
+  fi
+  require_env_value ABUSE_LIMITS_JSON
 
   run_compose config >/dev/null
 

@@ -6,22 +6,37 @@ import { fileURLToPath } from "node:url";
 // This module imports no application/configuration/ALS code. The same source
 // runs in the coordinator and is emitted by tsc into the child's runtime tree.
 export const runtimeEntryRelative = "apps/api/tests/integration/generation-process-fixture.js";
+export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRelative,
+  abuse: "apps/api/tests/integration/abuse-process-fixture.js" });
+const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
+  "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
+  "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
+  "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
+  "modules/signals/repository", "modules/signals/audio-repository", "modules/signals/audio-worker",
+  "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
+  "shared/shutdown-budget", "shared/log-redaction", "server"];
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
+  runtimeEntryRelatives.abuse,
   "apps/api/tests/integration/generation-test-controls.js",
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
   "apps/api/src/modules/signals/generation-worker.js",
+  ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
-const sourcePaths = Object.freeze([
+export const runtimeSourcePaths = Object.freeze([
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
   "apps/api/tests/integration/generation-process-fixture.ts",
   "apps/api/tests/integration/generation-test-controls.ts",
   "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts",
+  "apps/api/tests/integration/harness.ts",
   "apps/api/src/shared/generation-execution.ts",
   "apps/api/src/modules/signals/generation-worker.ts",
   "scripts/integration-runtime.mjs",
+  "apps/api/tests/integration/abuse-process-fixture.ts",
+  ...criticalSourceModules.map((name) => `apps/api/src/${name}.ts`),
 ]);
+const sourcePaths = runtimeSourcePaths;
 const samePath = (left, right) => process.platform === "win32"
   ? left.toLowerCase() === right.toLowerCase() : left === right;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -71,13 +86,14 @@ export async function prepareIntegrationRuntime({ repositoryRoot, runDirectory, 
   const ownershipToken = randomBytes(32).toString("hex");
   const marker = {
     version: 1, runId, ownerPid: process.pid, sourceRoot: root,
-    runtimeDirectory, entryRelative: runtimeEntryRelative, ownershipToken, files, inputs,
+    runtimeDirectory, entryRelative: runtimeEntryRelative, entryRelatives: runtimeEntryRelatives, ownershipToken, files, inputs,
   };
   await writeFile(path.join(run, "runtime-marker.json"), `${JSON.stringify(marker, null, 2)}\n`, { flag: "wx" });
   return verifyIntegrationRuntime({ repositoryRoot: root, runId, runtimeDirectory, ownershipToken });
 }
 
-export async function verifyIntegrationRuntime({ repositoryRoot, runId, runtimeDirectory, ownershipToken, executingEntry }) {
+export async function verifyIntegrationRuntime({ repositoryRoot, runId, runtimeDirectory, ownershipToken, executingEntry, entry = "generation" }) {
+  if (!Object.hasOwn(runtimeEntryRelatives, entry)) fail();
   if (typeof runtimeDirectory !== "string" || !path.isAbsolute(runtimeDirectory) ||
       !/^[a-f0-9]{12}$/u.test(runId) || !/^[a-f0-9]{64}$/u.test(ownershipToken)) fail();
   const directory = path.resolve(runtimeDirectory);
@@ -95,18 +111,21 @@ export async function verifyIntegrationRuntime({ repositoryRoot, runId, runtimeD
   if (!marker || marker.version !== 1 || marker.runId !== runId ||
       marker.ownershipToken !== ownershipToken || !Number.isSafeInteger(marker.ownerPid) || marker.ownerPid <= 0 ||
       !samePath(marker.sourceRoot, root) || !samePath(marker.runtimeDirectory, directory) ||
-      marker.entryRelative !== runtimeEntryRelative) fail();
+      marker.entryRelative !== runtimeEntryRelative || !marker.entryRelatives ||
+      Object.keys(marker.entryRelatives).length !== 2 ||
+      Object.entries(runtimeEntryRelatives).some(([name, value]) => marker.entryRelatives[name] !== value)) fail();
   const files = await hashes(directory, runtimeArtifactPaths);
   equalHashes(files, marker.files, runtimeArtifactPaths);
   equalHashes(await hashes(root, sourcePaths), marker.inputs, sourcePaths);
   const packageData = JSON.parse((await ordinaryFile(path.join(directory, "package.json"))).toString("utf8"));
   if (packageData.type !== "module") fail();
-  const entryPath = path.join(directory, runtimeEntryRelative);
+  const entryRelative = runtimeEntryRelatives[entry];
+  const entryPath = path.join(directory, entryRelative);
   if (executingEntry !== undefined) {
     if (!samePath(path.resolve(executingEntry), entryPath) ||
         !samePath(fileURLToPath(import.meta.url), path.join(directory, "scripts", "integration-runtime.mjs")) ||
         process.execArgv.length !== 0) fail();
   }
   return { runId, runDirectory: run, runtimeDirectory: directory, ownershipToken,
-    entryPath, entrySha256: files[runtimeEntryRelative] };
+    entryPath, entrySha256: files[entryRelative] };
 }

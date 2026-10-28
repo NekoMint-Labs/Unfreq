@@ -43,6 +43,8 @@ export type GenerationFailureCode =
   | "GENERATION_RETRY_EXHAUSTED"
   | "GENERATION_TIMEOUT"
   | "GENERATION_OUTCOME_UNKNOWN"
+  | "GENERATION_RATE_LIMITED"
+  | "GENERATION_PROTECTION_UNAVAILABLE"
   | "GENERATION_SUPERSEDED";
 
 export type GenerationRepositoryOptions = Readonly<{
