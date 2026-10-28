@@ -8,6 +8,8 @@ import { callChatProvider } from "./provider-transport.js";
 import { generateEmbedding } from "./embedding.js";
 import { rerankCandidates } from "./reranker.js";
 import { classifyContentWithFallback } from "./service.js";
+import { fixtureFingerprint, fixtureMaterial, fixtureSeed } from "../../../tests/integration/fixtures.js";
+import { generateOwnedSignalOutput } from "../signals/service-creation.js";
 
 const state = vi.hoisted(() => ({
   chat: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/chat-${index}`, profile: "default", model: "synthetic-chat", provider: "synthetic" })),
@@ -185,6 +187,49 @@ describe("generation cancellation across real provider adapters", () => {
 });
 
 describe("generation result and audit fences", () => {
+  it("preserves an ordinary caller's original audit error outside a generation context", async () => {
+    const storageError = new Error("synthetic ordinary audit storage failure");
+    state.review.mockRejectedValue(storageError);
+    vi.stubGlobal("fetch", vi.fn(async () => chatResponse()));
+    await expect(classifyContentWithFallback({ content: "synthetic ordinary input" })).rejects.toBe(storageError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(state.review).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the real material-to-split pipeline after an audit storage failure even while ownership checks remain healthy", async () => {
+    const { ctx, controller } = execution();
+    const storageError = new Error("synthetic audit storage acknowledgement unavailable");
+    state.review.mockRejectedValue(storageError);
+    const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { status: 200 });
+    // Both responses are valid for their actual stages. On the faulty path,
+    // material audit failure starts fingerprint generation, whose audit also
+    // rejects. No matching/database work or manufactured abort is needed to
+    // terminate that baseline path and observe the extra dispatch/audit.
+    const fetchMock = vi.fn(async () => response(fixtureFingerprint))
+      .mockImplementationOnce(async () => response(fixtureMaterial));
+    vi.stubGlobal("fetch", fetchMock);
+    const observed: unknown = await runWithGenerationExecution(ctx, () => generateOwnedSignalOutput({
+      signalId: "00000000-0000-4000-8000-000000007701",
+      body: { seedText: fixtureSeed },
+      frequency: {
+        id: "00000000-0000-4000-8000-000000007702", freqCode: "FM 00.77",
+        createdAt: "2026-01-01T00:00:00.000Z", isGuest: false, role: "USER", status: "ACTIVE",
+      },
+      onGenerationStatusChange: vi.fn(async () => {}),
+    })).then(() => undefined, (error: unknown) => error);
+    expect(controller.signal.aborted).toBe(false);
+    expect(ctx.assertActive).toHaveBeenCalled();
+    expect({
+      errorName: observed instanceof Error ? observed.name : null,
+      stopReason: observed instanceof GenerationExecutionStopped ? observed.reason : null,
+      providerCalls: fetchMock.mock.calls.length,
+      auditAttempts: state.review.mock.calls.length,
+    }).toEqual({
+      errorName: "GenerationExecutionStopped", stopReason: "storage-uncertain",
+      providerCalls: 1, auditAttempts: 1,
+    });
+  });
+
   it("stops before inserting an audit when cancellation arrives during audit configuration lookup", async () => {
     const { ctx, controller } = execution();
     const lookupStarted = deferred();
