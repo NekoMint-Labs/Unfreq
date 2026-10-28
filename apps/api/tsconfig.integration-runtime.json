@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false,
+    "noEmit": false,
+    "noEmitOnError": true,
+    "outDir": "../../test-results/integration/unselected-runtime",
+    "rootDir": "../..",
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/integration/generation-process-fixture.ts",
+    "tests/integration/generation-test-controls.ts",
+    "tests/integration/fixtures.ts",
+    "../../scripts/integration-runtime.mjs"
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}
