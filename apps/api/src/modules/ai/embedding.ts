@@ -1,6 +1,13 @@
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import {
+  assertGenerationActive,
+  beforeGenerationDispatch,
+  combineGenerationAbortSignal,
+  throwIfGenerationStopped,
+  waitForGenerationRetry,
+} from "../../shared/generation-execution.js";
+import {
   resolveEmbeddingProviderConfig,
   resolveEmbeddingProviderConfigs,
 } from "./provider-config.js";
@@ -64,16 +71,6 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
 
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) {
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 function toErrorReason(error: unknown): string {
   if (error instanceof AppError) {
     return error.code;
@@ -108,7 +105,9 @@ export function validateEmbeddingVector(
 export async function isEmbeddingProviderConfigured(
   config?: EmbeddingProviderConfig,
 ): Promise<boolean> {
+  await assertGenerationActive();
   const resolvedConfig = config ?? (await getEmbeddingConfig());
+  await assertGenerationActive();
 
   return resolvedConfig.apiKey.length > 0 && resolvedConfig.baseUrl.length > 0;
 }
@@ -132,6 +131,7 @@ async function requestEmbedding(params: {
     method: "POST",
     signal: params.signal,
   });
+  await assertGenerationActive();
 
   if (!response.ok) {
     throw new AppError("AI_UNAVAILABLE", "Embedding provider unavailable.", {
@@ -140,6 +140,7 @@ async function requestEmbedding(params: {
   }
 
   const payload = (await response.json()) as EmbeddingPayload;
+  await assertGenerationActive();
 
   return validateEmbeddingVector(extractEmbedding(payload), params.config.dimensions);
 }
@@ -148,8 +149,10 @@ export async function generateEmbedding(
   text: string,
   options: GenerateEmbeddingOptions = {},
 ): Promise<EmbeddingResult> {
+  await assertGenerationActive();
   const compactText = text.trim();
   const configs = options.config === undefined ? await getEmbeddingConfigs() : [options.config];
+  await assertGenerationActive();
   const retryDelayMs = options.retryDelayMs ?? defaultRetryDelayMs;
   const timeoutMs = options.timeoutMs ?? embeddingTimeoutMs;
   const maxAttempts = embeddingMaxRetries + 1;
@@ -161,17 +164,18 @@ export async function generateEmbedding(
   let lastError: unknown;
 
   for (const [configIndex, config] of configs.entries()) {
+    await assertGenerationActive();
     if (!(await isEmbeddingProviderConfigured(config))) {
       lastError = new AppError("AI_UNAVAILABLE", "Embedding provider is not configured.");
       continue;
     }
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      await assertGenerationActive();
       const startedAt = Date.now();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => {
-        controller.abort();
-      }, timeoutMs);
+      let timeout: NodeJS.Timeout | undefined;
+      let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
+      let shouldRetry = false;
 
       try {
         options.logger?.info(
@@ -187,11 +191,17 @@ export async function generateEmbedding(
           "embedding generation started",
         );
 
+        await beforeGenerationDispatch("embedding", "embedding");
+        const controller = new AbortController();
+        combined = combineGenerationAbortSignal(controller.signal);
+        timeout = setTimeout(() => { controller.abort(); }, timeoutMs);
+        throwIfGenerationStopped();
         const embedding = await requestEmbedding({
           config,
-          signal: controller.signal,
+          signal: combined.signal,
           text: compactText,
         });
+        await assertGenerationActive();
 
         options.logger?.info(
           {
@@ -206,6 +216,7 @@ export async function generateEmbedding(
           },
           "embedding generation completed",
         );
+        await assertGenerationActive();
 
         return {
           dimensions: config.dimensions,
@@ -215,6 +226,8 @@ export async function generateEmbedding(
           version: config.version,
         };
       } catch (error) {
+        throwIfGenerationStopped(error);
+        await assertGenerationActive();
         lastError = error;
 
         const fields = {
@@ -232,16 +245,19 @@ export async function generateEmbedding(
 
         if (attempt < maxAttempts) {
           options.logger?.warn(fields, "embedding generation retrying");
-          await sleep(retryDelayMs);
+          shouldRetry = true;
         } else {
           options.logger?.error(fields, "embedding generation failed");
         }
       } finally {
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
+        combined?.dispose();
       }
+      if (shouldRetry) await waitForGenerationRetry(retryDelayMs);
     }
   }
 
+  await assertGenerationActive();
   if (lastError instanceof AppError) {
     throw lastError;
   }

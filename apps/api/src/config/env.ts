@@ -52,6 +52,18 @@ const envSchema = z.object({
     .url()
     .default("postgres://postgres:postgres@127.0.0.1:5432/unfreq"),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
+  SIGNAL_GENERATION_WORKER_ENABLED: z.enum(["true", "false"]).optional(),
+  SIGNAL_GENERATION_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
+  SIGNAL_GENERATION_SCAN_INTERVAL_MS: z.coerce.number().int().min(25).max(60_000).default(1000),
+  SIGNAL_GENERATION_LEASE_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
+  SIGNAL_GENERATION_HEARTBEAT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
+  SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(180_000),
+  SIGNAL_GENERATION_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+  SIGNAL_GENERATION_RETRY_BASE_MS: z.coerce.number().int().min(25).max(30_000).default(1000),
+  SIGNAL_GENERATION_RETRY_MAX_MS: z.coerce.number().int().min(25).max(60_000).default(30_000),
+  SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
+  SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
+  SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: z.coerce.number().int().min(50).max(30_000).default(1000),
   HEALTH_DEPENDENCY_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -90,6 +102,15 @@ if (!parsedEnv.success) {
     .join("; ");
 
   throw new Error(`Invalid API environment: ${details}`);
+}
+
+if (
+  parsedEnv.data.SIGNAL_GENERATION_HEARTBEAT_MS * 2 >= parsedEnv.data.SIGNAL_GENERATION_LEASE_MS ||
+  parsedEnv.data.SIGNAL_GENERATION_LEASE_MS > parsedEnv.data.SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS ||
+  parsedEnv.data.SIGNAL_GENERATION_RETRY_BASE_MS > parsedEnv.data.SIGNAL_GENERATION_RETRY_MAX_MS ||
+  parsedEnv.data.SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS >= parsedEnv.data.SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS
+) {
+  throw new Error("Invalid API environment: signal generation requires heartbeat < lease/2, lease <= attempt timeout, retry base <= maximum, and DB lock timeout < statement timeout.");
 }
 
 if (
@@ -171,6 +192,19 @@ export const env = {
   apiPort: parsedEnv.data.API_PORT,
   databaseUrl: parsedEnv.data.DATABASE_URL,
   dbPoolMax: parsedEnv.data.DB_POOL_MAX,
+  signalGenerationWorkerEnabled: (parsedEnv.data.SIGNAL_GENERATION_WORKER_ENABLED ??
+    (parsedEnv.data.NODE_ENV === "test" ? "false" : "true")) === "true",
+  signalGenerationConcurrency: parsedEnv.data.SIGNAL_GENERATION_CONCURRENCY,
+  signalGenerationScanIntervalMs: parsedEnv.data.SIGNAL_GENERATION_SCAN_INTERVAL_MS,
+  signalGenerationLeaseMs: parsedEnv.data.SIGNAL_GENERATION_LEASE_MS,
+  signalGenerationHeartbeatMs: parsedEnv.data.SIGNAL_GENERATION_HEARTBEAT_MS,
+  signalGenerationAttemptTimeoutMs: parsedEnv.data.SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS,
+  signalGenerationMaxAttempts: parsedEnv.data.SIGNAL_GENERATION_MAX_ATTEMPTS,
+  signalGenerationRetryBaseMs: parsedEnv.data.SIGNAL_GENERATION_RETRY_BASE_MS,
+  signalGenerationRetryMaxMs: parsedEnv.data.SIGNAL_GENERATION_RETRY_MAX_MS,
+  signalGenerationShutdownGraceMs: parsedEnv.data.SIGNAL_GENERATION_SHUTDOWN_GRACE_MS,
+  signalGenerationDbStatementTimeoutMs: parsedEnv.data.SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS,
+  signalGenerationDbLockTimeoutMs: parsedEnv.data.SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS,
   healthDependencyTimeoutMs: parsedEnv.data.HEALTH_DEPENDENCY_TIMEOUT_MS,
   imageMaxBytes: parsedEnv.data.IMAGE_MAX_BYTES,
   imageStorageDir: parsedEnv.data.IMAGE_STORAGE_DIR,

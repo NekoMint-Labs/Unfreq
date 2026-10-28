@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -421,6 +423,14 @@ export const signals = pgTable(
     frequencyId: uuid("frequency_id").references(() => frequencies.id),
     galaxyPosition: jsonb("galaxy_position").$type<{ x: number; y: number; z: number }>(),
     generationError: text("generation_error"),
+    generationAttemptCount: integer("generation_attempt_count"),
+    generationAttemptId: uuid("generation_attempt_id"),
+    generationLeaseOwner: uuid("generation_lease_owner"),
+    generationLeaseUntil: timestamp("generation_lease_until", { withTimezone: true }),
+    generationAttemptStartedAt: timestamp("generation_attempt_started_at", { withTimezone: true }),
+    generationAttemptDeadlineAt: timestamp("generation_attempt_deadline_at", { withTimezone: true }),
+    generationNextAttemptAt: timestamp("generation_next_attempt_at", { withTimezone: true }),
+    generationDispatchStartedAt: timestamp("generation_dispatch_started_at", { withTimezone: true }),
     generationStatus: signalGenerationStatusEnum("generation_status")
       .default("COMPLETED")
       .notNull(),
@@ -452,6 +462,67 @@ export const signals = pgTable(
       table.generationStatus,
       table.createdAt,
     ),
+    index("signals_generation_queue_idx")
+      .on(table.generationNextAttemptAt, table.createdAt, table.id)
+      .where(sql`${table.generationAttemptCount} is not null and ${table.generationStatus} = 'RECEIVED'`),
+    index("signals_generation_lease_idx")
+      .on(table.generationLeaseUntil)
+      .where(sql`${table.generationAttemptCount} is not null and ${table.generationLeaseUntil} is not null`),
+    check("signals_generation_execution_check", sql`
+      (
+        ${table.generationAttemptCount} is null
+        and ${table.generationAttemptId} is null and ${table.generationLeaseOwner} is null
+        and ${table.generationLeaseUntil} is null and ${table.generationAttemptStartedAt} is null
+        and ${table.generationAttemptDeadlineAt} is null and ${table.generationNextAttemptAt} is null
+        and ${table.generationDispatchStartedAt} is null
+      ) or (
+        ${table.generationAttemptCount} is not null and ${table.generationAttemptCount} >= 0
+        and (
+          (
+            ${table.generationStatus} = 'RECEIVED' and ${table.status} = 'DRAFT'
+            and ${table.generationError} is null and ${table.generationNextAttemptAt} is not null
+            and ${table.generationAttemptId} is null and ${table.generationLeaseOwner} is null
+            and ${table.generationLeaseUntil} is null and ${table.generationAttemptStartedAt} is null
+            and ${table.generationAttemptDeadlineAt} is null and ${table.generationDispatchStartedAt} is null
+          ) or (
+            ${table.generationStatus} in ('EXPANDING', 'MATCHING', 'WRITING') and ${table.status} = 'DRAFT'
+            and ${table.generationError} is null and ${table.generationAttemptCount} >= 1
+            and ${table.generationNextAttemptAt} is null
+            and ${table.generationAttemptId} is not null and ${table.generationLeaseOwner} is not null
+            and ${table.generationLeaseUntil} is not null and ${table.generationAttemptStartedAt} is not null
+            and ${table.generationAttemptDeadlineAt} is not null
+            and ${table.generationAttemptStartedAt} < ${table.generationLeaseUntil}
+            and ${table.generationLeaseUntil} <= ${table.generationAttemptDeadlineAt}
+            and (${table.generationDispatchStartedAt} is null or (
+              ${table.generationDispatchStartedAt} is not null
+              and ${table.generationDispatchStartedAt} >= ${table.generationAttemptStartedAt}
+              and ${table.generationDispatchStartedAt} <= ${table.generationAttemptDeadlineAt}
+            ))
+          ) or (
+            ${table.generationStatus} in ('COMPLETED', 'FAILED')
+            and ${table.generationLeaseOwner} is null and ${table.generationLeaseUntil} is null
+            and ${table.generationNextAttemptAt} is null
+            and ((${table.generationStatus} = 'COMPLETED' and ${table.generationError} is null)
+              or (${table.generationStatus} = 'FAILED' and ${table.generationError} is not null))
+            and (
+              (${table.generationStatus} = 'FAILED'
+                and ${table.generationAttemptId} is null and ${table.generationAttemptStartedAt} is null
+                and ${table.generationAttemptDeadlineAt} is null and ${table.generationDispatchStartedAt} is null)
+              or (
+                ${table.generationAttemptCount} >= 1 and ${table.generationAttemptId} is not null
+                and ${table.generationAttemptStartedAt} is not null and ${table.generationAttemptDeadlineAt} is not null
+                and ${table.generationAttemptStartedAt} < ${table.generationAttemptDeadlineAt}
+                and (${table.generationDispatchStartedAt} is null or (
+                  ${table.generationDispatchStartedAt} is not null
+                  and ${table.generationDispatchStartedAt} >= ${table.generationAttemptStartedAt}
+                  and ${table.generationDispatchStartedAt} <= ${table.generationAttemptDeadlineAt}
+                ))
+              )
+            )
+          )
+        )
+      )
+    `),
     index("signals_match_signal_id_idx").on(table.matchSignalId),
     index("signals_parent_signal_id_idx").on(table.parentSignalId),
     index("signals_primary_band_status_created_at_idx").on(

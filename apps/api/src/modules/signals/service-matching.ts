@@ -1,3 +1,4 @@
+import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   generateEmbedding,
   type EmbeddingLogger,
@@ -157,10 +158,12 @@ async function findKeywordSameFrequencyMatches(
     excludeSignalId?: string;
   } = {},
 ): Promise<SignalMatchSummary[]> {
+  await assertGenerationActive();
   const publishedCandidates = await listPublishedSignalMatchCandidates(
     matchCandidateLimit,
     options.excludeSignalId,
   );
+  await assertGenerationActive();
   const publishedMatches = publishedCandidates
     .filter((candidate) => candidate.id !== options.excludeSignalId)
     .map((candidate) => toMatchSummary(candidate, scoreSignalMatch(fingerprint, candidate)))
@@ -202,6 +205,7 @@ async function rerankSemanticMatches(params: {
   fingerprint: SignalFingerprint;
   logger?: EmbeddingLogger;
 }): Promise<SignalMatchSummary[]> {
+  await assertGenerationActive();
   const applyFrequencyScore = (match: SignalMatchSummary, candidate: SignalRecord) => {
     const semanticScore = match.score;
     const frequencyScore = scoreSignalMatch(params.fingerprint, candidate);
@@ -212,7 +216,9 @@ async function rerankSemanticMatches(params: {
     };
   };
 
-  if (!(await isRerankerProviderConfigured())) {
+  const configured = await isRerankerProviderConfigured();
+  await assertGenerationActive();
+  if (!configured) {
     return params.candidates
       .map((candidate) => applyFrequencyScore(toSemanticMatchSummary(candidate), candidate))
       .sort((left, right) => {
@@ -235,6 +241,7 @@ async function rerankSemanticMatches(params: {
       }),
       queryText: params.expandedText,
     });
+    await assertGenerationActive();
     const scoreById = new Map(
       reranked.results.map((result) => {
         return [result.id, result.score];
@@ -260,6 +267,8 @@ async function rerankSemanticMatches(params: {
         return left.id.localeCompare(right.id);
       });
   } catch (error) {
+    throwIfGenerationStopped(error);
+    await assertGenerationActive();
     params.logger?.warn(
       {
         action: "signal.reranker.fallback",
@@ -289,7 +298,10 @@ async function findSemanticSameFrequencyMatches(params: {
   logger?: EmbeddingLogger;
   rawInput: string;
 }): Promise<{ embedding: EmbeddingResult; matches: SignalMatchSummary[] } | undefined> {
-  if (!(await isEmbeddingProviderConfigured())) {
+  await assertGenerationActive();
+  const configured = await isEmbeddingProviderConfigured();
+  await assertGenerationActive();
+  if (!configured) {
     return undefined;
   }
 
@@ -305,18 +317,21 @@ async function findSemanticSameFrequencyMatches(params: {
         logger: params.logger,
       },
     );
+    await assertGenerationActive();
     const semanticCandidates = await listPublishedSemanticSignalMatchCandidates(
       embedding.embedding,
       maxMatchCount,
       params.excludeSignalId,
       embedding.version,
     );
+    await assertGenerationActive();
     const matches = await rerankSemanticMatches({
       candidates: semanticCandidates,
       expandedText: params.expandedText,
       fingerprint: params.fingerprint,
       logger: params.logger,
     });
+    await assertGenerationActive();
 
     const rankedMatches = matches
       .filter((candidate) => candidate.id !== params.excludeSignalId)
@@ -327,6 +342,8 @@ async function findSemanticSameFrequencyMatches(params: {
       matches: rankedMatches,
     };
   } catch (error) {
+    throwIfGenerationStopped(error);
+    await assertGenerationActive();
     params.logger?.warn(
       {
         action: "signal.semantic_match.fallback",
@@ -348,10 +365,13 @@ export async function findSameFrequencyMatches(params: {
   logger?: EmbeddingLogger;
   rawInput: string;
 }): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[] }> {
+  await assertGenerationActive();
   const semanticResult = await findSemanticSameFrequencyMatches(params);
+  await assertGenerationActive();
   const keywordMatches = await findKeywordSameFrequencyMatches(params.fingerprint, {
     excludeSignalId: params.excludeSignalId,
   });
+  await assertGenerationActive();
 
   if (semanticResult === undefined || semanticResult.matches.length === 0) {
     return {

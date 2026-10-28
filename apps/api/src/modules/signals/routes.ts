@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import type { SignalGenerationWorker } from "./generation-worker.js";
 import { AppError } from "../../shared/errors.js";
 import { sendData } from "../../shared/response.js";
 import {
@@ -37,7 +38,11 @@ import {
   removeSignalResonance,
 } from "./service.js";
 
-export async function signalRoutes(app: FastifyInstance) {
+type SignalRoutesOptions = FastifyPluginOptions & {
+  generationWorker: Pick<SignalGenerationWorker, "accepting" | "wake">;
+};
+
+export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOptions) {
   app.post("/", async (request, reply) => {
     const parsedBody = createPublishedSignalBodySchema.safeParse(request.body);
 
@@ -49,6 +54,7 @@ export async function signalRoutes(app: FastifyInstance) {
       request.frequency,
       parsedBody.data,
       request.log,
+      options.generationWorker,
     );
     const response = signalResponseSchema.parse({ signal });
 
