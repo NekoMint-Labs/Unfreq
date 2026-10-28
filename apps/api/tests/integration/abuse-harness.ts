@@ -120,7 +120,7 @@ async function providerStub() {
       if (kind === "chat" && holdChat) await new Promise<void>((done) => { const release = () => { held.delete(release); done(); }; held.add(release); });
       let result: unknown;
       if (kind === "embedding") result = { data: [{ embedding: [1, ...Array<number>(1023).fill(0)] }] };
-      if (kind === "reranker") result = { results: [{ index: 0, relevance_score: 0.9 }] };
+      if (kind === "reranker") result = { results: [{ id: "00000000-0000-4000-8000-000000000101", score: 0.9, reason: "synthetic" }] };
       if (kind === "chat") {
         const prompt = body.messages?.find((item) => item.role === "system")?.content;
         const outputs = [["signal-material", fixtureMaterial], ["signal-fingerprint", fixtureFingerprint], ["signal-expansion", fixtureExpansion], ["signal-expansion-review", fixtureReview]] as const;

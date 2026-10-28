@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import type { LightMyRequestResponse } from "fastify";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
 
@@ -29,6 +29,7 @@ type RequestMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
 let h: Harness;
 let harnessPreparation: Promise<Harness> | undefined;
+let setupWork: Promise<void> | undefined;
 let author: Session;
 let reader: Session;
 let admin: Session;
@@ -97,12 +98,23 @@ async function createPending(): Promise<string> {
 }
 
 async function waitForPreview(id: string): Promise<Signal> {
-  await vi.waitFor(async () => {
-    const [row] = await h.sql<{ generation_status: string }[]>`
-      select generation_status from signals where id = ${id}
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    const [row] = await h.sql<{ generation_status: string; generation_error: string | null; attempt_count: number | null; dispatched: boolean; lease_expired: boolean }[]>`
+      select generation_status, generation_error, generation_attempt_count as attempt_count,
+        generation_dispatch_started_at is not null as dispatched,
+        coalesce(generation_lease_until <= clock_timestamp(), false) as lease_expired
+      from signals where id = ${id}
     `;
-    expect(row?.generation_status).toBe("COMPLETED");
-  }, { interval: 25, timeout: 10_000 });
+    if (row?.generation_status === "FAILED") {
+      const code = /^GENERATION_[A-Z_]{1,48}$/u.test(row.generation_error ?? "") ? row.generation_error : "UNKNOWN";
+      throw new Error(`Core generation failed: ${JSON.stringify({ code, attemptCount: row.attempt_count,
+        dispatched: row.dispatched, leaseExpired: row.lease_expired })}`);
+    }
+    if (row?.generation_status === "COMPLETED") break;
+    if (Date.now() >= deadline) throw new Error("Core generation did not complete within its existing 10s observation budget.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const response = await request("GET", `/api/signals/${id}`, author.cookie);
   expect(response.statusCode).toBe(200);
   const signal = response.json<Envelope<{ signal: Signal }>>().data.signal;
@@ -191,6 +203,7 @@ async function expectNotPublic(id: string, reviewing = false) {
 
 describe("real API core flow against isolated PostgreSQL and Redis", () => {
   beforeAll(async () => {
+    setupWork = (async () => {
     harnessPreparation = createIntegrationHarness();
     h = await harnessPreparation;
     await recordCoreSetupPhase("author-register-start");
@@ -210,11 +223,14 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     await recordCoreSetupPhase("control-create-complete");
     await publish(publicControlId);
     await recordCoreSetupPhase("control-publish-complete");
+    })();
+    await setupWork;
   });
 
   afterAll(async () => {
     // A hook watchdog is not cancellation. Even if preparation finished late,
     // wait for the owned harness and close it instead of abandoning its work.
+    await setupWork?.catch(() => undefined);
     const prepared = await harnessPreparation?.catch(() => undefined);
     await prepared?.close();
   });
@@ -250,12 +266,10 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
   });
 
   it("stores expiring Redis challenges without response code disclosure and enforces cooldown, attempt limits, and one-time verification", async () => {
-    const authService = await import("../../src/modules/auth/service.js");
-    const { env } = await import("../../src/config/env.js");
+    const { env } = await h.loadModule("env");
     // Redis deliberately stores only an HMAC, not a recoverable code. Observe
-    // the real local-delivery result without replacing service implementation,
+    // the real local-delivery log without replacing service implementation,
     // randomness, Redis, or the API response; never write the code to output.
-    const issueSpy = vi.spyOn(authService, "requestLoginChallenge");
     type ChallengeRecord = {
       attemptCount: number;
       codeHash: string;
@@ -284,10 +298,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const issue = async (email: string) => {
       const response = await request("POST", "/api/auth/login", undefined, { email: email.toUpperCase() });
       expect(response.statusCode).toBe(200);
-      const observed = issueSpy.mock.results.at(-1);
-      if (observed?.type !== "return") throw new Error("Real challenge issuance did not return a local-delivery result.");
-      const issued = await observed.value;
-      const code = issued.localDelivery.code;
+      const code = h.takeLocalLoginCode();
+      if (code === undefined) throw new Error("Real challenge issuance did not reach its private local delivery channel.");
       expect(/^\d{6}$/u.test(code)).toBe(true);
       const data = response.json<Envelope<ChallengeResponse>>().data;
       expect(Object.keys(data.delivery)).toEqual(["mode"]);
@@ -360,8 +372,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       `;
       expect(limitedUser.count).toBe(0);
     } finally {
-      issueSpy.mockClear();
-      issueSpy.mockRestore();
+      h.takeLocalLoginCode();
     }
   });
 
@@ -433,8 +444,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     // Explicit pre-0022 shape: old NULL-metadata records remain readable and
     // must still pass every public-read filter. Do not weaken the new CHECK
     // or erase execution metadata from a managed row to construct this case.
-    const { createSignalDraft } = await import("../../src/modules/signals/repository.js");
-    const { buildMinimalSignalProgram } = await import("../../src/modules/signals/service-mappers.js");
+    const { createSignalDraft } = await h.loadModule("repository");
+    const { buildMinimalSignalProgram } = await h.loadModule("mappers");
     const legacy = await createSignalDraft({
       authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
       expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
@@ -496,7 +507,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
 
     // A synthetic stored byte fixture exercises real media reads without TTS.
     // The harness configured this storage module's root to its owned temp dir.
-    const { writeSignalAudio } = await import("../../src/modules/signals/audio-storage.js");
+    const { writeSignalAudio } = await h.loadModule("audioStorage");
     const storageKey = `${id}.mp3`;
     const syntheticAudio = Buffer.from("ID3 synthetic integration audio fixture");
     await writeSignalAudio(storageKey, syntheticAudio);
