@@ -3,6 +3,7 @@ import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
+import type { ReadOwnedPublicationPreviewResult } from "../../src/modules/signals/publication-repository.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -175,6 +176,30 @@ async function waitForActualGenerationIdle(): Promise<void> {
     if (Date.now() >= deadline) throw new Error("C1 fixture generation did not actually settle within 5s after release.");
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+function readyPublicationPreview(result: ReadOwnedPublicationPreviewResult) {
+  expect(result.outcome).toBe("READY");
+  if (result.outcome !== "READY") throw new Error("Synthetic publication preview was unavailable.");
+  return result.preview;
+}
+
+async function publicationRowHash(id: string): Promise<string> {
+  const [row] = await h.sql<{ row_hash: string }[]>`
+    select md5(row_to_json(s)::text) as row_hash from signals s where id = ${id}
+  `;
+  if (row === undefined) throw new Error("Synthetic publication row was unavailable.");
+  return row.row_hash;
+}
+
+async function expectPublicationRejection(
+  id: string,
+  outcome: "NOT_FOUND" | "CONFLICT" | "FORBIDDEN",
+  work: () => Promise<unknown>,
+): Promise<void> {
+  const before = await publicationRowHash(id);
+  expect(await work()).toEqual({ outcome });
+  expect(await publicationRowHash(id)).toBe(before);
 }
 
 async function publish(id: string) {
@@ -775,6 +800,224 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
-  // These SQL foundations do not exercise an author-withdrawal route or claim
-  // that today's legacy public filters already honor withdrawal markers.
+  it("reads a whitelisted publication preview without writes and rejects invalid confirmation states unchanged", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const before = await publicationRowHash(id);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(await publicationRowHash(id)).toBe(before);
+      expect(Object.keys(preview).sort()).toEqual(["content", "digest", "version"]);
+      expect(Object.keys(preview.content).sort()).toEqual(["authorFreqCode", "expandedText", "primaryBand", "tags"]);
+      expect(preview).toMatchObject({ version: 0, content: {
+        expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
+        primaryBand: "self_mirror", tags: ["自我镜像", "练习", "停顿"],
+      } });
+      expect(preview.digest).toMatch(/^[a-f0-9]{64}$/u);
+      const confirm = (overrides: Partial<{ actorId: string; expectedVersion: number; digest: string }> = {}) =>
+        repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: preview.digest, ...overrides });
+      const wrongDigest = `${preview.digest.slice(0, -1)}${preview.digest.endsWith("0") ? "1" : "0"}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ digest: wrongDigest }));
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 1 }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm({ actorId: reader.id }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => repo.readOwnedPublicationPreview({ id, actorId: reader.id }));
+      expect(await repo.readOwnedPublicationPreview({ id: randomUUID(), actorId: author.id })).toEqual({ outcome: "NOT_FOUND" });
+      for (const status of ["HIDDEN", "DELETED", "REVIEWING"] as const) {
+        await h.sql`update signals set status = ${status} where id = ${id}`;
+        const outcome = status === "REVIEWING" ? "CONFLICT" : "NOT_FOUND";
+        await expectPublicationRejection(id, outcome, () => confirm());
+        await expectPublicationRejection(id, outcome, () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      }
+      await h.sql`update signals set status = 'DRAFT', generation_status = 'EXPANDING' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set generation_status = 'COMPLETED', author_id = null where id = ${id}`;
+      // Matching frequency_id is not confirmation authority for a NULL author.
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm());
+      await h.sql`update signals set author_id = ${author.id}, fingerprint_json = '{"primaryBand":"self_mirror","tags":[1]}'::jsonb where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set fingerprint_json = ${h.sql.json(fixtureFingerprint)}, expanded_text = '   ' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set expanded_text = ${fixtureExpansion.expandedText} where id = ${id}`;
+      const [account] = await h.sql<{ status: string }[]>`select status from users where id = ${author.id}`;
+      if (account === undefined) throw new Error("Synthetic publication account was unavailable.");
+      await withCleanup(async () => {
+        for (const status of ["MUTED", "BANNED"] as const) {
+          // Leave the frequency mirror/session unchanged to exercise canonical users.
+          await h.sql`update users set status = ${status} where id = ${author.id}`;
+          await expectPublicationRejection(id, "FORBIDDEN", () => confirm());
+          await expectPublicationRejection(id, "FORBIDDEN", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+        }
+      }, async () => { await h.sql`update users set status = ${account.status} where id = ${author.id}`; });
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 2147483647 }));
+      await expectPublicationRejection(id, "CONFLICT", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+    });
+  });
+
+  it("commits one concurrent confirmation epoch, preserves a current no-op, and requires explicit confirmation after withdrawal", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: preview.version, digest: preview.digest,
+      })));
+      const published = [];
+      let conflicts = 0;
+      for (const result of results) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status !== "fulfilled") continue;
+        if (result.value.outcome === "PUBLISHED") published.push(result.value);
+        else { expect(result.value).toEqual({ outcome: "CONFLICT" }); conflicts += 1; }
+      }
+      expect(published).toHaveLength(1);
+      expect(conflicts).toBe(5);
+      const first = published[0];
+      expect(first).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: preview.digest, content: preview.content } });
+      const [stored] = await h.sql`
+        select status, publication_version, withdrawn_at, publication_snapshot,
+          (publication_snapshot->>'confirmedAt')::timestamptz <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(stored).toEqual({ status: "PUBLISHED", publication_version: 1, withdrawn_at: null,
+        publication_snapshot: first.snapshot, database_clock_bounded: true });
+      const beforeNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 1, digest: preview.digest }))
+        .toEqual(first);
+      expect(await publicationRowHash(id)).toBe(beforeNoop);
+      expect(await repo.withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 2 });
+      const [retained] = await h.sql`select publication_snapshot, withdrawn_at is not null as withdrawn from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_snapshot: first.snapshot, withdrawn: true });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 1, digest: preview.digest,
+      }));
+      const refreshed = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(refreshed).toEqual({ ...preview, version: 2 });
+      const republished = await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest });
+      expect(republished).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 3,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: refreshed.digest, content: refreshed.content } });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest,
+      }));
+      const [current] = await h.sql`select publication_version, withdrawn_at from signals where id = ${id}`;
+      expect(current).toEqual({ publication_version: 3, withdrawn_at: null });
+      // Explicit synthetic MAX epoch: a genuinely unchanged confirmation may
+      // remain a no-op, while no increment or wrap is permitted.
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      const maxPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const beforeMaxNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id,
+        expectedVersion: maxPreview.version, digest: maxPreview.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 2147483647 });
+      expect(await publicationRowHash(id)).toBe(beforeMaxNoop);
+      // A version-zero snapshot is an intentionally inconsistent fixture, not
+      // inherited confirmation authority; this explicit request must write v1.
+      await h.sql`update signals set publication_version = 0 where id = ${id}`;
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: refreshed.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1 });
+    });
+  });
+
+  it("rejects stale digests after body, approved-label or canonical FM changes and restores the fixture account", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    const fixtureAuthor = await register();
+    const [account] = await h.sql<{ freq_code: string }[]>`select freq_code from users where id = ${fixtureAuthor.id}`;
+    if (account === undefined) throw new Error("Synthetic FM account was unavailable.");
+    await withCleanup(async () => {
+      await withSyntheticWithdrawalRows(async (track) => {
+        const { id } = await createWithdrawalFixture(track);
+        await h.sql`update signals set author_id = ${fixtureAuthor.id}, frequency_id = ${fixtureAuthor.id} where id = ${id}`;
+        const read = async () => readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: fixtureAuthor.id }));
+        let preview = await read();
+        const rejectOld = async () => {
+          await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+            id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest,
+          }));
+          const next = await read();
+          expect(next.digest).not.toBe(preview.digest);
+          preview = next;
+        };
+        await h.sql`update signals set expanded_text = ${`${fixtureExpansion.expandedText} 合成正文修订。`} where id = ${id}`;
+        await rejectOld();
+        await h.sql`update signals set fingerprint_json = jsonb_set(fingerprint_json, '{tags}', '["新的合成标签","窗边"]'::jsonb) where id = ${id}`;
+        await rejectOld();
+        const [unused] = await h.sql<{ freq_code: string }[]>`
+          select candidate.freq_code from (
+            select 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as freq_code
+            from generate_series(0, 9999) as choices(n)
+          ) candidate where not exists (select 1 from users u where u.freq_code = candidate.freq_code)
+          order by candidate.freq_code limit 1
+        `;
+        if (unused === undefined) throw new Error("No synthetic FM candidate was available.");
+        const [mirrorBefore] = await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`;
+        await h.sql`update users set freq_code = ${unused.freq_code} where id = ${fixtureAuthor.id}`;
+        await rejectOld();
+        expect(preview.content.authorFreqCode).toBe(unused.freq_code);
+        expect((await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`)[0]).toEqual(mirrorBefore);
+        expect(await repo.confirmOwnedSignalPublication({ id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+            snapshot: { content: { authorFreqCode: unused.freq_code, tags: ["自我镜像", "新的合成标签", "窗边"] } } });
+      });
+    }, async () => { await h.sql`update users set freq_code = ${account.freq_code} where id = ${fixtureAuthor.id}`; });
+    expect((await h.sql`select freq_code from users where id = ${fixtureAuthor.id}`)[0])
+      .toEqual({ freq_code: account.freq_code });
+  });
+
+  it("invalidates pending audio on a new confirmation epoch while a current no-op preserves a working token", async () => {
+    const [repo, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      const stale = await createWithdrawalFixture(track, "PUBLISHED");
+      const control = await createWithdrawalFixture(track);
+      const stalePreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: stale.id, actorId: author.id }));
+      const controlPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: control.id, actorId: author.id }));
+      const confirmedControl = await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+        expectedVersion: 0, digest: controlPreview.digest });
+      expect(confirmedControl).toMatchObject({ outcome: "PUBLISHED", publicationVersion: 1 });
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      const oldKey = `${stale.id}-${oldToken}.mp3`;
+      const oldUrl = `/api/signals/${stale.id}/audio/main`;
+      await h.sql`
+        update signals set audio_status = 'PENDING', audio_error = 'AUDIO_UNAVAILABLE',
+          audio_attempt_id = ${oldToken}, audio_publication_version = 0,
+          audio_storage_key = ${oldKey}, audio_storage_key_left = ${oldKey}, audio_storage_key_right = ${oldKey},
+          audio_url = ${oldUrl}, audio_url_left = ${oldUrl}, audio_url_right = ${oldUrl} where id = ${stale.id}
+      `;
+      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${controlToken}, audio_publication_version = 1 where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(stale.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("Synthetic audio confirmation fixtures were unavailable.");
+        expect(await repo.confirmOwnedSignalPublication({ id: stale.id, actorId: author.id,
+          expectedVersion: stalePreview.version, digest: stalePreview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id: stale.id, publicationVersion: 1 });
+        const [reset] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_publication_version,
+            audio_storage_key, audio_storage_key_left, audio_storage_key_right,
+            audio_url, audio_url_left, audio_url_right from signals where id = ${stale.id}
+        `;
+        expect(reset).toEqual({ audio_status: "NOT_REQUESTED", audio_error: null, audio_attempt_id: null,
+          audio_publication_version: null, audio_storage_key: oldKey, audio_storage_key_left: oldKey,
+          audio_storage_key_right: oldKey, audio_url: oldUrl, audio_url_left: oldUrl, audio_url_right: oldUrl });
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const beforeNoop = await publicationRowHash(control.id);
+        expect(await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+          expectedVersion: 1, digest: controlPreview.digest })).toEqual(confirmedControl);
+        expect(await publicationRowHash(control.id)).toBe(beforeNoop);
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey,
+          `/api/signals/${control.id}/audio/main`)).toBe(true);
+        const [ready] = await h.sql`select audio_status, audio_attempt_id, audio_publication_version from signals where id = ${control.id}`;
+        expect(ready).toEqual({ audio_status: "READY", audio_attempt_id: controlToken, audio_publication_version: 1 });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  // These SQL foundations do not exercise publication/withdrawal HTTP routes
+  // or claim that legacy public filters already honor snapshots or withdrawal.
 });

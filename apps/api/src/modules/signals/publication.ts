@@ -8,6 +8,7 @@ import type {
   PublicSignalMatchSummary,
   SignalGalaxyPosition,
   SignalGenerationStatus,
+  SignalFingerprint,
   SignalPublicationPreview,
   SignalPublicationSnapshot,
   SignalPublicContent,
@@ -68,9 +69,9 @@ export const signalPublicationSnapshotSchema = z.strictObject({
 });
 
 export type PublicationPreviewInput = Pick<SignalRecord,
-  "authorId" | "authorFreqCode" | "expandedText" | "fingerprintJson" |
+  "authorId" | "authorFreqCode" | "expandedText" |
   "generationStatus" | "primaryBand"
->;
+> & { fingerprintJson: Pick<SignalFingerprint, "primaryBand" | "tags"> };
 
 /** Private candidate only. The caller must authenticate the owner and display every field. */
 export function buildPublicationPreview(

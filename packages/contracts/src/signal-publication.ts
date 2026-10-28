@@ -104,6 +104,12 @@ export type WithdrawSignalRequest = {
   expectedVersion: number;
 };
 
+/** Confirms exactly the server-issued preview the author has just reviewed. */
+export type PublishSignalRequest = {
+  expectedVersion: number;
+  digest: string;
+};
+
 export type WithdrawSignalResponse = {
   withdrawal: {
     id: string;
