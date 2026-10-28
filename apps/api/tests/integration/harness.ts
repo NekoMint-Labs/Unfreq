@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,24 @@ import { createProviderStub, type IntegrationProvider } from "./provider-stub.js
 
 type ManagedEnvironment = { databaseUrl: string; redisUrl: string; runId: string };
 type IntegrationSql = ReturnType<typeof postgres>;
+
+type CoreSetupPhase =
+  | "harness-start" | "db-identity" | "migrate-start" | "migrate-complete"
+  | "app-import-start" | "app-import-complete" | "app-build-start" | "app-build-complete"
+  | "app-ready-start" | "app-ready-complete" | "harness-ready"
+  | "author-register-start" | "author-register-complete" | "reader-register-complete"
+  | "admin-register-complete" | "admin-promoted" | "control-create-start"
+  | "control-create-complete" | "control-publish-complete";
+
+// Fixed phase names and timing only. This measures cold fixture preparation;
+// it never logs a request payload, database URL, cookie or provider output.
+export async function recordCoreSetupPhase(phase: CoreSetupPhase): Promise<void> {
+  const managed = assertManagedIntegrationEnvironment();
+  const directory = fileURLToPath(new URL("../../../../test-results/b1/", import.meta.url));
+  await mkdir(directory, { recursive: true });
+  await appendFile(join(directory, `core-setup-${managed.runId}.jsonl`),
+    `${JSON.stringify({ phase, at: Date.now(), pid: process.pid })}\n`);
+}
 
 export function assertManagedIntegrationEnvironment(): ManagedEnvironment {
   if (process.env.UNFREQ_INTEGRATION_MANAGED !== "1" || !/^[a-zA-Z0-9_-]{8,96}$/u.test(process.env.UNFREQ_INTEGRATION_RUN_ID ?? "")) {
@@ -38,13 +56,16 @@ export function assertManagedIntegrationEnvironment(): ManagedEnvironment {
   return { databaseUrl: database.toString(), redisUrl: redis.toString(), runId: process.env.UNFREQ_INTEGRATION_RUN_ID! };
 }
 
-export async function configureIsolatedEnvironment(input: ManagedEnvironment & { providerOrigin?: string }) {
+export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
+  providerOrigin?: string;
+  generationWorkerEnabled?: boolean;
+}) {
   const directory = await mkdtemp(join(tmpdir(), "unfreq-integration-"));
   const dotenvPath = join(directory, "empty.env");
   await writeFile(dotenvPath, "# Deliberately empty integration environment.\n", "utf8");
   const overrides: Record<string, string> = {};
   for (const key of Object.keys(process.env)) {
-    if (/^(AI_|EMBEDDING_|RERANKER_|TTS_|PROVIDER_)/u.test(key)) overrides[key] = "";
+    if (/^(AI_|EMBEDDING_|RERANKER_|TTS_|PROVIDER_|SIGNAL_GENERATION_)/u.test(key)) overrides[key] = "";
   }
   Object.assign(overrides, {
     NODE_ENV: "test", DATABASE_URL: input.databaseUrl, REDIS_URL: input.redisUrl,
@@ -61,6 +82,15 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     AUTH_LOGIN_CODE_RESPONSE: "disabled", AUTH_LOGIN_DELIVERY_MODE: "local-log",
     AUTH_LOGIN_CHALLENGE_TTL_SECONDS: "600", AUTH_LOGIN_MAX_VERIFY_ATTEMPTS: "5", AUTH_LOGIN_REQUEST_COOLDOWN_SECONDS: "1",
     IMAGE_MAX_BYTES: "2097152", WEB_ORIGIN: "http://127.0.0.1:3200", API_HOST: "127.0.0.1", API_PORT: "4000", LOG_LEVEL: "error",
+    // Fault-driver fixtures keep the scanner off; normal API integration opts
+    // into the same production worker with wholly synthetic timing/capacity.
+    SIGNAL_GENERATION_WORKER_ENABLED: input.generationWorkerEnabled === true ? "true" : "false",
+    SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50",
+    SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",
+    SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",
+    SIGNAL_GENERATION_RETRY_BASE_MS: "50", SIGNAL_GENERATION_RETRY_MAX_MS: "500",
+    SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
+    SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
   });
   const previous = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(overrides)) process.env[key] = value;
@@ -106,8 +136,11 @@ export type IntegrationHarness = {
 
 export async function createIntegrationHarness(): Promise<IntegrationHarness> {
   const managed = assertManagedIntegrationEnvironment();
+  await recordCoreSetupPhase("harness-start");
   const provider = await createProviderStub();
-  const restoreEnvironment = await configureIsolatedEnvironment({ ...managed, providerOrigin: provider.origin });
+  const restoreEnvironment = await configureIsolatedEnvironment({
+    ...managed, providerOrigin: provider.origin, generationWorkerEnabled: true,
+  });
   const restoreFetch = installFetchBoundary(provider);
   const sql = postgres(managed.databaseUrl, {
     max: 1, prepare: false, connect_timeout: 2,
@@ -117,16 +150,23 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
   const generationIds = new Set<string>();
   try {
     const identity = await sql<{ database: string; username: string }[]>`select current_database() as database, current_user as username`;
+    await recordCoreSetupPhase("db-identity");
     if (identity[0]?.database !== "unfreq_integration" || identity[0]?.username !== "unfreq_test") throw new Error("Managed database identity did not match the integration runner.");
     const tables = await sql`select table_name from information_schema.tables where table_schema in ('public', 'drizzle')`;
     if (tables.length !== 0) throw new Error("Integration runner must provide a new empty database; refusing to migrate existing tables.");
+    await recordCoreSetupPhase("migrate-start");
     await migrate(drizzle(sql), { migrationsFolder: fileURLToPath(new URL("../../src/db/migrations/", import.meta.url)) });
+    await recordCoreSetupPhase("migrate-complete");
     await sql`create table unfreq_integration_run (run_id text primary key)`;
     await sql`insert into unfreq_integration_run (run_id) values (${managed.runId})`;
     const configs = await sql`select id from provider_configs`;
     if (configs.length !== 0) throw new Error("Integration provider configuration must begin empty.");
+    await recordCoreSetupPhase("app-import-start");
     const { buildApp } = await import("../../src/app.js");
+    await recordCoreSetupPhase("app-import-complete");
+    await recordCoreSetupPhase("app-build-start");
     app = await buildApp({ logger: false });
+    await recordCoreSetupPhase("app-build-complete");
     app.addHook("onSend", async (request, reply, payload) => {
       if (request.method === "POST" && /^\/api\/signals\/?$/u.test(request.url) && reply.statusCode >= 200 && reply.statusCode < 300 && typeof payload === "string") {
         const body = JSON.parse(payload) as { data?: { signal?: { id?: unknown } } };
@@ -134,7 +174,9 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
       }
       return payload;
     });
+    await recordCoreSetupPhase("app-ready-start");
     await app.ready();
+    await recordCoreSetupPhase("app-ready-complete");
   } catch (error) {
     if (app !== undefined) await app.close();
     await sql.end({ timeout: 1 });
@@ -144,6 +186,7 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     throw error;
   }
   const readyApp = app;
+  await recordCoreSetupPhase("harness-ready");
   let closed = false;
   return {
     app: readyApp,

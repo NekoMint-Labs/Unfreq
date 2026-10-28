@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { generateSignalFingerprintWithFallback } from "../ai/service.js";
+import { buildMinimalSignalProgram, getFingerprintFrequencyProfile } from "./service-mappers.js";
 import { buildApp } from "../../app.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import type {
@@ -29,6 +31,17 @@ const routeExpansion = vi.hoisted(() => {
     followUpQuestion: "你最近把哪句话留在了原地？",
   };
 });
+
+const pendingNotification = vi.hoisted(() => vi.fn());
+
+// These are route/repository unit tests. A consumer is an explicit boundary
+// stub; real execution, leases, restart and completion use integration tests.
+vi.mock("./generation-worker.js", () => ({
+  createSignalGenerationWorker: () => ({
+    accepting: true, activeCount: 0,
+    start() {}, wake: pendingNotification, async stop() {},
+  }),
+}));
 
 vi.mock("../auth/service.js", () => {
   const frequency: AuthenticatedFrequency = {
@@ -756,6 +769,7 @@ vi.mock("./audio-storage.js", () => {
 let app: FastifyInstance | undefined;
 
 beforeEach(() => {
+  pendingNotification.mockClear();
   signalStores.echoes = [];
   signalStores.lastSeenAtByFrequencyId = new Map<string, Date | null>();
   signalStores.resonances = new Set<string>();
@@ -768,10 +782,26 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function waitForSignalCompleted(id: string) {
-  await vi.waitFor(() => {
-    const signal = signalStores.rows.find((row) => row.id === id);
-    expect(signal?.generationStatus).toBe("COMPLETED");
+async function completeSignalFixture(id: string) {
+  const signal = signalStores.rows.find((row) => row.id === id);
+  if (signal === undefined) throw new Error("Missing route unit fixture.");
+  const { result: fingerprint } = await generateSignalFingerprintWithFallback({ content: signal.seedText });
+  const profile = getFingerprintFrequencyProfile(fingerprint);
+  // Construct an explicit completed fixture for permission/read assertions;
+  // this is not a simulated durable worker or a claim that generation ran.
+  Object.assign(signal, {
+    expandedText: routeExpansion.expandedText,
+    followUpQuestion: routeExpansion.followUpQuestion,
+    fingerprintJson: fingerprint,
+    generationError: null,
+    generationStatus: "COMPLETED",
+    galaxyPosition: { x: 0, y: 0, z: 0 },
+    coreNeed: profile.coreNeed, emotionTone: profile.emotionTone,
+    innerConflict: profile.innerConflict, primaryBand: profile.primaryBand,
+    resonanceKeywords: profile.resonanceKeywords, subFeeling: profile.subFeeling,
+    programJson: buildMinimalSignalProgram({ expandedText: routeExpansion.expandedText, fingerprint, rawInput: signal.rawInput }),
+    qualityReason: "Synthetic route fixture", qualityScore: 4,
+    status: "DRAFT",
   });
 }
 
@@ -795,18 +825,14 @@ async function createSignal(testApp: FastifyInstance, status?: SignalStatus) {
     url: "/api/signals",
   });
 
-  if (status !== undefined) {
-    await waitForSignalCompleted(response.json().data.signal.id);
-    setSignalStatus(response.json().data.signal.id, status);
-  } else {
-    await waitForSignalCompleted(response.json().data.signal.id);
-  }
+  await completeSignalFixture(response.json().data.signal.id);
+  if (status !== undefined) setSignalStatus(response.json().data.signal.id, status);
 
   return response.json().data.signal as { id: string };
 }
 
 describe("signal routes", () => {
-  it("creates a pending signal and completes generation for the current frequency", async () => {
+  it("persists a pending signal and notifies its consumer for the current frequency", async () => {
     const testApp = await buildApp();
     app = testApp;
 
@@ -832,20 +858,33 @@ describe("signal routes", () => {
         },
       },
     });
-    await vi.waitFor(() => {
-      expect(signalStores.rows[0]).toMatchObject({
-        expandedText: routeExpansion.expandedText,
-        followUpQuestion: routeExpansion.followUpQuestion,
-        generationStatus: "COMPLETED",
-        status: "DRAFT",
-      });
-    });
+    expect(pendingNotification).toHaveBeenCalledTimes(1);
+    expect(signalStores.rows[0].generationStatus).toBe("RECEIVED");
     expect(signalStores.rows).toHaveLength(1);
     expect(signalStores.rows[0]).toMatchObject({
       rawInput: "今晚想把这段匿名信号留在这里，等一个同频的人。",
       seedText: "今晚想把这段匿名信号留在这里，等一个同频的人。",
       status: "DRAFT",
     });
+  });
+
+  it("rejects new generation while its consumer is disabled", async () => {
+    const testApp = await buildApp({
+      generationWorkerFactory: () => ({
+        accepting: false, activeCount: 0,
+        start() {}, wake: pendingNotification, async stop() {},
+      }),
+    });
+    app = testApp;
+    const response = await testApp.inject({
+      method: "POST", url: "/api/signals",
+      headers: { authorization: "Bearer active-token" },
+      payload: { seedText: "暂时无法接收时，这段输入不能成为无人处理的任务。" },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "AI_UNAVAILABLE" } });
+    expect(signalStores.rows).toHaveLength(0);
+    expect(pendingNotification).not.toHaveBeenCalled();
   });
 
   it("exposes completed draft previews only to the owner", async () => {
@@ -1085,6 +1124,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const parentId = parentResponse.json().data.signal.id as string;
+    await completeSignalFixture(parentId);
     const childResponse = await testApp.inject({
       headers: {
         authorization: "Bearer active-token",
@@ -1109,15 +1149,9 @@ describe("signal routes", () => {
         },
       },
     });
-    await vi.waitFor(() => {
-      const child = signalStores.rows.find((row) => row.id === childResponse.json().data.signal.id);
-
-      expect(child).toMatchObject({
-        generationStatus: "COMPLETED",
-        parentSignalId: parentId,
-        status: "DRAFT",
-      });
-    });
+    expect(pendingNotification).toHaveBeenCalledTimes(2);
+    expect(signalStores.rows.find((row) => row.id === childResponse.json().data.signal.id))
+      .toMatchObject({ generationStatus: "RECEIVED", parentSignalId: parentId, status: "DRAFT" });
   });
 
   it("rejects a continued signal when the parent belongs to another frequency", async () => {
@@ -1135,6 +1169,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const parentId = parentResponse.json().data.signal.id as string;
+    await completeSignalFixture(parentId);
     const childResponse = await testApp.inject({
       headers: {
         authorization: "Bearer active-token",
@@ -1860,7 +1895,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const signalId = signalResponse.json().data.signal.id as string;
-    await waitForSignalCompleted(signalId);
+    await completeSignalFixture(signalId);
     setSignalStatus(signalId, "PUBLISHED");
 
     const saveResponse = await testApp.inject({
@@ -2001,7 +2036,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const firstId = firstResponse.json().data.signal.id as string;
-    await waitForSignalCompleted(firstId);
+    await completeSignalFixture(firstId);
     const secondResponse = await testApp.inject({
       headers: {
         authorization: "Bearer active-token",
@@ -2024,8 +2059,8 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const otherId = otherSignal.json().data.signal.id;
-    await waitForSignalCompleted(secondResponse.json().data.signal.id);
-    await waitForSignalCompleted(otherId);
+    await completeSignalFixture(secondResponse.json().data.signal.id);
+    await completeSignalFixture(otherId);
 
     signalStores.rows.find((row) => row.id === firstId)!.resonanceCount = 3;
     signalStores.rows.find((row) => row.id === otherId)!.resonanceCount = 9;
@@ -2095,6 +2130,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const parentId = parentResponse.json().data.signal.id as string;
+    await completeSignalFixture(parentId);
     const childResponse = await testApp.inject({
       headers: {
         authorization: "Bearer active-token",
@@ -2107,6 +2143,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const childId = childResponse.json().data.signal.id as string;
+    await completeSignalFixture(childId);
 
     signalStores.rows.find((row) => row.id === parentId)!.status = "DELETED";
 
@@ -2157,8 +2194,8 @@ describe("signal routes", () => {
       },
       url: "/api/signals",
     });
-    await waitForSignalCompleted(ownResponse.json().data.signal.id);
-    await waitForSignalCompleted(otherResponse.json().data.signal.id);
+    await completeSignalFixture(ownResponse.json().data.signal.id);
+    await completeSignalFixture(otherResponse.json().data.signal.id);
     setSignalStatus(ownResponse.json().data.signal.id, "PUBLISHED");
     setSignalStatus(otherResponse.json().data.signal.id, "PUBLISHED");
 
@@ -2197,7 +2234,7 @@ describe("signal routes", () => {
       url: "/api/signals",
     });
     const signalId = firstResponse.json().data.signal.id as string;
-    await waitForSignalCompleted(signalId);
+    await completeSignalFixture(signalId);
     setSignalStatus(signalId, "PUBLISHED");
 
     await testApp.inject({

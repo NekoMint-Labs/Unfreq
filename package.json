@@ -23,7 +23,7 @@
     "check": "npm run contracts:typecheck && npm run api:check && npm run web:check",
     "deploy:test": "sh scripts/test-deployment-scripts.sh",
     "e2e": "npm run contracts:build && playwright test",
-    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs",
+    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/runtime-guard.test.mjs",
     "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
     "web:build": "npm run contracts:build && npm --workspace @unfreq/web run build",
     "web:check": "npm run web:lint && npm run web:typecheck && npm run web:test && npm run web:build",

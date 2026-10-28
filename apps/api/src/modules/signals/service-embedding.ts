@@ -5,6 +5,7 @@ import {
   isEmbeddingProviderConfigured,
 } from "../ai/embedding.js";
 import type { AiSignalSeedClassification } from "../ai/signal-types.js";
+import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   writeSignalEmbeddingIfMissing,
   writeSignalGalaxyPositionIfMissing,
@@ -71,6 +72,37 @@ export function buildSignalEmbeddingText(input: {
   ]
     .filter((item) => item.trim().length > 0)
     .join("\n");
+}
+
+// The durable pending path awaits this optional tail before its completion
+// CAS. It never starts an untracked write after COMPLETED. Other existing
+// callers retain their independent embedding behavior below.
+export async function resolveGenerationEmbedding(params: {
+  embedding?: EmbeddingResult;
+  expandedText: string;
+  fingerprint: SignalFingerprint;
+  logger?: EmbeddingLogger;
+  seedText: string;
+  signalId: string;
+}): Promise<EmbeddingResult | undefined> {
+  await assertGenerationActive();
+  try {
+    if (params.embedding !== undefined) return params.embedding;
+    if (!(await isEmbeddingProviderConfigured())) return undefined;
+    await assertGenerationActive();
+    const embedding = await generateEmbedding(buildSignalEmbeddingText(params), { logger: params.logger });
+    await assertGenerationActive();
+    return embedding;
+  } catch (error) {
+    throwIfGenerationStopped(error);
+    params.logger?.warn({
+      action: "signal.embedding.generation_failed",
+      reason: toSafeErrorReason(error),
+      targetId: params.signalId,
+      targetType: "SIGNAL",
+    }, "optional signal embedding failed");
+    return undefined;
+  }
 }
 
 export function queueSignalEmbeddingWrite(params: {

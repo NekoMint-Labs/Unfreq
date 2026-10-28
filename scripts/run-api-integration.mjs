@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareIntegrationRuntime } from "./integration-runtime.mjs";
 
 // Own every test service from creation to cleanup. Never accept an existing URL,
 // caller-selected Compose project, production .env, or production Compose file.
@@ -108,6 +109,18 @@ try {
   await writeFile(envFile, "# Deliberately empty; do not load the project .env.\n");
   await writeFile(path.join(runDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`Managed integration project: ${project}\nEvidence: ${runDir}`);
+  const compilationStarted = Date.now();
+  const runtime = await prepareIntegrationRuntime({
+    repositoryRoot: root, runDirectory: runDir, runId,
+    compile: (outputDirectory) => run(process.execPath, [
+      path.join(root, "node_modules", "typescript", "bin", "tsc"),
+      "--project", path.join(root, "apps", "api", "tsconfig.integration-runtime.json"),
+      "--outDir", outputDirectory,
+    ]),
+  });
+  manifest.runtime = { directory: runtime.runtimeDirectory, entrySha256: runtime.entrySha256,
+    compilationMs: Date.now() - compilationStarted };
+  if (interrupted) throw new Error("Integration run interrupted.");
   await compose(["version", "--short"]);
   started = true;
   await compose(["up", "--detach", "--wait", "--wait-timeout", "90"]);
@@ -127,6 +140,8 @@ try {
     DOTENV_CONFIG_PATH: envFile,
     UNFREQ_INTEGRATION_MANAGED: "1",
     UNFREQ_INTEGRATION_RUN_ID: runId,
+    UNFREQ_INTEGRATION_RUNTIME_DIR: runtime.runtimeDirectory,
+    UNFREQ_INTEGRATION_RUNTIME_TOKEN: runtime.ownershipToken,
     UNFREQ_INTEGRATION_REPORT: path.join(runDir, "vitest.json"),
     DATABASE_URL: `postgres://unfreq_test:unfreq_integration_only@127.0.0.1:${databasePort}/unfreq_integration`,
     REDIS_URL: `redis://127.0.0.1:${redisPort}`,

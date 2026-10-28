@@ -38,7 +38,8 @@ export async function publishSignalForOwner(
   const activeFrequency = requireActiveSignalFrequency(frequency);
   const signal = await findSignalResultById(id);
 
-  if (signal === undefined || !isOwnedByFrequency({ frequencyId: activeFrequency.id, signal })) {
+  if (signal === undefined || !isOwnedByFrequency({ frequencyId: activeFrequency.id, signal }) ||
+      signal.status === "HIDDEN" || signal.status === "DELETED") {
     throw new AppError("NOT_FOUND", "Signal not found.");
   }
 
