@@ -169,6 +169,13 @@
       "when": 1793216163538,
       "tag": "0023_b3_audio_attempt",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793221491240,
+      "tag": "0024_c1_publication_foundation",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,18 @@
+export { maxSignalPublicationVersion } from "./signal-publication.js";
+export type {
+  WithdrawSignalRequest,
+  WithdrawSignalResponse,
+  OwnerSignalDetail,
+  PublicGalaxySignalPoint,
+  PublicSavedSignalSummary,
+  PublicSignalDetail,
+  PublicSignalMatchSummary,
+  SignalPublicationActions,
+  SignalPublicationPreview,
+  SignalPublicationSnapshot,
+  SignalPublicContent,
+} from "./signal-publication.js";
+
 export const signalPrimaryBands = [
   "self_mirror",
   "emotional_undercurrent",

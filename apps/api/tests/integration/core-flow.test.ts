@@ -129,6 +129,54 @@ async function createDraft(): Promise<string> {
   return id;
 }
 
+async function withCleanup(work: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
+  const errors: unknown[] = [];
+  try { await work(); } catch (error) { errors.push(error); }
+  try { await cleanup(); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "C1 fixture assertion and cleanup both failed.");
+}
+
+async function withSyntheticWithdrawalRows(
+  work: (track: (id: string) => void) => Promise<void>,
+): Promise<void> {
+  const ids = new Set<string>();
+  await withCleanup(() => work((id) => { ids.add(id); }), async () => {
+    // These are only this case's synthetic rows. Retain their content and
+    // withdrawal markers, but keep the existing random-public control isolated.
+    if (ids.size !== 0) await h.sql`update signals set status = 'DRAFT' where id in ${h.sql([...ids])}`;
+  });
+}
+
+async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT") {
+  const [{ createSignalDraft }, { buildMinimalSignalProgram }] = await Promise.all([
+    h.loadModule("repository"), h.loadModule("mappers"),
+  ]);
+  // Explicit synthetic unmanaged shape: no authorship confirmation is created
+  // or inferred, and no public-read policy is exercised by these SQL cases.
+  const signal = await createSignalDraft({
+    authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+    expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
+    galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "COMPLETED", status,
+    program: buildMinimalSignalProgram({
+      expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed,
+    }),
+  });
+  track(signal.id);
+  return signal;
+}
+
+async function waitForActualGenerationIdle(): Promise<void> {
+  // Observation only: a failed budget does not cancel work or free any slot.
+  // The enclosing finally releases the provider first; h.close still stops and
+  // joins the actual worker if this bounded fixture observation fails.
+  const deadline = Date.now() + 5_000;
+  while (h.generationActiveCount !== 0 || h.provider.inFlight !== 0) {
+    if (Date.now() >= deadline) throw new Error("C1 fixture generation did not actually settle within 5s after release.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 async function publish(id: string) {
   const response = await request("POST", `/api/signals/${id}/publish`, author.cookie);
   expect(response.statusCode).toBe(200);
@@ -530,6 +578,203 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(retainedSave.count).toBe(1);
   });
 
-  // C1 will add a real author-withdrawal endpoint. Administrative hiding above
-  // verifies today's visibility contract and is not reported as author withdrawal.
+  it("serializes ten same-author withdrawals into one epoch and enforces nonnegative publication versions", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const attempts = await Promise.allSettled(Array.from({ length: 10 }, () =>
+        withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 })));
+      for (const result of attempts) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status === "fulfilled") {
+          expect(result.value).toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        }
+      }
+      const [once] = await h.sql`
+        select withdrawn_at, publication_version, publication_snapshot,
+          withdrawn_at <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(once).toMatchObject({ publication_version: 1, publication_snapshot: null, database_clock_bounded: true });
+      expect(once.withdrawn_at).not.toBeNull();
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      const [repeated] = await h.sql`select withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(repeated).toEqual({ withdrawn_at: once.withdrawn_at, publication_version: 1 });
+      await expect(h.sql`update signals set publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_publication_version_check" });
+      await expect(h.sql`update signals set audio_publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_audio_publication_version_check" });
+      const [retained] = await h.sql`select publication_version, audio_publication_version from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_version: 1, audio_publication_version: null });
+    });
+  });
+
+  it("uses authoritative author ownership, uniform not-found results, and a stale-epoch fence", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const wrongOwner = await createWithdrawalFixture(track);
+      const conflictingIds = await createWithdrawalFixture(track);
+      const fallbackOwner = await createWithdrawalFixture(track);
+      const deleted = await createWithdrawalFixture(track, "DELETED");
+      const epoch = await createWithdrawalFixture(track);
+      await h.sql`update signals set frequency_id = ${reader.id} where id = ${conflictingIds.id}`;
+      await h.sql`update signals set author_id = null where id = ${fallbackOwner.id}`;
+      for (const input of [
+        { id: wrongOwner.id, actorId: reader.id, expectedVersion: 0 },
+        { id: conflictingIds.id, actorId: reader.id, expectedVersion: 0 },
+        { id: deleted.id, actorId: author.id, expectedVersion: 0 },
+        { id: randomUUID(), actorId: author.id, expectedVersion: 0 },
+      ]) expect(await withdrawOwnedSignal(input)).toEqual({ outcome: "NOT_FOUND" });
+      const unchanged = await h.sql`
+        select withdrawn_at, publication_version from signals
+        where id in ${h.sql([wrongOwner.id, conflictingIds.id, deleted.id])}
+      `;
+      expect(unchanged).toHaveLength(3);
+      for (const row of unchanged) expect(row).toEqual({ withdrawn_at: null, publication_version: 0 });
+      for (const id of [conflictingIds.id, fallbackOwner.id]) {
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      }
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 1 });
+      // Model only a higher epoch as an explicit fixture mutation. This does
+      // not execute or claim verification of any future re-publication flow.
+      await h.sql`update signals set publication_version = 2, withdrawn_at = null where id = ${epoch.id}`;
+      for (const expectedVersion of [0, 1]) {
+        expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion }))
+          .toEqual({ outcome: "CONFLICT" });
+      }
+      const [newEpoch] = await h.sql`select publication_version, withdrawn_at, publication_snapshot from signals where id = ${epoch.id}`;
+      expect(newEpoch).toEqual({ publication_version: 2, withdrawn_at: null, publication_snapshot: null });
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 2 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 3 });
+
+      // Exercise the real PostgreSQL integer boundary without overflow/wrap.
+      const exhausted = await createWithdrawalFixture(track);
+      await h.sql`update signals set publication_version = 2147483647 where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "CONFLICT" });
+      const [unchangedMax] = await h.sql`
+        select publication_version, withdrawn_at from signals where id = ${exhausted.id}
+      `;
+      expect(unchangedMax).toEqual({ publication_version: 2147483647, withdrawn_at: null });
+      await h.sql`update signals set withdrawn_at = clock_timestamp() where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "WITHDRAWN", id: exhausted.id, publicationVersion: 2147483647 });
+    });
+  });
+
+  it("records withdrawal on hidden and reviewing rows without changing moderation, content, counts or consent", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["HIDDEN", "REVIEWING"] as const) {
+        const { id } = await createWithdrawalFixture(track, status);
+        await h.sql`update signals set echo_count = 7, resonance_count = 11, is_kept = true where id = ${id}`;
+        const readRetained = async () => (await h.sql`
+          select status, raw_input, seed_text, expanded_text, fingerprint_json, program_json,
+            echo_count, resonance_count, is_kept, publication_snapshot, generation_status,
+            generation_attempt_count, audio_status, updated_at from signals where id = ${id}
+        `)[0];
+        const before = await readRetained();
+        expect(before).toMatchObject({ status, publication_snapshot: null, echo_count: 7, resonance_count: 11 });
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        expect(await readRetained()).toEqual(before);
+        const [withdrawal] = await h.sql`select withdrawn_at is not null as withdrawn, publication_version from signals where id = ${id}`;
+        expect(withdrawal).toEqual({ withdrawn: true, publication_version: 1 });
+      }
+    });
+  });
+
+  it("supersedes a real held managed generation and waits for its obsolete work to exit", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const hold = h.provider.holdNextRequest();
+      let id: string | undefined;
+      let withdrawnRow: Record<string, unknown> | undefined;
+      const readAttempt = async (signalId: string) => (await h.sql`
+        select status, generation_status, generation_error, generation_attempt_id,
+          generation_attempt_count, generation_lease_owner, generation_lease_until,
+          generation_next_attempt_at, expanded_text, raw_input, seed_text, program_json,
+          fingerprint_json, publication_snapshot, publication_version, withdrawn_at
+        from signals where id = ${signalId}
+      `)[0];
+      await withCleanup(async () => {
+        id = await createPending();
+        track(id);
+        await hold.received;
+        expect(h.generationActiveCount).toBeGreaterThan(0);
+        const running = await readAttempt(id);
+        expect(running).toMatchObject({ status: "DRAFT", generation_status: "EXPANDING", publication_version: 0,
+          generation_attempt_count: 1, publication_snapshot: null, withdrawn_at: null });
+        expect(running.generation_attempt_id).not.toBeNull();
+        expect(running.generation_lease_owner).not.toBeNull();
+        expect(running.generation_lease_until).not.toBeNull();
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        withdrawnRow = await readAttempt(id);
+        expect(withdrawnRow).toMatchObject({ status: "DRAFT", generation_status: "FAILED",
+          generation_error: "GENERATION_SUPERSEDED", generation_lease_owner: null,
+          generation_lease_until: null, generation_next_attempt_at: null,
+          generation_attempt_id: running.generation_attempt_id, generation_attempt_count: 1,
+          expanded_text: running.expanded_text, raw_input: running.raw_input, seed_text: running.seed_text,
+          program_json: running.program_json, fingerprint_json: running.fingerprint_json,
+          publication_snapshot: null, publication_version: 1 });
+        expect(withdrawnRow.withdrawn_at).not.toBeNull();
+      }, async () => { hold.release(); await waitForActualGenerationIdle(); });
+      if (id === undefined || withdrawnRow === undefined) throw new Error("C1 managed generation fixture was not initialized.");
+      expect(await readAttempt(id)).toEqual(withdrawnRow);
+      expect(h.generationActiveCount).toBe(0);
+      expect(h.provider.inFlight).toBe(0);
+    });
+  });
+
+  it("invalidates only the withdrawn pending audio token and retains a real normal ready control", async () => {
+    const [{ withdrawOwnedSignal }, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      // PUBLISHED is only the existing audio CAS precondition in these synthetic
+      // fixtures. No confirmation snapshot, media file or Provider is created.
+      const withdrawn = await createWithdrawalFixture(track, "PUBLISHED");
+      const control = await createWithdrawalFixture(track, "PUBLISHED");
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${oldToken} where id = ${withdrawn.id}`;
+      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${controlToken} where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(withdrawn.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("C1 audio fixtures were not readable by their existing CAS precondition.");
+        expect(await withdrawOwnedSignal({ id: withdrawn.id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id: withdrawn.id, publicationVersion: 1 });
+        const oldKey = `${withdrawn.id}-${oldToken}.mp3`;
+        const oldUrl = `/api/signals/${withdrawn.id}/audio/main`;
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const [obsolete] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, publication_snapshot from signals where id = ${withdrawn.id}
+        `;
+        expect(obsolete).toEqual({ audio_status: "FAILED", audio_error: "AUDIO_SUPERSEDED", audio_attempt_id: null,
+          audio_storage_key: null, audio_url: null, publication_version: 1, publication_snapshot: null });
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        const controlUrl = `/api/signals/${control.id}/audio/main`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey, controlUrl)).toBe(true);
+        const [ready] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, withdrawn_at, publication_snapshot from signals where id = ${control.id}
+        `;
+        expect(ready).toEqual({ audio_status: "READY", audio_error: null, audio_attempt_id: controlToken,
+          audio_storage_key: controlKey, audio_url: controlUrl, publication_version: 0,
+          withdrawn_at: null, publication_snapshot: null });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  // These SQL foundations do not exercise an author-withdrawal route or claim
+  // that today's legacy public filters already honor withdrawal markers.
 });
