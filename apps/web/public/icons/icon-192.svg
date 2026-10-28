@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="星河电台">
+  <rect width="192" height="192" rx="24" fill="#050505"/>
+  <rect x="24" y="24" width="144" height="144" rx="16" fill="#0d0d0d" stroke="#f5f5f5" stroke-width="4"/>
+  <path d="M48 104h24l12-24 24 48 12-24h24" fill="none" stroke="#f5f5f5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="96" y="64" fill="#f5f5f5" font-family="monospace" font-size="24" text-anchor="middle">FM</text>
+  <text x="96" y="144" fill="#b6b6b6" font-family="monospace" font-size="14" text-anchor="middle">27.51</text>
+</svg>

@@ -1,0 +1,116 @@
+---
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 10s
+  timeout: 3s
+  retries: 10
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    expose:
+      - "80"
+    networks:
+      app:
+        aliases:
+          - unfreq-proxy
+      npm_default:
+        aliases:
+          - unfreq-proxy
+    restart: unless-stopped
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/web-health >/dev/null 2>&1"]
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: /api
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org/}
+    environment:
+      API_INTERNAL_BASE_URL: http://api:4000
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: /api
+    expose:
+      - "3000"
+    networks:
+      - app
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/web-health >/dev/null 2>&1"]
+      start_period: 20s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org/}
+    env_file:
+      - ${UNFREQ_API_ENV_FILE:-.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "4000"
+    networks:
+      - app
+    volumes:
+      - api-image-storage:/app/storage/images
+      - api-audio-storage:/app/storage/audio/programs
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1"]
+      start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: unfreq
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    networks:
+      - app
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U postgres -d unfreq"]
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - app
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "redis-cli", "ping"]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+networks:
+  app:
+  npm_default:
+    external: true
+    name: ${UNFREQ_PROXY_NETWORK:-npm_default}
+
+volumes:
+  api-audio-storage:
+  api-image-storage:
+  postgres-data:
+  redis-data:

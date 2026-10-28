@@ -1,0 +1,217 @@
+{
+  "id": "128fb0f8-6857-4c65-9750-39707e22908c",
+  "prevId": "6c6c8076-7670-4a26-b302-4a6b340e57ff",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "freq_code": {
+          "name": "freq_code",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "role": {
+          "name": "role",
+          "type": "role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'USER'"
+        },
+        "status": {
+          "name": "status",
+          "type": "user_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ACTIVE'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "users_freq_code_unique": {
+          "name": "users_freq_code_unique",
+          "columns": [
+            {
+              "expression": "freq_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "users_status_idx": {
+          "name": "users_status_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.bottle_status": {
+      "name": "bottle_status",
+      "schema": "public",
+      "values": [
+        "DRIFTING",
+        "RECEIVED",
+        "REPLIED",
+        "KEPT",
+        "REVIEWING",
+        "HIDDEN",
+        "DELETED"
+      ]
+    },
+    "public.channel": {
+      "name": "channel",
+      "schema": "public",
+      "values": [
+        "MIDNIGHT",
+        "UNSENT",
+        "STARMAP"
+      ]
+    },
+    "public.echo_status": {
+      "name": "echo_status",
+      "schema": "public",
+      "values": [
+        "PUBLISHED",
+        "REVIEWING",
+        "HIDDEN",
+        "DELETED"
+      ]
+    },
+    "public.limit_type": {
+      "name": "limit_type",
+      "schema": "public",
+      "values": [
+        "VOICE_CREATE",
+        "BOTTLE_CREATE",
+        "BOTTLE_OPEN",
+        "SHORTWAVE_CREATE"
+      ]
+    },
+    "public.report_status": {
+      "name": "report_status",
+      "schema": "public",
+      "values": [
+        "PENDING",
+        "RESOLVED",
+        "REJECTED"
+      ]
+    },
+    "public.role": {
+      "name": "role",
+      "schema": "public",
+      "values": [
+        "USER",
+        "ADMIN"
+      ]
+    },
+    "public.target_type": {
+      "name": "target_type",
+      "schema": "public",
+      "values": [
+        "VOICE",
+        "ECHO",
+        "BOTTLE",
+        "BOTTLE_ECHO",
+        "USER"
+      ]
+    },
+    "public.user_status": {
+      "name": "user_status",
+      "schema": "public",
+      "values": [
+        "ACTIVE",
+        "MUTED",
+        "BANNED"
+      ]
+    },
+    "public.voice_status": {
+      "name": "voice_status",
+      "schema": "public",
+      "values": [
+        "PUBLISHED",
+        "REVIEWING",
+        "HIDDEN",
+        "DELETED"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

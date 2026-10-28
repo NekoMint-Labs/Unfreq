@@ -1,0 +1,36 @@
+{
+  "name": "unfreq",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "contracts:build": "npm --workspace @unfreq/contracts run build",
+    "contracts:typecheck": "npm --workspace @unfreq/contracts run typecheck",
+    "api:build": "npm run contracts:build && npm --workspace @unfreq/api run build",
+    "api:dev": "npm run contracts:build && npm --workspace @unfreq/api run dev",
+    "api:lint": "npm --workspace @unfreq/api run lint",
+    "api:check": "npm run api:lint && npm run api:typecheck && npm run api:test && npm run api:build",
+    "api:migrate": "npm --workspace @unfreq/api run migrate",
+    "api:migrate:generate": "npm --workspace @unfreq/api run migrate:generate",
+    "api:start": "npm run contracts:build && npm --workspace @unfreq/api run start",
+    "api:test": "npm run contracts:build && npm --workspace @unfreq/api run test",
+    "api:typecheck": "npm run contracts:typecheck && npm --workspace @unfreq/api run typecheck",
+    "check": "npm run contracts:typecheck && npm run api:check && npm run web:check",
+    "deploy:test": "sh scripts/test-deployment-scripts.sh",
+    "e2e": "npm run contracts:build && playwright test",
+    "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
+    "web:build": "npm run contracts:build && npm --workspace @unfreq/web run build",
+    "web:check": "npm run web:lint && npm run web:typecheck && npm run web:build",
+    "web:lint": "npm --workspace @unfreq/web run lint",
+    "web:typecheck": "npm run contracts:typecheck && npm --workspace @unfreq/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

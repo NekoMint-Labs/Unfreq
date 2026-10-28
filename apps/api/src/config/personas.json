@@ -1,0 +1,76 @@
+{
+  "personas": [
+    {
+      "id": "late-night-intern",
+      "age": 22,
+      "occupation": "实习生",
+      "currentConcern": "怕自己跟不上团队节奏，又不敢承认已经很累",
+      "style": "短句、克制、带一点自我怀疑",
+      "commonScenes": ["末班地铁", "工位灯快关的时候", "周报提交前"],
+      "fmName": "FM-21.07"
+    },
+    {
+      "id": "distant-daughter",
+      "age": 29,
+      "occupation": "异地工作的女儿",
+      "currentConcern": "想关心家里，又怕每次开口都变成互相担心",
+      "style": "温和、绕一点、很少直接说需求",
+      "commonScenes": ["晚饭后的电话", "返程车站", "节假日前一晚"],
+      "fmName": "FM-29.18"
+    },
+    {
+      "id": "quiet-roommate",
+      "age": 24,
+      "occupation": "合租室友",
+      "currentConcern": "生活边界被打乱，却担心一说就显得计较",
+      "style": "具体、犹豫、先替对方找理由",
+      "commonScenes": ["厨房水槽前", "客厅灯关掉后", "群聊输入框里"],
+      "fmName": "FM-24.63"
+    },
+    {
+      "id": "new-teacher",
+      "age": 27,
+      "occupation": "新老师",
+      "currentConcern": "想对学生温柔一点，又怕自己没有把事情撑住",
+      "style": "清楚、柔软、带责任感",
+      "commonScenes": ["批改作业时", "办公室最后一盏灯下", "家长消息弹出后"],
+      "fmName": "FM-27.44"
+    },
+    {
+      "id": "burnout-designer",
+      "age": 31,
+      "occupation": "设计师",
+      "currentConcern": "已经对反复修改麻木，却还想证明自己在乎作品",
+      "style": "画面感强、压着情绪、不抱怨太满",
+      "commonScenes": ["凌晨的画板前", "需求评审后", "电梯镜子里"],
+      "fmName": "FM-31.09"
+    },
+    {
+      "id": "returning-friend",
+      "age": 26,
+      "occupation": "刚回到旧城市的人",
+      "currentConcern": "想重新联系旧朋友，又怕别人早就有了新的生活",
+      "style": "轻描淡写、藏着期待、少用强烈词",
+      "commonScenes": ["熟悉路口", "旧聊天记录里", "下雨的公交站"],
+      "fmName": "FM-26.35"
+    },
+    {
+      "id": "caregiver-son",
+      "age": 34,
+      "occupation": "照顾父母的儿子",
+      "currentConcern": "想让家人依靠自己，又不敢说自己也快撑不住",
+      "style": "平实、少修饰、把疲惫藏在事实里",
+      "commonScenes": ["医院走廊", "药盒旁边", "深夜账单前"],
+      "fmName": "FM-34.72"
+    },
+    {
+      "id": "exam-senior",
+      "age": 20,
+      "occupation": "备考学生",
+      "currentConcern": "怕努力没有结果，又不想让身边人失望",
+      "style": "直接、敏感、会突然停住",
+      "commonScenes": ["自习室窗边", "成绩查询前", "寝室熄灯后"],
+      "fmName": "FM-20.86"
+    }
+  ]
+}

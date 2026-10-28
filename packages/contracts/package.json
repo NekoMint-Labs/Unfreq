@@ -1,0 +1,49 @@
+{
+  "name": "@unfreq/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./admin": {
+      "types": "./src/admin.ts",
+      "import": "./dist/admin.js",
+      "default": "./dist/admin.js"
+    },
+    "./api": {
+      "types": "./src/api.ts",
+      "import": "./dist/api.js",
+      "default": "./dist/api.js"
+    },
+    "./auth": {
+      "types": "./src/auth.ts",
+      "import": "./dist/auth.js",
+      "default": "./dist/auth.js"
+    },
+    "./signals": {
+      "types": "./src/signals.ts",
+      "import": "./dist/signals.js",
+      "default": "./dist/signals.js"
+    },
+    "./theme-radio": {
+      "types": "./src/theme-radio.ts",
+      "import": "./dist/theme-radio.js",
+      "default": "./dist/theme-radio.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "devDependencies": {
+    "typescript": "^5.1.0"
+  }
+}
