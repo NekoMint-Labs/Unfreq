@@ -36,7 +36,7 @@ export class SignalNotFoundForInteraction extends Error {
   }
 }
 
-const signalSelection = {
+export const signalSelection = {
   authorFreqCode: users.freqCode,
   authorId: signals.authorId,
   audioError: signals.audioError,
@@ -130,7 +130,7 @@ type SignalSelectionRow = {
   updatedAt: Date;
 };
 
-function toSignalRecord(row: SignalSelectionRow): SignalRecord {
+export function toSignalRecord(row: SignalSelectionRow): SignalRecord {
   return {
     ...row,
     fingerprintJson: row.fingerprintJson as SignalFingerprint,
@@ -172,6 +172,9 @@ export async function findSignalResultById(id: string): Promise<SignalRecord | u
 }
 
 export async function createSignalDraft(input: CreateSignalInput): Promise<SignalRecord> {
+  if (input.managedGeneration && (input.generationStatus !== "RECEIVED" || (input.status ?? "DRAFT") !== "DRAFT")) {
+    throw new Error("Managed generation must start as a private received signal.");
+  }
   const [signal] = await db
     .insert(signals)
     .values({
@@ -182,6 +185,8 @@ export async function createSignalDraft(input: CreateSignalInput): Promise<Signa
       frequencyId: input.frequencyId,
       galaxyPosition: input.galaxyPosition,
       generationError: input.generationError ?? null,
+      generationAttemptCount: input.managedGeneration ? 0 : undefined,
+      generationNextAttemptAt: input.managedGeneration ? sql`clock_timestamp()` : undefined,
       generationStatus: input.generationStatus ?? "COMPLETED",
       guestKey: input.guestKey,
       coreNeed: input.frequencyProfile?.coreNeed,
@@ -229,7 +234,7 @@ export async function updateSignalGenerationStatus(params: {
       generationStatus: params.status,
       updatedAt: new Date(),
     })
-    .where(eq(signals.id, params.id))
+    .where(and(eq(signals.id, params.id), isNull(signals.generationAttemptCount)))
     .returning({
       id: signals.id,
     });
@@ -270,7 +275,7 @@ export async function completeSignalGeneration(params: {
       subFeeling: params.input.frequencyProfile?.subFeeling ?? null,
       updatedAt: new Date(),
     })
-    .where(eq(signals.id, params.id))
+    .where(and(eq(signals.id, params.id), isNull(signals.generationAttemptCount)))
     .returning({
       id: signals.id,
     });
@@ -755,10 +760,29 @@ export async function createSignalResonanceForPersona(params: {
   });
 }
 
+function invalidateManagedGenerationForAdmin(status: SignalStatus) {
+  const stop = and(
+    isNotNull(signals.generationAttemptCount),
+    inArray(signals.generationStatus, ["RECEIVED", "EXPANDING", "MATCHING", "WRITING"]),
+    ne(signals.status, status),
+  );
+
+  // Same-row invalidation prevents HIDDEN -> DRAFT from reviving an old token.
+  // Queued retries may have count > 0 and an intentionally empty attempt tuple.
+  return {
+    generationStatus: sql`case when ${stop} then 'FAILED'::signal_generation_status else ${signals.generationStatus} end`,
+    generationError: sql`case when ${stop} then 'GENERATION_SUPERSEDED' else ${signals.generationError} end`,
+    generationLeaseOwner: sql`case when ${stop} then null else ${signals.generationLeaseOwner} end`,
+    generationLeaseUntil: sql`case when ${stop} then null else ${signals.generationLeaseUntil} end`,
+    generationNextAttemptAt: sql`case when ${stop} then null else ${signals.generationNextAttemptAt} end`,
+  };
+}
+
 export async function deleteSignalByAdmin(id: string): Promise<SignalRecord | undefined> {
   const [updated] = await db
     .update(signals)
     .set({
+      ...invalidateManagedGenerationForAdmin("DELETED"),
       status: "DELETED",
       updatedAt: new Date(),
     })
@@ -777,6 +801,7 @@ export async function updateSignalStatusByAdmin(params: {
   const [updated] = await db
     .update(signals)
     .set({
+      ...invalidateManagedGenerationForAdmin(params.status),
       status: params.status,
       updatedAt: new Date(),
     })

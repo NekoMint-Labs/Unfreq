@@ -15,6 +15,6 @@ export async function checkDatabaseConnection() {
   await queryClient`select 1`;
 }
 
-export async function closeDatabaseConnection() {
-  await queryClient.end({ timeout: 5 });
+export async function closeDatabaseConnection(options: { timeoutSeconds?: number } = {}) {
+  await queryClient.end({ timeout: options.timeoutSeconds ?? 5 });
 }

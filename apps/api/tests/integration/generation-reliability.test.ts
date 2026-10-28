@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixtureExpansion } from "./fixtures.js";
 import { withGenerationHarness, type GenerationHarness, type GenerationProcess } from "./generation-harness.js";
+import type { GenerationStageResult, GenerationWorkerState, GenerationWriteResult } from "./generation-process-fixture.js";
 
 const terminal = (status: string) => status === "COMPLETED" || status === "FAILED";
 const completed = (row: { generation_status: string; positioned: boolean }) => row.generation_status === "COMPLETED" && row.positioned;
@@ -15,8 +16,44 @@ async function healthyControl(h: GenerationHarness, child: GenerationProcess) {
   expect(health.statusCode).toBe(200);
 }
 
-// These are ordinary target assertions, deliberately red on the pre-B1/B2
-// implementation. A fixture/bootstrap/cleanup error is not a reproduction.
+async function prepareFencedWriters(h: GenerationHarness) {
+  const older = await h.start("older-real-lease-writer");
+  const author = await h.register(older);
+  expect(await older.request<GenerationWorkerState>({ kind: "worker-state" }))
+    .toEqual({ mode: "repository", accepting: false, activeCount: 0 });
+  // This is an explicit repository fixture, not an accepted HTTP generation.
+  const id = await h.createManaged(older, author);
+  const first = await older.request<GenerationStageResult>({ kind: "stage", id, marker: "older" });
+  expect(first).toMatchObject({ id, staged: "older", phase: "WRITING", attemptCount: 1 });
+  await h.waitRow(id, (row) => row.generation_status === "WRITING" &&
+    row.generation_attempt_id === first.attemptId && row.generation_lease_owner === first.ownerId &&
+    row.generation_attempt_count === 1 && row.generation_dispatch_started_at === null,
+  "older-real-claim-staged");
+  // The observer evaluates expiry with PostgreSQL clock_timestamp(). No SQL
+  // changes a lease or phase and no fixed sleep stands in for expiry.
+  await h.waitRow(id, (row) => row.lease_expired && row.generation_attempt_id === first.attemptId,
+    "older-lease-really-expired", 3_000);
+  const newer = await h.start("newer-real-lease-writer");
+  expect(newer.pid).not.toBe(older.pid);
+  await healthyControl(h, newer);
+  expect(await newer.request<GenerationWorkerState>({ kind: "worker-state" }))
+    .toEqual({ mode: "repository", accepting: false, activeCount: 0 });
+  const second = await newer.request<GenerationStageResult>({ kind: "stage", id, marker: "newer" });
+  expect(second).toMatchObject({ id, staged: "newer", phase: "WRITING", attemptCount: 2 });
+  expect(second.attemptId).not.toBe(first.attemptId);
+  expect(second.ownerId).not.toBe(first.ownerId);
+  const current = await h.row(id);
+  expect(current).toMatchObject({ generation_status: "WRITING", generation_attempt_count: 2,
+    generation_attempt_id: second.attemptId, generation_lease_owner: second.ownerId,
+    generation_dispatch_started_at: null, lease_expired: false });
+  expect(h.provider.tasks).toEqual([]);
+  h.record("distinct-real-lease-writers", { id, olderAttemptId: first.attemptId, newerAttemptId: second.attemptId,
+    olderCount: first.attemptCount, newerCount: second.attemptCount });
+  return { id, older, newer, second };
+}
+
+// These are ordinary target assertions. A fixture/bootstrap/cleanup error is
+// not a business reproduction; pre-fix evidence stays frozen separately.
 // Each case owns a separate database and real Node process; no existing A2
 // application's drain/rebuild is used as a substitute for a process restart.
 describe("durable pending generation and late-write invariants", () => {
@@ -27,7 +64,9 @@ describe("durable pending generation and late-write invariants", () => {
       const hold = h.provider.holdNextRequest();
       const originalId = await h.createPending(first, author);
       await h.waitHold(hold, first);
-      await h.waitRow(originalId, (row) => row.generation_status === "EXPANDING", "accepted-before-crash");
+      const before = await h.waitRow(originalId, (row) => row.generation_status === "EXPANDING" &&
+        row.generation_dispatch_started_at !== null, "accepted-before-crash");
+      expect(before.generation_attempt_count).toBe(1);
       expect(h.provider.tasks).toEqual(["signal-material"]);
       expect(await first.request({ kind: "diagnostics" })).toEqual({ blockedHttp: 0, unhandled: 0 });
       await first.hardStop("fault-injection-after-provider-received");
@@ -41,13 +80,23 @@ describe("durable pending generation and late-write invariants", () => {
       // secret are retained; a new login cannot hide an invalid restart setup.
       const original = await h.inject(restarted, { method: "GET", url: `/api/signals/${originalId}`, cookie: author.cookie });
       expect(original.statusCode).toBe(200);
+      // The first request really reached the Provider. An unknown paid result
+      // must converge safely, without automatically running the whole job again.
+      const recovered = await h.waitRow(originalId, (row) => row.generation_status === "FAILED",
+        "original-pending-recovered-after-restart", 3_000);
+      expect(recovered).toMatchObject({ generation_error: "GENERATION_OUTCOME_UNKNOWN", generation_attempt_count: 1,
+        generation_attempt_id: before.generation_attempt_id, generation_lease_owner: null, generation_lease_until: null });
+      await h.waitIdle();
+      expect(h.provider.tasks).toEqual(["signal-material"]);
+      h.record("unknown-dispatch-settled-without-replay", { id: originalId, requests: h.provider.tasks.length });
+      const controlStart = h.provider.tasks.length;
       const controlId = await h.createPending(restarted, author);
       await h.waitRow(controlId, completed, "new-work-after-restart-completed", 5_000);
       await h.waitIdle();
 
-      // A finite window is evidence of no recovery within this test budget,
-      // not a measurement of an infinite wait or of a production recovery SLA.
-      await h.waitRow(originalId, (row) => terminal(row.generation_status), "original-pending-recovered-after-restart", 3_000);
+      expect(h.provider.tasks.slice(controlStart)).toEqual(["signal-material", "signal-expansion-review"]);
+      expect(await h.row(originalId)).toMatchObject({ generation_status: "FAILED",
+        generation_error: "GENERATION_OUTCOME_UNKNOWN", generation_attempt_count: 1 });
     });
   }, twoBootCaseTimeoutMs);
 
@@ -55,11 +104,11 @@ describe("durable pending generation and late-write invariants", () => {
     await withGenerationHarness("parallel", async (h) => {
       const child = await h.start("parallel-generations");
       const author = await h.register(child);
+      expect(await child.request<GenerationWorkerState>({ kind: "worker-state" }))
+        .toEqual({ mode: "worker", accepting: true, activeCount: 0 });
       const ids: string[] = [];
       const holds = Array.from({ length: 6 }, () => h.provider.holdNextRequest());
-      // Two is the explicit small test target. There is no existing worker
-      // concurrency setting to pretend to configure on the pre-fix baseline.
-      // Wire the real setting here when B1 adds that contract.
+      // The child enables the real production worker with synthetic C=2.
       const targetConcurrency = 2;
       let peak = 0;
       const observe = () => { peak = Math.max(peak, h.provider.inFlight); };
@@ -108,63 +157,50 @@ describe("durable pending generation and late-write invariants", () => {
       h.record("admin-status-committed", { id, status });
       const anonymous = await h.inject(child, { method: "GET", url: `/api/signals/${id}` });
       expect(anonymous.statusCode).toBe(404);
-      // HIDDEN + unfinished currently has a separate owner progress response;
-      // do not mistake that existing priority for a completed public result.
       hold.release();
-      const after = await h.waitRow(id, (row) => terminal(row.generation_status), "old-generation-finished-after-moderation", 5_000);
+      await h.waitRow(id, (row) => terminal(row.generation_status), "old-generation-finished-after-moderation", 5_000);
       await h.waitIdle();
+      const after = await h.row(id);
       const publish = await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie });
       h.record("publish-after-late-completion", { id, status: after.status, responseCode: publish.statusCode });
-      // The low-risk baseline resets this to DRAFT, not automatically
-      // PUBLISHED. The publishCode field separately checks the publish bypass.
-      expect({ status: after.status, publishCode: publish.statusCode }).toEqual({ status, publishCode: 404 });
+      expect({ status: after.status, generation: after.generation_status, error: after.generation_error,
+        owner: after.generation_lease_owner, publishCode: publish.statusCode })
+        .toEqual({ status, generation: "FAILED", error: "GENERATION_SUPERSEDED", owner: null, publishCode: 404 });
+      expect(h.provider.tasks).toEqual(["signal-material"]);
     });
   }, 45_000);
 
   it("rejects an older real repository completion after a newer writer has committed its result", async () => {
     await withGenerationHarness("stale", async (h) => {
-      const older = await h.start("older-repository-writer");
-      const author = await h.register(older);
-      const id = await h.createPending(older, author);
-      await h.waitRow(id, completed, "seed-result-completed", 5_000);
-      await h.waitIdle();
-      await older.request({ kind: "stage", id, marker: "older" });
-      h.record("writer-input-staged", { id, writer: "older" });
-      const newer = await h.start("newer-repository-writer");
-      await newer.request({ kind: "stage", id, marker: "newer" });
-      expect(await newer.request({ kind: "complete", marker: "newer" })).toEqual({ accepted: true });
+      const { id, older, newer, second } = await prepareFencedWriters(h);
+      expect(await newer.request<GenerationWriteResult>({ kind: "complete", marker: "newer" }))
+        .toEqual({ accepted: true, outcome: "APPLIED" });
       expect((await h.row(id)).expanded_text).toBe(newerText);
       h.record("writer-committed", { id, writer: "newer" });
-      const late = await older.request<{ accepted: boolean }>({ kind: "complete", marker: "older" });
+      const late = await older.request<GenerationWriteResult>({ kind: "complete", marker: "older" });
       const after = await h.row(id);
       h.record("older-completion-observed", { id, accepted: late.accepted, generationStatus: after.generation_status });
-      // No lease/attempt API exists yet. This invokes the two existing real
-      // repository writers in a deterministic order; it is not a fabricated
-      // claim/lease test. Replace staged inputs with real attempt tokens once
-      // B1/B2 defines those contracts and keep the same out-of-order invariant.
+      expect(late.outcome).toBe("OBSOLETE");
+      expect(after).toMatchObject({ generation_status: "COMPLETED", generation_attempt_count: 2,
+        generation_attempt_id: second.attemptId, generation_lease_owner: null, generation_lease_until: null });
+      expect(h.provider.tasks).toEqual([]);
       expect({ accepted: late.accepted, expandedText: after.expanded_text }).toEqual({ accepted: false, expandedText: newerText });
     });
   }, twoBootCaseTimeoutMs);
 
   it("rejects an older real FAILED write after a newer writer has completed", async () => {
     await withGenerationHarness("failure", async (h) => {
-      const older = await h.start("older-failure-writer");
-      const author = await h.register(older);
-      const id = await h.createPending(older, author);
-      await h.waitRow(id, completed, "seed-result-before-failure-race", 5_000);
-      await h.waitIdle();
-      await older.request({ kind: "stage", id, marker: "older" });
-      const newer = await h.start("newer-completed-writer");
-      await newer.request({ kind: "stage", id, marker: "newer" });
-      expect(await newer.request({ kind: "complete", marker: "newer" })).toEqual({ accepted: true });
+      const { id, older, newer, second } = await prepareFencedWriters(h);
+      expect(await newer.request<GenerationWriteResult>({ kind: "complete", marker: "newer" }))
+        .toEqual({ accepted: true, outcome: "APPLIED" });
       expect((await h.row(id)).generation_status).toBe("COMPLETED");
-      await older.request({ kind: "progress", id, status: "FAILED" });
+      const late = await older.request<GenerationWriteResult>({ kind: "fail", marker: "older" });
+      expect(late).toEqual({ accepted: false, outcome: "OBSOLETE" });
       const after = await h.row(id);
       h.record("older-failure-observed", { id, generationStatus: after.generation_status, errorPresent: after.generation_error !== null });
-      // Body preservation alone would miss the regression: the old failure
-      // currently changes the terminal status even though newer text remains.
-      // Keep these as one hard assertion: a soft-only failure would be held
-      // by Vitest while the coordinator incorrectly recorded workFailed=false.
+      expect(after).toMatchObject({ generation_attempt_count: 2, generation_attempt_id: second.attemptId,
+        generation_lease_owner: null, generation_lease_until: null });
+      expect(h.provider.tasks).toEqual([]);
       expect({ status: after.generation_status, error: after.generation_error, expandedText: after.expanded_text })
         .toEqual({ status: "COMPLETED", error: null, expandedText: newerText });
     });

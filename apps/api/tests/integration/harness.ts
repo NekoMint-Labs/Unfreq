@@ -38,13 +38,16 @@ export function assertManagedIntegrationEnvironment(): ManagedEnvironment {
   return { databaseUrl: database.toString(), redisUrl: redis.toString(), runId: process.env.UNFREQ_INTEGRATION_RUN_ID! };
 }
 
-export async function configureIsolatedEnvironment(input: ManagedEnvironment & { providerOrigin?: string }) {
+export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
+  providerOrigin?: string;
+  generationWorkerEnabled?: boolean;
+}) {
   const directory = await mkdtemp(join(tmpdir(), "unfreq-integration-"));
   const dotenvPath = join(directory, "empty.env");
   await writeFile(dotenvPath, "# Deliberately empty integration environment.\n", "utf8");
   const overrides: Record<string, string> = {};
   for (const key of Object.keys(process.env)) {
-    if (/^(AI_|EMBEDDING_|RERANKER_|TTS_|PROVIDER_)/u.test(key)) overrides[key] = "";
+    if (/^(AI_|EMBEDDING_|RERANKER_|TTS_|PROVIDER_|SIGNAL_GENERATION_)/u.test(key)) overrides[key] = "";
   }
   Object.assign(overrides, {
     NODE_ENV: "test", DATABASE_URL: input.databaseUrl, REDIS_URL: input.redisUrl,
@@ -61,6 +64,15 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     AUTH_LOGIN_CODE_RESPONSE: "disabled", AUTH_LOGIN_DELIVERY_MODE: "local-log",
     AUTH_LOGIN_CHALLENGE_TTL_SECONDS: "600", AUTH_LOGIN_MAX_VERIFY_ATTEMPTS: "5", AUTH_LOGIN_REQUEST_COOLDOWN_SECONDS: "1",
     IMAGE_MAX_BYTES: "2097152", WEB_ORIGIN: "http://127.0.0.1:3200", API_HOST: "127.0.0.1", API_PORT: "4000", LOG_LEVEL: "error",
+    // Fault-driver fixtures keep the scanner off; normal API integration opts
+    // into the same production worker with wholly synthetic timing/capacity.
+    SIGNAL_GENERATION_WORKER_ENABLED: input.generationWorkerEnabled === true ? "true" : "false",
+    SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50",
+    SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",
+    SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",
+    SIGNAL_GENERATION_RETRY_BASE_MS: "50", SIGNAL_GENERATION_RETRY_MAX_MS: "500",
+    SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
+    SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
   });
   const previous = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(overrides)) process.env[key] = value;
@@ -107,7 +119,9 @@ export type IntegrationHarness = {
 export async function createIntegrationHarness(): Promise<IntegrationHarness> {
   const managed = assertManagedIntegrationEnvironment();
   const provider = await createProviderStub();
-  const restoreEnvironment = await configureIsolatedEnvironment({ ...managed, providerOrigin: provider.origin });
+  const restoreEnvironment = await configureIsolatedEnvironment({
+    ...managed, providerOrigin: provider.origin, generationWorkerEnabled: true,
+  });
   const restoreFetch = installFetchBoundary(provider);
   const sql = postgres(managed.databaseUrl, {
     max: 1, prepare: false, connect_timeout: 2,

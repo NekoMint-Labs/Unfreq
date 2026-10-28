@@ -1,11 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
-import type { CreateSignalInput } from "../../src/modules/signals/types.js";
+import type { GenerationClaim, GenerationOutput } from "../../src/modules/signals/generation-types.js";
+import type { SignalGenerationWorker } from "../../src/modules/signals/generation-worker.js";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 
 const commandSchema = z.discriminatedUnion("kind", [
@@ -13,18 +14,26 @@ const commandSchema = z.discriminatedUnion("kind", [
     kind: z.literal("inject"), method: z.enum(["GET", "POST", "PATCH"]),
     url: z.string().max(160), cookie: z.string().max(2048).optional(),
     payload: z.record(z.string(), z.unknown()).optional(),
-  }),
-  z.object({ kind: z.literal("stage"), id: z.string().uuid(), marker: z.enum(["older", "newer"]) }),
-  z.object({ kind: z.literal("complete"), marker: z.enum(["older", "newer"]) }),
-  z.object({ kind: z.literal("progress"), id: z.string().uuid(), status: z.enum(["EXPANDING", "FAILED"]) }),
-  z.object({ kind: z.literal("diagnostics") }),
-  z.object({ kind: z.literal("shutdown") }),
+  }).strict(),
+  z.object({ kind: z.literal("create-managed"), authorId: z.string().uuid(), cookie: z.string().max(2048), seedText: z.literal(fixtureSeed) }).strict(),
+  z.object({ kind: z.literal("stage"), id: z.string().uuid(), marker: z.enum(["older", "newer"]) }).strict(),
+  z.object({ kind: z.literal("complete"), marker: z.enum(["older", "newer"]) }).strict(),
+  z.object({ kind: z.literal("fail"), marker: z.enum(["older", "newer"]) }).strict(),
+  z.object({ kind: z.literal("diagnostics") }).strict(),
+  z.object({ kind: z.literal("worker-state") }).strict(),
+  z.object({ kind: z.literal("shutdown") }).strict(),
 ]);
-const messageSchema = z.object({ id: z.number().int().positive(), command: commandSchema });
+const messageSchema = z.object({ id: z.number().int().positive(), command: commandSchema }).strict();
 
 export type GenerationCommand = z.infer<typeof commandSchema>;
 export type GenerationHttpResponse = { statusCode: number; body: unknown; cookie?: string };
 export type GenerationDiagnostics = { blockedHttp: number; unhandled: number };
+export type GenerationWorkerState = { mode: "worker" | "repository"; accepting: boolean; activeCount: number };
+export type GenerationStageResult = {
+  staged: "older" | "newer"; id: string; attemptId: string; ownerId: string;
+  attemptCount: number; leaseUntil: string; deadlineAt: string; phase: "WRITING";
+};
+export type GenerationWriteResult = { accepted: boolean; outcome: "APPLIED" | "OBSOLETE" };
 export type GenerationBootPhase =
   | "validation-start" | "validation-complete"
   | "db-guard-start" | "db-guard-complete"
@@ -83,6 +92,19 @@ async function validateEnvironment() {
   for (const key of ["AI_FAST_API_KEY", "AI_FAST_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL", "RERANKER_API_KEY", "RERANKER_BASE_URL", "TTS_API_KEY", "TTS_BASE_URL"]) {
     if (env[key] !== "") throw new Error("Additional generation provider configuration is forbidden.");
   }
+  const workerEnvironment = {
+    SIGNAL_GENERATION_WORKER_ENABLED: "true", SIGNAL_GENERATION_CONCURRENCY: "2",
+    SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000",
+    SIGNAL_GENERATION_HEARTBEAT_MS: "200", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000",
+    SIGNAL_GENERATION_MAX_ATTEMPTS: "3", SIGNAL_GENERATION_RETRY_BASE_MS: "50",
+    SIGNAL_GENERATION_RETRY_MAX_MS: "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
+    SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
+  };
+  for (const [key, value] of Object.entries(workerEnvironment)) {
+    if (env[key] !== value) throw new Error("Generation worker configuration must be entirely synthetic.");
+  }
+  const mode = caseId === "stale" || caseId === "failure" ? "repository" : "worker";
+  if (env.UNFREQ_GENERATION_MODE !== mode) throw new Error("Generation fixture mode does not match its owned case.");
   const directory = resolve(env.UNFREQ_GENERATION_DIRECTORY ?? "");
   if (dirname(directory) !== resolve(tmpdir()) || !basename(directory).startsWith(`unfreq-generation-${nonce}-`) ||
       env.DOTENV_CONFIG_PATH !== join(directory, "empty.env") ||
@@ -90,7 +112,7 @@ async function validateEnvironment() {
       await readFile(join(directory, "empty.env"), "utf8") !== emptyEnvironment) {
     throw new Error("Invalid generation fixture temporary directory.");
   }
-  return { runId, caseId, nonce, databaseName, databaseUrl: database.toString(), origin: provider.origin };
+  return { runId, caseId, nonce, databaseName, databaseUrl: database.toString(), origin: provider.origin, mode } as const;
 }
 
 function allowedRequest(command: Extract<GenerationCommand, { kind: "inject" }>) {
@@ -143,15 +165,37 @@ async function main() {
   await checkpoint("app-import-start");
   const { buildApp } = await import("../../src/app.js");
   const repository = await import("../../src/modules/signals/repository.js");
+  const { authenticateSessionToken } = await import("../../src/modules/auth/service.js");
+  const { configureSignalGenerationRepository } = await import("../../src/modules/signals/generation-repository.js");
+  const { createSignalGenerationWorker } = await import("../../src/modules/signals/generation-worker.js");
   const { getFingerprintFrequencyProfile, buildMinimalSignalProgram } = await import("../../src/modules/signals/service-mappers.js");
+  const generationRepository = owned.mode === "repository" ? configureSignalGenerationRepository({
+    statementTimeoutMs: 5000, lockTimeoutMs: 1000, maxConnections: 2,
+  }) : undefined;
+  let worker: SignalGenerationWorker | undefined;
   await checkpoint("app-import-complete");
   await checkpoint("app-build-start");
-  const app: FastifyInstance = await buildApp({ logger: false });
+  const app: FastifyInstance = await buildApp({
+    logger: false,
+    generationWorkerFactory(options) {
+      // Only the two repository-fence cases have no consumer. Their pending
+      // rows are explicitly inserted through the real repository below, never
+      // presented as an accepted HTTP generation or a route recovery test.
+      worker = generationRepository === undefined ? createSignalGenerationWorker(options) : {
+        accepting: false, activeCount: 0,
+        start() { return; }, wake() { return; },
+        async stop() { await generationRepository.closeSignalGenerationRepository({ timeoutSeconds: 0 }); },
+      };
+      return worker;
+    },
+  });
   await checkpoint("app-build-complete");
   await checkpoint("app-ready-start");
   await app.ready();
   await checkpoint("app-ready-complete");
-  const staged = new Map<"older" | "newer", { id: string; input: CreateSignalInput }>();
+  const staged = new Map<"older" | "newer", { fence: GenerationClaim; output: GenerationOutput }>();
+  const registeredAuthors = new Set<string>();
+  const leaseOwnerId = randomUUID();
   let closing = false;
 
   const fatal = () => {
@@ -173,6 +217,10 @@ async function main() {
   async function execute(command: GenerationCommand): Promise<unknown> {
     if (closing) throw new Error("Generation fixture is closing.");
     if (command.kind === "diagnostics") return { blockedHttp, unhandled } satisfies GenerationDiagnostics;
+    if (command.kind === "worker-state") {
+      if (worker === undefined) throw new Error("Generation worker was not constructed.");
+      return { mode: owned.mode, accepting: worker.accepting, activeCount: worker.activeCount } satisfies GenerationWorkerState;
+    }
     if (command.kind === "inject") {
       if (!allowedRequest(command)) throw new Error("Generation route is not allowed.");
       const response = await app.inject({
@@ -183,38 +231,72 @@ async function main() {
       const cookies = response.headers["set-cookie"];
       const cookie = (Array.isArray(cookies) ? cookies : [String(cookies ?? "")])
         .find((value) => value.startsWith("unfreq_session="))?.split(";")[0];
-      return { statusCode: response.statusCode, body: response.json<unknown>(), ...(cookie ? { cookie } : {}) } satisfies GenerationHttpResponse;
+      const body = response.json<unknown>();
+      if (command.method === "POST" && command.url === "/api/auth/register" && response.statusCode === 201) {
+        const registration = z.object({ data: z.object({ frequency: z.object({ id: z.string().uuid() }) }) }).parse(body);
+        registeredAuthors.add(registration.data.frequency.id);
+      }
+      return { statusCode: response.statusCode, body, ...(cookie ? { cookie } : {}) } satisfies GenerationHttpResponse;
+    }
+    if (command.kind === "create-managed") {
+      if (generationRepository === undefined || !registeredAuthors.has(command.authorId)) throw new Error("Managed fixture creation requires its registered synthetic author and inert consumer.");
+      const token = /^unfreq_session=([^;]+)$/u.exec(command.cookie)?.[1];
+      const author = token === undefined ? undefined : await authenticateSessionToken(token);
+      if (author?.id !== command.authorId || author.status !== "ACTIVE" || author.isGuest) throw new Error("Managed fixture author session is not valid.");
+      const expandedText = "信号正在生成。";
+      const signal = await generationRepository.createManagedPendingSignal({
+        authorId: author.id, frequencyId: author.id, seedText: command.seedText, rawInput: command.seedText,
+        expandedText, fingerprint: fixtureFingerprint, frequencyProfile: getFingerprintFrequencyProfile(fixtureFingerprint),
+        generationStatus: "RECEIVED", status: "DRAFT",
+        program: buildMinimalSignalProgram({ expandedText, fingerprint: fixtureFingerprint, rawInput: command.seedText }),
+      });
+      return { id: signal.id, generationStatus: signal.generationStatus, source: "repository" };
     }
     if (command.kind === "stage") {
+      if (generationRepository === undefined) throw new Error("Repository staging is forbidden in consumer cases.");
       if (staged.has(command.marker)) throw new Error("Generation writer is already staged.");
       const signal = await ownedSignal(command.id);
+      if (command.marker === "newer") {
+        const recovered = await generationRepository.recoverExpiredSignalGenerations({
+          batchSize: 1, maxAttempts: 3, backoffForAttempt: () => 0,
+        });
+        if (recovered.requeuedIds.length !== 1 || recovered.requeuedIds[0] !== signal.id || recovered.failedIds.length !== 0) throw new Error("Newer writer did not recover the actual expired undispatched attempt.");
+      }
+      const claims = await generationRepository.claimSignalGenerationBatch({
+        ownerId: leaseOwnerId, globalCapacity: 2, localAvailable: 1,
+        leaseMs: command.marker === "older" ? 300 : 10000, attemptTimeoutMs: 10000, maxAttempts: 3,
+      });
+      const fence = claims[0];
+      if (claims.length !== 1 || fence?.signalId !== signal.id || fence.attemptCount !== (command.marker === "older" ? 1 : 2)) throw new Error("Repository did not grant the expected real generation lease.");
+      const input = await generationRepository.readOwnedSignalGenerationInput(fence);
+      if (input.outcome !== "APPLIED" || input.value.body.seedText !== fixtureSeed || input.value.frequency.id !== signal.authorId) throw new Error("Claim did not reconstruct the owned fixture input.");
+      for (const [from, to] of [["EXPANDING", "MATCHING"], ["MATCHING", "WRITING"]] as const) {
+        const result = await generationRepository.advanceSignalGenerationPhase({ fence, from, to });
+        if (result.outcome !== "APPLIED") throw new Error("Fresh real lease did not advance to WRITING.");
+      }
       const expandedText = `${fixtureExpansion.expandedText}\n[synthetic-${command.marker}]`;
       staged.set(command.marker, {
-        id: signal.id,
-        input: {
-          authorId: signal.authorId!, frequencyId: signal.frequencyId!,
-          expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed, seedText: fixtureSeed,
+        fence,
+        output: {
+          expandedText, fingerprint: fixtureFingerprint,
           frequencyProfile: getFingerprintFrequencyProfile(fixtureFingerprint),
           galaxyPosition: { x: 0, y: 0, z: 0 }, status: "DRAFT",
           program: buildMinimalSignalProgram({ expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed }),
         },
       });
-      return { staged: command.marker, id: signal.id };
+      return { staged: command.marker, id: signal.id, attemptId: fence.attemptId, ownerId: fence.ownerId,
+        attemptCount: fence.attemptCount, leaseUntil: fence.leaseUntil.toISOString(), deadlineAt: fence.deadlineAt.toISOString(),
+        phase: "WRITING" } satisfies GenerationStageResult;
     }
-    if (command.kind === "complete") {
+    if (command.kind === "complete" || command.kind === "fail") {
+      if (generationRepository === undefined) throw new Error("Repository writes are forbidden in consumer cases.");
       const writer = staged.get(command.marker);
       if (!writer) throw new Error("Generation writer was not staged.");
       staged.delete(command.marker);
-      const row = await repository.completeSignalGeneration(writer);
-      return { accepted: row !== undefined };
-    }
-    if (command.kind === "progress") {
-      await ownedSignal(command.id);
-      const row = await repository.updateSignalGenerationStatus({
-        id: command.id, status: command.status,
-        ...(command.status === "FAILED" ? { error: "SYNTHETIC_OLDER_WRITER_FAILED" } : {}),
-      });
-      return { accepted: row !== undefined };
+      const result = command.kind === "complete"
+        ? await generationRepository.completeOwnedSignalGeneration({ fence: writer.fence, output: writer.output })
+        : await generationRepository.failOwnedSignalGeneration({ fence: writer.fence, code: "GENERATION_FAILED" });
+      return { accepted: result.outcome === "APPLIED", outcome: result.outcome } satisfies GenerationWriteResult;
     }
     closing = true;
     await app.close();

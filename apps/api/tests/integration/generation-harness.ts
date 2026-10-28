@@ -10,7 +10,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { assertManagedIntegrationEnvironment, installFetchBoundary } from "./harness.js";
 import { createProviderStub, type IntegrationProvider, type ProviderRequestHold } from "./provider-stub.js";
 import { fixtureSeed } from "./fixtures.js";
-import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage } from "./generation-process-fixture.js";
+import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage, GenerationWorkerState } from "./generation-process-fixture.js";
 
 type Sql = ReturnType<typeof postgres>;
 type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure";
@@ -20,6 +20,10 @@ export type GenerationSession = { id: string; cookie: string };
 export type GenerationRow = {
   id: string; status: string; generation_status: string; generation_error: string | null;
   expanded_text: string; updated_at: Date; positioned: boolean;
+  generation_attempt_count: number | null; generation_attempt_id: string | null;
+  generation_lease_owner: string | null; generation_lease_until: Date | null;
+  generation_dispatch_started_at: Date | null; generation_attempt_deadline_at: Date | null;
+  lease_expired: boolean;
 };
 
 const sleep = (milliseconds: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -179,6 +183,21 @@ export class GenerationProcess {
     })();
     await this.stopPromise;
   }
+
+  async shutdown(): Promise<GenerationDiagnostics> {
+    const diagnostics = await this.request<GenerationDiagnostics>({ kind: "shutdown" });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.closed,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Owned generation child retained resources after app.close().")), 3_000); }),
+      ]);
+    } catch (error) {
+      await this.hardStop("graceful-close-timeout");
+      throw error;
+    } finally { if (timer) clearTimeout(timer); }
+    return diagnostics;
+  }
 }
 
 export type GenerationHarness = {
@@ -188,6 +207,7 @@ export type GenerationHarness = {
   start: (label: string) => Promise<GenerationProcess>;
   register: (child: GenerationProcess, administrator?: boolean) => Promise<GenerationSession>;
   createPending: (child: GenerationProcess, session: GenerationSession) => Promise<string>;
+  createManaged: (child: GenerationProcess, session: GenerationSession) => Promise<string>;
   inject: (child: GenerationProcess, command: Omit<Extract<GenerationCommand, { kind: "inject" }>, "kind">) => Promise<GenerationHttpResponse>;
   row: (id: string) => Promise<GenerationRow>;
   waitRow: (id: string, predicate: (row: GenerationRow) => boolean, label: string, milliseconds?: number) => Promise<GenerationRow>;
@@ -227,15 +247,20 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
     const attempt = async (work: () => Promise<unknown>, bucket: unknown[] = cleanupErrors) => {
       try { await work(); } catch (error) { bucket.push(error); }
     };
-    // Fault cases may deliberately leave a real provider hold and lost pending
-    // row. Stop the owned workers before releasing holds; do not repair rows to
-    // satisfy A2's normal-generation drain or claim graceful shutdown here.
+    // A deliberate crash stays a crash. Remaining children must instead prove
+    // app.close() drained the real worker and all process resources; only a
+    // failed shutdown falls back to killing the already-owned PID.
     for (const child of children) {
       if (!child.isClosed) {
         await attempt(async () => {
           const diagnostics = await child.request<GenerationDiagnostics>({ kind: "diagnostics" }, 1_000);
           record("child-diagnostics", { pid: child.pid, ...diagnostics });
           if (diagnostics.blockedHttp !== 0 || diagnostics.unhandled !== 0) throw new Error("Generation child violated its outbound/error boundary.");
+        }, experimentErrors);
+        await attempt(async () => {
+          const diagnostics = await child.shutdown();
+          if (diagnostics.blockedHttp !== 0 || diagnostics.unhandled !== 0) throw new Error("Generation child failed its shutdown diagnostics.");
+          record("child-drained-and-closed", { pid: child.pid });
         }, experimentErrors);
       }
       await attempt(() => child.hardStop("test-teardown"));
@@ -264,10 +289,16 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
           await attempt(async () => {
             if (ownedIds.size) {
               const rows = await observer<GenerationRow[]>`
-                select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned
+                select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned,
+                  generation_attempt_count, generation_attempt_id, generation_lease_owner, generation_lease_until,
+                  generation_dispatch_started_at, generation_attempt_deadline_at,
+                  coalesce(generation_lease_until <= clock_timestamp(), false) as lease_expired
                 from signals where id in ${observer([...ownedIds])}
               `;
-              for (const row of rows) record("final-owned-row", { id: row.id, status: row.status, generationStatus: row.generation_status, contentSha256: hash(row.expanded_text) });
+              for (const row of rows) record("final-owned-row", { id: row.id, status: row.status, generationStatus: row.generation_status,
+                attemptCount: row.generation_attempt_count, attemptId: row.generation_attempt_id,
+                hasLeaseOwner: row.generation_lease_owner !== null, dispatched: row.generation_dispatch_started_at !== null,
+                contentSha256: hash(row.expanded_text) });
             }
             if (migrationsFinished) {
               const [reviews] = await observer<{ count: number }[]>`select count(*)::integer as count from ai_reviews where status = 'FALLBACK'`;
@@ -352,6 +383,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       ...safeSystemEnvironment(), NODE_ENV: "test", UNFREQ_INTEGRATION_MANAGED: "1", UNFREQ_INTEGRATION_RUN_ID: managed.runId,
       UNFREQ_GENERATION_FIXTURE: "1", UNFREQ_GENERATION_PARENT_PID: String(process.pid),
       UNFREQ_GENERATION_CASE: caseId, UNFREQ_GENERATION_NONCE: nonce, UNFREQ_GENERATION_DIRECTORY: directory,
+      UNFREQ_GENERATION_MODE: caseId === "stale" || caseId === "failure" ? "repository" : "worker",
       UNFREQ_GENERATION_PROVIDER_ORIGIN: readyProvider.origin,
       DATABASE_URL: databaseUrl.toString(), REDIS_URL: managed.redisUrl,
       DOTENV_CONFIG_PATH: join(directory, "empty.env"), DOTENV_CONFIG_QUIET: "true", DOTENV_CONFIG_OVERRIDE: "false",
@@ -364,13 +396,22 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       SESSION_SECRET: `generation-session-${nonce}`, PROVIDER_CONFIG_SECRET: `generation-provider-${nonce}`,
       AUTH_LOGIN_CODE_RESPONSE: "disabled", AUTH_LOGIN_DELIVERY_MODE: "local-log", AUTH_LOGIN_CHALLENGE_TTL_SECONDS: "600", AUTH_LOGIN_MAX_VERIFY_ATTEMPTS: "5", AUTH_LOGIN_REQUEST_COOLDOWN_SECONDS: "1",
       WEB_ORIGIN: "http://127.0.0.1:3200", API_HOST: "127.0.0.1", API_PORT: "4000", HEALTH_DEPENDENCY_TIMEOUT_MS: "500", DB_POOL_MAX: "4", LOG_LEVEL: "error",
+      SIGNAL_GENERATION_WORKER_ENABLED: "true", SIGNAL_GENERATION_CONCURRENCY: "2",
+      SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000",
+      SIGNAL_GENERATION_HEARTBEAT_MS: "200", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000",
+      SIGNAL_GENERATION_MAX_ATTEMPTS: "3", SIGNAL_GENERATION_RETRY_BASE_MS: "50",
+      SIGNAL_GENERATION_RETRY_MAX_MS: "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200",
+      SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
     };
     const inject = async (child: GenerationProcess, command: Omit<Extract<GenerationCommand, { kind: "inject" }>, "kind">) => child.request<GenerationHttpResponse>({ kind: "inject", ...command });
     const assertOwned = (id: string) => { if (!ownedIds.has(id)) throw new Error("Generation observation target does not belong to this case."); };
     const row = async (id: string) => {
       assertOwned(id);
       const [value] = await readySql<GenerationRow[]>`
-        select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned
+        select id, status, generation_status, generation_error, expanded_text, updated_at, galaxy_position is not null as positioned,
+          generation_attempt_count, generation_attempt_id, generation_lease_owner, generation_lease_until,
+          generation_dispatch_started_at, generation_attempt_deadline_at,
+          coalesce(generation_lease_until <= clock_timestamp(), false) as lease_expired
         from signals where id = ${id}
       `;
       if (!value) throw new Error("Owned generation row disappeared.");
@@ -409,6 +450,24 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         record("accepted-pending", { id: signal.id, pid: child.pid });
         return signal.id;
       },
+      async createManaged(child, session) {
+        if (caseId !== "stale" && caseId !== "failure") throw new Error("Repository-created fixtures are restricted to the two fence cases.");
+        const response = await child.request<{ id: string; generationStatus: string; source: string }>({
+          kind: "create-managed", authorId: session.id, cookie: session.cookie, seedText: fixtureSeed,
+        });
+        if (!/^[a-f0-9-]{36}$/u.test(response.id) || response.generationStatus !== "RECEIVED" || response.source !== "repository") throw new Error("Managed repository fixture did not persist its pending row.");
+        ownedIds.add(response.id);
+        const [confirmed] = await readySql`
+          select id from signals where id = ${response.id} and author_id = ${session.id}
+            and frequency_id = ${session.id} and seed_text = ${fixtureSeed} and raw_input = ${fixtureSeed}
+            and status = 'DRAFT' and generation_status = 'RECEIVED'
+            and generation_attempt_count = 0 and generation_attempt_id is null
+            and generation_lease_owner is null and generation_dispatch_started_at is null
+        `;
+        if (confirmed === undefined) throw new Error("Repository-created fixture ownership or initial metadata did not match.");
+        record("repository-managed-pending", { id: response.id, pid: child.pid });
+        return response.id;
+      },
       async waitRow(id, predicate, label, milliseconds = 3_000) {
         const deadline = Date.now() + milliseconds;
         let current = await row(id);
@@ -432,8 +491,13 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       },
       async waitIdle() {
         const deadline = Date.now() + 3_000;
-        while (readyProvider.inFlight && Date.now() < deadline) await sleep(20);
-        if (readyProvider.inFlight) throw new Error("Synthetic provider did not settle within the bounded observation window.");
+        do {
+          const states = await Promise.all(children.filter((child) => !child.isClosed).map((child) =>
+            child.request<GenerationWorkerState>({ kind: "worker-state" }, 1_000)));
+          if (readyProvider.inFlight === 0 && states.every((state) => state.activeCount === 0)) return;
+          await sleep(20);
+        } while (Date.now() < deadline);
+        throw new Error("Synthetic provider or real generation worker did not settle within the bounded observation window.");
       },
     };
   } catch (error) {

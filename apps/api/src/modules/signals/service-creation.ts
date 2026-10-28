@@ -1,4 +1,5 @@
 import { AppError } from "../../shared/errors.js";
+import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import type { EmbeddingLogger, EmbeddingResult } from "../ai/embedding.js";
 import {
   analyzeSignalIntentWithFallback,
@@ -16,13 +17,12 @@ import type { AuthenticatedFrequency } from "../auth/types.js";
 import type { CreatePublishedSignalBody } from "./schemas.js";
 import type { SignalFrequencyProfile } from "./frequency-taxonomy.js";
 import {
-  completeSignalGeneration,
   createSignalDraft,
   findVisibleSignalForFrequency,
-  updateSignalGenerationStatus,
 } from "./repository.js";
 import {
   queueSignalEmbeddingWrite,
+  resolveGenerationEmbedding,
   writeInitialSignalGalaxyPosition,
 } from "./service-embedding.js";
 import {
@@ -32,6 +32,7 @@ import {
 import { findSameFrequencyMatches } from "./service-matching.js";
 import {
   buildMinimalSignalProgram,
+  buildInitialGalaxyPosition,
   getFingerprintFrequencyProfile,
   toSignalGenerationDetail,
   toSignalDetail,
@@ -41,10 +42,10 @@ import type {
   SignalDetail,
   SignalFingerprint,
   SignalGenerationDetail,
-  SignalGenerationStatus,
   SignalMatchSummary,
   SignalStatus,
 } from "./types.js";
+import type { GenerationOutput, OwnedGenerationInput, RunningGenerationPhase } from "./generation-types.js";
 
 type ReviewedSignalExpansion = {
   classification: AiSignalSeedClassification;
@@ -58,13 +59,14 @@ type SignalCreationBoundary =
   | "same_frequency_matching"
   | "signal_persistence";
 
-type SignalGenerationProgressWriter = (status: SignalGenerationStatus) => Promise<void>;
+type SignalGenerationProgressWriter = (status: RunningGenerationPhase) => Promise<void>;
 
 function logSignalCreationBoundaryFailure(params: {
   boundary: SignalCreationBoundary;
   error: unknown;
   logger?: EmbeddingLogger;
 }) {
+  throwIfGenerationStopped(params.error);
   params.logger?.warn(
     {
       action: "signal.creation.failed",
@@ -152,6 +154,7 @@ async function reviewOrRewriteSignalExpansion(params: {
         }, undefined, { skipDirectionReview: true })
       ).result;
     } catch (error) {
+      throwIfGenerationStopped(error);
       params.logger?.warn(
         {
           action: "signal.expansion.rewrite_failed",
@@ -210,6 +213,7 @@ export async function generateReviewedSignalExpansion(params: {
       }, undefined, { skipDirectionReview: true })
     ).result;
   } catch (error) {
+    throwIfGenerationStopped(error);
     params.logger?.warn(
       {
         action: "signal.expansion.failed",
@@ -299,6 +303,7 @@ async function buildSignalCreationMaterial(params: {
   onGenerationStatusChange?: SignalGenerationProgressWriter;
   rawInput: string;
 }): Promise<SignalCreationMaterial> {
+  await assertGenerationActive();
   await params.onGenerationStatusChange?.("EXPANDING");
 
   const combinedMaterial = await generateCombinedSignalCreationMaterial(params);
@@ -349,6 +354,7 @@ async function generateCombinedSignalCreationMaterial(params: {
       content: params.rawInput,
     });
   } catch (error) {
+    throwIfGenerationStopped(error);
     params.logger?.warn(
       {
         action: "signal.material.failed",
@@ -496,8 +502,6 @@ async function createSignalFromMaterial(params: {
   };
 }
 
-const queuedSignalGenerationIds = new Set<string>();
-
 function buildPendingSignalFingerprint(params: {
   frequency: AuthenticatedFrequency;
   seedText: string;
@@ -546,6 +550,7 @@ function buildPendingSignalInput(params: {
     frequencyId: params.frequency.id,
     frequencyProfile,
     generationStatus: "RECEIVED",
+    managedGeneration: true,
     parentSignalId: params.body.parentSignalId,
     program: buildMinimalSignalProgram({
       expandedText,
@@ -558,136 +563,76 @@ function buildPendingSignalInput(params: {
   };
 }
 
-async function completePendingSignalFromMaterial(params: {
-  body: CreatePublishedSignalBody;
-  frequency: AuthenticatedFrequency;
+export async function generateOwnedSignalOutput(params: OwnedGenerationInput & {
   logger?: EmbeddingLogger;
-  resolveStatus: (fingerprint: SignalFingerprint) => SignalStatus;
-  signalId: string;
-}): Promise<SignalDetail> {
-  const writeGenerationStatus: SignalGenerationProgressWriter = async (status) => {
-    await updateSignalGenerationStatus({
-      id: params.signalId,
-      status,
-    });
-  };
+  onGenerationStatusChange: SignalGenerationProgressWriter;
+}): Promise<GenerationOutput> {
+  requireActiveSignalFrequency(params.frequency);
+  await assertGenerationActive();
+  await assertParentSignalVisible({
+    frequencyId: params.frequency.id,
+    logger: params.logger,
+    parentSignalId: params.body.parentSignalId,
+  });
   const material = await buildSignalCreationMaterial({
     logger: params.logger,
-    onGenerationStatusChange: writeGenerationStatus,
+    onGenerationStatusChange: params.onGenerationStatusChange,
     rawInput: params.body.seedText,
   });
-  await writeGenerationStatus("WRITING");
+  await params.onGenerationStatusChange("WRITING");
+  await assertGenerationActive();
   const signalInput = buildSignalDraftInput({
     body: params.body,
     frequency: params.frequency,
     material,
-    status: params.resolveStatus(material.fingerprint),
+    status: toHomepagePendingSignalStatus(material.fingerprint),
   });
-  const signal = await runSignalCreationBoundary({
-    boundary: "signal_persistence",
-    logger: params.logger,
-    run: async () => {
-      const completedSignal = await completeSignalGeneration({
-        id: params.signalId,
-        input: signalInput,
-      });
-
-      if (completedSignal === undefined) {
-        throw new Error("Pending signal could not be completed.");
-      }
-
-      return completedSignal;
-    },
-  });
-  const positionedSignal = await writeInitialSignalGalaxyPosition({
-    embeddingVersion: material.matchResult.embedding?.version,
-    logger: params.logger,
-    signal,
-  });
-  queueSignalEmbeddingWrite({
+  const expandedText = material.reviewedExpansion.expansion.expandedText;
+  const embedding = await resolveGenerationEmbedding({
     embedding: material.matchResult.embedding,
+    expandedText,
+    fingerprint: material.fingerprint,
     logger: params.logger,
-    signal: positionedSignal,
+    seedText: params.body.seedText,
+    signalId: params.signalId,
   });
-
+  await assertGenerationActive();
   return {
-    ...toSignalDetail(positionedSignal),
-    matches: material.matchResult.matches,
+    expandedText,
+    fingerprint: material.fingerprint,
+    followUpQuestion: signalInput.followUpQuestion,
+    frequencyProfile: signalInput.frequencyProfile,
+    galaxyPosition: buildInitialGalaxyPosition({
+      embeddingVersion: embedding?.version,
+      expandedText,
+      fingerprint: material.fingerprint,
+      signalId: params.signalId,
+    }),
+    matchSignalId: signalInput.matchSignalId,
+    program: signalInput.program,
+    qualityReason: signalInput.qualityReason,
+    qualityScore: signalInput.qualityScore,
+    status: material.fingerprint.riskLevel === "HIGH" ? "REVIEWING" : "DRAFT",
+    ...(embedding === undefined ? {} : { embedding: {
+      dimensions: embedding.dimensions,
+      embedding: embedding.embedding,
+      model: embedding.model,
+      provider: embedding.provider,
+      version: embedding.version,
+    } }),
   };
-}
-
-function queuePendingSignalGeneration(params: {
-  body: CreatePublishedSignalBody;
-  frequency: AuthenticatedFrequency;
-  logger?: EmbeddingLogger;
-  signalId: string;
-}) {
-  if (queuedSignalGenerationIds.has(params.signalId)) {
-    return;
-  }
-
-  queuedSignalGenerationIds.add(params.signalId);
-
-  void (async () => {
-    try {
-      const signal = await completePendingSignalFromMaterial({
-        body: params.body,
-        frequency: params.frequency,
-        logger: params.logger,
-        resolveStatus: toHomepagePendingSignalStatus,
-        signalId: params.signalId,
-      });
-
-      params.logger?.info(
-        {
-          action: "signal.generation.completed",
-          generationStatus: "COMPLETED",
-          targetId: signal.id,
-          targetType: "SIGNAL",
-        },
-        "signal generation completed",
-      );
-    } catch (error) {
-      params.logger?.warn(
-        {
-          action: "signal.generation.failed",
-          ...toSafeAiErrorFailureDetails(error),
-          generationStatus: "FAILED",
-          reason: toSafeErrorReason(error),
-          targetId: params.signalId,
-          targetType: "SIGNAL",
-        },
-        "signal generation failed",
-      );
-      try {
-        await updateSignalGenerationStatus({
-          error: toSafeErrorReason(error),
-          id: params.signalId,
-          status: "FAILED",
-        });
-      } catch (statusError) {
-        params.logger?.warn(
-          {
-            action: "signal.generation.status_failed",
-            reason: toSafeErrorReason(statusError),
-            targetId: params.signalId,
-            targetType: "SIGNAL",
-          },
-          "signal generation failure status write failed",
-        );
-      }
-    } finally {
-      queuedSignalGenerationIds.delete(params.signalId);
-    }
-  })();
 }
 
 export async function createPendingSignal(
   frequency: AuthenticatedFrequency | undefined,
   body: CreatePublishedSignalBody,
   logger?: EmbeddingLogger,
+  dispatcher?: { readonly accepting: boolean; wake(): void },
 ): Promise<SignalGenerationDetail> {
   const activeFrequency = requireActiveSignalFrequency(frequency);
+  if (dispatcher?.accepting !== true) {
+    throw new AppError("AI_UNAVAILABLE", "信号暂时无法接收，请稍后再试。");
+  }
 
   await assertParentSignalVisible({
     frequencyId: activeFrequency.id,
@@ -699,15 +644,8 @@ export async function createPendingSignal(
     body,
     frequency: activeFrequency,
   }));
-  const generationDetail = toSignalGenerationDetail(signal);
-  queuePendingSignalGeneration({
-    body,
-    frequency: activeFrequency,
-    logger,
-    signalId: signal.id,
-  });
-
-  return generationDetail;
+  dispatcher.wake();
+  return toSignalGenerationDetail(signal);
 }
 
 export async function createPublishedSignal(
