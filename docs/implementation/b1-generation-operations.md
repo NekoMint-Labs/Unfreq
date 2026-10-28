@@ -1,19 +1,19 @@
 # B1 生成任务配置与运维
 
-状态：本文依据当前本地 B1 实现编写。**尚未取得修复后完整验收通过记录，B1/B2 不在本文中宣布完成或上线。** 下列切换、关闭和恢复流程仍须在隔离环境验证；生产迁移、部署、历史任务处理和收费 Provider 调用分别需要相应授权。
+状态：**B1 新纳管任务本地验收通过，B2 生成 / 管理员栅栏局部通过；C1 作者撤回待实施。** 第三轮真实集成 46 / 46 通过，证据与收尾复核见[验收记录](./b1-b2-generation-reliability.md)。本记录未执行生产迁移或部署；下面的备份恢复、切换、真实容器停止与回退清单仍须按目标环境演练和授权执行，不能用本地业务集成代替生产操作验收。
 
-[修复前基线](./b1-b2-generation-baseline.md)记录了六个真实失败场景及原有 30 项通过结果；它是冻结的修复前证据，不能用来证明新 worker 已验收。作者撤回与公开字段按 A3 决定后续实施，C1 的真实撤回入口尚需接入栅栏，管理员隐藏测试不能替代它。
+[修复前基线](./b1-b2-generation-baseline.md)记录了六个真实失败场景及原有 30 项通过结果；修复后通过证据另见上述验收记录，两轮未通过结果仍保留。作者撤回与公开字段按 A3 决定后续实施，C1 的真实撤回入口尚需接入栅栏，管理员隐藏测试不能替代它。
 
 ## 1. 当前实现的工作范围
 
 每条新 pending 信号在 `signals` 中保存排队状态。worker 领取后获得本次执行标识（attempt）和有期限的租约；只有仍持有有效标识、租约且业务状态允许的执行才能提交进度或结果。重启后从 PostgreSQL 扫描恢复，不依赖旧进程的 Set。
 
-以下是当前代码事实，正确性仍以修复后测试为准：
+以下是本轮实现及本地验收覆盖的机制，保证范围以验收记录和下文条件为准：
 
 - 新创建在同一次 INSERT 写入 `generation_attempt_count=0` 和数据库时间的 nextAttemptAt；不增加 Seed 副本。正常结果为私密 DRAFT，风险结果可为 REVIEWING，worker 不写 PUBLISHED。
 - claim 使用同数据库的固定事务级 advisory lock、有效租约计数和 `FOR UPDATE SKIP LOCKED`。生成期间不持有该锁、行锁或事务。
 - 进度、派发标记、心跳、完成与失败都检查 attempt / owner / phase / lease / deadline / DRAFT；管理员状态变化原子使旧执行失效。
-- 新 pending 链在最终提交前等待坐标和可选 embedding 工作。取消贯通 chat、改写、审查、匹配及 Provider fallback 是本轮验收目标，仍须通过故障测试证明。
+- 新 pending 链在最终提交前等待坐标和可选 embedding 工作；取消贯通 chat、改写、审查、匹配及 Provider fallback 的本轮回归已通过，不能外推为真实供应商远程计算一定停止。
 - app.ready 后开始消费。worker 关闭、尚未启动、停止中或 fatal 时，新创建返回 503，拒绝静默接收无人处理的任务。纯 mock 单测的 stub 不构成 worker 验证；真实集成入口显式启用同一实现。
 
 源码入口：[配置](../../apps/api/src/config/env.ts)、[worker](../../apps/api/src/modules/signals/generation-worker.ts)、[repository](../../apps/api/src/modules/signals/generation-repository.ts)、[0022 迁移](../../apps/api/src/db/migrations/0022_signal_generation_leases.sql)。
@@ -95,7 +95,7 @@ GROUP BY generation_status, status;
 5. 仅启动使用新领取协议的消费者，逐实例核对 C、时间参数和版本；核验迁移、健康、受控新任务终态和旧 NULL 记录未被改写。真实业务或收费 Provider 验收另行授权，不能用一次真实请求作无成本探针。
 6. 验收后再开放创建入口；保留前后状态计数、版本和回退记录。出现未知结果先核验租约 / token，不批量重发或清空元数据。
 
-本地 / CI 验证入口为 `npm run check`、`npm run api:integration` 与 `npm run deploy:test`。集成入口使用托管的临时 PostgreSQL / Redis 和本地 HTTP Provider 桩；部署脚本测试验证脚本行为，不能代替真实 Compose 渲染及容器停止时序。另须在隔离环境确认 API 的 `stop_grace_period` 生效、SIGTERM 不被外层提前强杀。这些均为待执行清单，未宣称修复后已通过。
+本地 / CI 验证入口为 `npm run check`、`npm run api:integration` 与 `npm run deploy:test`，实际已执行的检查及入口差异见验收记录：集成 46 / 46 通过；Windows 的 npm 部署脚本入口因缺少 `sh` 未启动，使用 Git Bash 实际执行的 5 组脚本测试通过。集成使用托管的临时 PostgreSQL / Redis 和本地 HTTP Provider 桩；脚本测试及 Compose 示例渲染不能代替真实容器停止时序，仍须验证目标环境中 `stop_grace_period` 生效、SIGTERM 不被外层提前强杀。
 
 ## 6. 关闭与数据库 I/O 故障
 
