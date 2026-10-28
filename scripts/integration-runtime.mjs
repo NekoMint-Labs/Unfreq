@@ -13,7 +13,7 @@ const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-contr
   "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
   "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/repository", "modules/signals/audio-repository", "modules/signals/audio-worker",
-  "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage",
+  "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
   "shared/shutdown-budget", "shared/log-redaction", "server"];
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
@@ -29,6 +29,7 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/tests/integration/generation-process-fixture.ts",
   "apps/api/tests/integration/generation-test-controls.ts",
   "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts",
+  "apps/api/tests/integration/harness.ts",
   "apps/api/src/shared/generation-execution.ts",
   "apps/api/src/modules/signals/generation-worker.ts",
   "scripts/integration-runtime.mjs",
