@@ -60,7 +60,7 @@ type AudioTask = {
   commitStarted: boolean;
   ready: boolean;
   readyUncertain: boolean;
-  fileWritten: boolean;
+  fileCreated: boolean;
   storageKey?: string;
   resolve(value: SignalAudioDetail): void;
   reject(error: unknown): void;
@@ -147,7 +147,7 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
     if (failed && !uncertain && !task.commitStarted && task.reservation !== undefined) {
       try { await task.reservation.refund(); } catch { uncertain = true; }
     }
-    if (task.fileWritten && task.storageKey !== undefined && !task.ready && !uncertain) {
+    if (task.fileCreated && task.storageKey !== undefined && !task.ready && !uncertain) {
       try {
         if (!(await repository.isFileReferenced(task.storageKey))) await removeAudio(task.storageKey);
       } catch { warn("signal.audio.file_cleanup_unconfirmed", task, logger); }
@@ -211,8 +211,10 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
         beforeDispatch: () => assertOwnership(task),
       });
       await assertOwnership(task);
-      await writeAudio(task.storageKey, audio, { signal: task.controller.signal });
-      task.fileWritten = true;
+      await writeAudio(task.storageKey, audio, { signal: task.controller.signal,
+        onCreated: () => { task.fileCreated = true; },
+      });
+      task.fileCreated = true;
       await assertOwnership(task);
       task.readyUncertain = true;
       const written = await repository.ready(claimed.attempt, task.storageKey, `/api/signals/${id}/audio/main`);
@@ -263,7 +265,7 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
       const response = new Promise<SignalAudioDetail>((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
       const task: AudioTask = {
         controller: new AbortController(), promise: Promise.resolve(), commitStarted: false,
-        ready: false, readyUncertain: false, fileWritten: false, responded: false,
+        ready: false, readyUncertain: false, fileCreated: false, responded: false,
         resolve(value) { if (!task.responded) { task.responded = true; resolveResponse(value); } },
         reject(error) { if (!task.responded) { task.responded = true; rejectResponse(error); } },
       };

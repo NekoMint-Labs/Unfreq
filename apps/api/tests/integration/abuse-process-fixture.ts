@@ -39,6 +39,7 @@ const commandSchema = z.discriminatedUnion("kind", [
     cookie: z.string().max(2048).optional(), forwarded: z.enum(["198.51.100.1", "198.51.100.2", "198.51.100.3"]).optional(), remote: z.enum(["127.0.0.1", "127.0.0.2"]).optional(),
     payload: z.record(z.string(), z.unknown()).optional() }).strict(),
   z.object({ kind: z.literal("provider"), provider: z.enum(["chat", "embedding", "reranker", "tts"]) }).strict(),
+  z.object({ kind: z.literal("preparechat"), cookie: z.string().max(2048) }).strict(),
   z.object({ kind: z.literal("email-service") }).strict(),
   z.object({ kind: z.literal("diagnostics") }).strict(), z.object({ kind: z.literal("shutdown") }).strict(),
 ]);
@@ -81,8 +82,7 @@ async function main() {
     AUTH_LOGIN_CODE_RESPONSE: ["disabled", "production"].includes(caseId) ? "disabled" : "enabled",
     AUTH_LOGIN_CHALLENGE_TTL_SECONDS: "60", AUTH_LOGIN_MAX_VERIFY_ATTEMPTS: "5", AUTH_LOGIN_REQUEST_COOLDOWN_SECONDS: "1",
     AI_API_KEY: "abuse-stub-only", AI_BASE_URL: `${http.origin}/v1`, AI_PROVIDER: "integration-loopback", AI_MODEL: "synthetic-main",
-    AI_FAST_API_KEY: caseId === "providerchat" ? "abuse-stub-only" : "", AI_FAST_BASE_URL: caseId === "providerchat" ? `${http.origin}/v1` : "",
-    AI_FAST_MODEL: caseId === "providerchat" ? "synthetic-fast" : "", AI_FAST_PROVIDER: caseId === "providerchat" ? "integration-loopback" : "",
+    AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "",
     EMBEDDING_API_KEY: ["providerembedding", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", EMBEDDING_BASE_URL: ["providerembedding", "redisfault"].includes(caseId) ? `${http.origin}/v1` : "",
     EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "synthetic-embedding", EMBEDDING_PROVIDER: "integration-loopback", EMBEDDING_VERSION: "b3-synthetic-v1",
     RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${http.origin}/v1` : "",
@@ -138,10 +138,44 @@ async function main() {
   const diagnostics = () => ({ blocked, unhandled, logOverflow: logBytes > 65_536,
     logLeaks: [fixtureSeed, "SYNTHETIC_B3_DIAGNOSTIC_MARKER", "abuse-stub-only", expected.SESSION_SECRET, expected.ABUSE_HMAC_SECRET].some((marker) => logs.join("").includes(marker)),
     diagnosticEvents: logs.filter((line) => line.includes('"action":"frontend.error.report"')).length });
+  const registeredIds = new Set<string>();
+  async function validateChatConfiguration() {
+    if (caseId !== "providerchat") throw new Error("B3 chat configuration guard outside dedicated case.");
+    const { db } = await import("../../src/db/client.js");
+    const { providerConfigs, users } = await import("../../src/db/schema.js");
+    const api = await import("../../src/modules/ai/provider-config.js");
+    const rows = await db.select().from(providerConfigs);
+    const authors = await db.select({ id: users.id }).from(users);
+    const configs = await api.listProviderConfigsByKind("chat");
+    const row = rows[0]; const config = configs[0];
+    if (rows.length !== 1 || configs.length !== 1 || !row || !config || config.id !== row.id ||
+      !/^[a-f0-9-]{36}$/u.test(row.id) || row.kind !== "chat" || row.baseUrl !== `${http.origin}/v1` ||
+      row.model !== "synthetic-primary" || row.provider !== "integration-loopback" || row.priority !== 0 || row.isEnabled !== true ||
+      authors.length !== 1 || row.updatedBy !== authors[0].id ||
+      JSON.stringify(row.extraJson) !== JSON.stringify({ chatProfile: "default" }) || !row.apiKeyCiphertext || row.apiKeyLast4 !== "only" ||
+      api.readProviderConfigApiKey(config, "") !== "abuse-stub-only") throw new Error("B3 owned chat configuration changed.");
+  }
   async function execute(command: AbuseCommand): Promise<unknown> {
     if (closing) throw new Error("B3 child closing.");
     if (command.kind === "diagnostics") return diagnostics();
     if (command.kind === "shutdown") { closing = true; await app.close(); return diagnostics(); }
+    if (command.kind === "preparechat") {
+      if (caseId !== "providerchat") throw new Error("B3 chat preparation outside dedicated case.");
+      const token = /^unfreq_session=([^;]+)$/u.exec(command.cookie)?.[1];
+      const auth = await import("../../src/modules/auth/service.js");
+      const author = token === undefined ? undefined : await auth.authenticateSessionToken(token);
+      if (!author || !registeredIds.has(author.id) || author.status !== "ACTIVE" || author.isGuest !== false) throw new Error("B3 chat preparation requires its registered author.");
+      const { db } = await import("../../src/db/client.js");
+      const { providerConfigs } = await import("../../src/db/schema.js");
+      if ((await db.select({ id: providerConfigs.id }).from(providerConfigs)).length !== 0) throw new Error("B3 chat preparation requires empty provider storage.");
+      const api = await import("../../src/modules/ai/provider-config.js");
+      await api.createProviderConfig({ updatedBy: author.id, config: {
+        kind: "chat", baseUrl: `${http.origin}/v1`, provider: "integration-loopback", model: "synthetic-primary",
+        extraJson: { chatProfile: "default" }, priority: 0, isEnabled: true, apiKey: "abuse-stub-only",
+      } });
+      await validateChatConfiguration();
+      return { prepared: true };
+    }
     if (command.kind === "email-service") {
       const auth = await import("../../src/modules/auth/service.js");
       const codes: string[] = [];
@@ -152,6 +186,7 @@ async function main() {
     }
     if (command.kind === "provider") {
       if (caseId !== `provider${command.provider}` && caseId !== "redisfault") throw new Error("Provider command outside dedicated case.");
+      if (caseId === "providerchat") await validateChatConfiguration();
       try {
         if (command.provider === "chat") await (await import("../../src/modules/ai/provider-transport.js")).callChatProvider("signal-fingerprint", fixtureSeed);
         if (command.provider === "embedding") await (await import("../../src/modules/ai/embedding.js")).generateEmbedding(fixtureSeed, { retryDelayMs: 0, timeoutMs: 1000 });
@@ -170,7 +205,11 @@ async function main() {
       ...(command.payload === undefined ? {} : { payload: command.payload }) });
     const cookies = response.headers["set-cookie"];
     const cookie = (Array.isArray(cookies) ? cookies : [String(cookies ?? "")]).find((item) => item.startsWith("unfreq_session="))?.split(";")[0];
-    return { statusCode: response.statusCode, body: response.json(), ...(cookie ? { cookie } : {}),
+    const body = response.json<unknown>();
+    if (command.method === "POST" && command.url === "/api/auth/register" && response.statusCode === 201) {
+      registeredIds.add(z.object({ data: z.object({ frequency: z.object({ id: z.string().uuid() }) }) }).parse(body).data.frequency.id);
+    }
+    return { statusCode: response.statusCode, body, ...(cookie ? { cookie } : {}),
       ...(response.headers["retry-after"] ? { retryAfter: String(response.headers["retry-after"]) } : {}) } satisfies AbuseResponse;
   }
   process.on("message", (input: unknown) => {

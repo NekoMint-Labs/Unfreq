@@ -15,6 +15,7 @@ import { errorHandler } from "./shared/error-handler.js";
 import { closeAbuseControl } from "./shared/abuse-control.js";
 import { safeRequestId } from "./shared/request-identity.js";
 import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
+import { apiLogRedactionPaths } from "./shared/log-redaction.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
 import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
@@ -42,9 +43,7 @@ const resolveLoggerOptions = (options: BuildAppOptions) => {
   return {
     level: env.logLevel,
     redact: {
-      paths: ["authorization", "cookie", "password", "sessionToken", "apiKey", "loginChallengeCode",
-        "req.headers.authorization", "req.headers.cookie", "headers.authorization", "headers.cookie",
-        "body.password", "body.code", "*.password", "*.sessionToken", "*.apiKey"],
+      paths: apiLogRedactionPaths(env),
       censor: "[redacted]",
     },
   };

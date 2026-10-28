@@ -232,6 +232,47 @@ describe("audio service compatibility boundary", () => {
 });
 
 describe("attempt-owned audio storage", () => {
+  it("cleans a real file created by this attempt when the write then rejects", async () => {
+    fixture.storageDir = await mkdtemp(join(tmpdir(), "unfreq-audio-unit-"));
+    const h = setup();
+    const key = buildSignalAudioStorageKey(id, "main", attemptId);
+    let created = false;
+    const writeThenFail = vi.fn(async (...args: Parameters<typeof writeSignalAudio>) => {
+      // Real filesystem ownership precedes the rejected await, just as a write
+      // can create a partial file before Abort/ENOSPC rejects. Forward options
+      // so a future precise onCreated ownership notification is also exercised.
+      await writeSignalAudio(...args);
+      created = true;
+      throw new Error("SYNTHETIC_POST_CREATE_IO_FAILURE");
+    });
+    const removeOwned = vi.fn(removeSignalAudio);
+    const owned = worker({ ...h.options, writeAudio: writeThenFail, removeAudio: removeOwned });
+    await owned.request(id, "synthetic-ip");
+    await vi.waitFor(() => expect(h.repository.failed).toHaveBeenCalledWith(h.attempt, "AUDIO_UNAVAILABLE"));
+    await owned.stop();
+    expect(created).toBe(true);
+    expect(writeThenFail).toHaveBeenCalledOnce();
+    expect(h.repository.ready).not.toHaveBeenCalled();
+    await expect(readFile(join(fixture.storageDir, key))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(removeOwned).toHaveBeenCalledWith(key);
+  });
+
+  it("preserves an existing real file when exclusive creation fails with EEXIST", async () => {
+    fixture.storageDir = await mkdtemp(join(tmpdir(), "unfreq-audio-unit-"));
+    const h = setup();
+    const key = buildSignalAudioStorageKey(id, "main", attemptId);
+    const original = "synthetic-preexisting-file-must-not-delete";
+    await writeSignalAudio(key, Buffer.from(original));
+    const removeOwned = vi.fn(removeSignalAudio);
+    const owned = worker({ ...h.options, writeAudio: writeSignalAudio, removeAudio: removeOwned });
+    await owned.request(id, "synthetic-ip");
+    await vi.waitFor(() => expect(h.repository.failed).toHaveBeenCalledWith(h.attempt, "AUDIO_UNAVAILABLE"));
+    await owned.stop();
+    expect(await readFile(join(fixture.storageDir, key), "utf8")).toBe(original);
+    expect(removeOwned).not.toHaveBeenCalled();
+    expect(h.repository.ready).not.toHaveBeenCalled();
+  });
+
   it("keeps separate attempt keys, prevents overwrite and removes only the requested own file", async () => {
     fixture.storageDir = await mkdtemp(join(tmpdir(), "unfreq-audio-unit-"));
     const a = buildSignalAudioStorageKey(id, "main", attemptId);

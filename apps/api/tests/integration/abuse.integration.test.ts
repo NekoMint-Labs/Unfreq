@@ -164,6 +164,10 @@ describe("real multi-process abuse controls", () => {
     const cases = { chat: "providerchat", embedding: "providerembedding", reranker: "providerreranker", tts: "providertts" } as const;
     await withAbuseHarness(cases[kind], async (h) => {
       const [a, b] = await pair(h);
+      if (kind === "chat") {
+        const author = await register(h, a);
+        expect(await a.request({ kind: "preparechat", cookie: author.cookie })).toEqual({ prepared: true });
+      }
       if (kind !== "reranker") h.provider.failNext(kind);
       expect(await a.request({ kind: "provider", provider: kind })).toEqual({ ok: true });
       if (kind === "reranker") expect(await b.request({ kind: "provider", provider: kind })).toEqual({ ok: true });

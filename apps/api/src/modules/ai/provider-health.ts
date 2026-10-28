@@ -4,6 +4,8 @@ import type {
   AdminProviderConfigTestResult,
 } from "@unfreq/contracts/admin";
 import { buildRerankerRequestBody, parseRerankerResponsePayload } from "./reranker-adapter.js";
+import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
+import { throwIfAbuseStopped } from "../../shared/abuse-errors.js";
 
 type DraftConfig = {
   apiKey: string;
@@ -230,6 +232,7 @@ export async function testProviderConfig(
               queryText: "测试文本",
             });
 
+    await authorizeProviderDispatch(kind);
     const { payload, response } = await requestJson({
       apiKey: config.apiKey,
       body: requestBody,
@@ -294,6 +297,7 @@ export async function testProviderConfig(
       status: "passed",
     });
   } catch (error) {
+    throwIfAbuseStopped(error);
     return buildResult({
       checkedUrl,
       detail: isAbortError(error) ? "Provider 请求超时。" : "Provider 请求失败，可能是网络或域名问题。",
