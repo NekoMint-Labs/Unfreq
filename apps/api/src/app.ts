@@ -1,5 +1,4 @@
 import cors from "@fastify/cors";
-import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyServerOptions, type RawServerDefault } from "fastify";
 import { env } from "./config/env.js";
 import { closeDatabaseConnection } from "./db/client.js";
@@ -13,16 +12,22 @@ import { authPlugin } from "./plugins/auth.js";
 import { loggerPlugin } from "./plugins/logger.js";
 import { redisPlugin } from "./plugins/redis.js";
 import { errorHandler } from "./shared/error-handler.js";
+import { closeAbuseControl } from "./shared/abuse-control.js";
+import { safeRequestId } from "./shared/request-identity.js";
+import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
 import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
 import { createSignalGenerationWorker, type GenerationWorkerOptions, type SignalGenerationWorker } from "./modules/signals/generation-worker.js";
+import { createSignalAudioWorker, type SignalAudioWorkerOptions, type SignalAudioWorker } from "./modules/signals/audio-worker.js";
 import { adminThemeRadioRoutes, themeRadioRoutes } from "./modules/theme-radio/routes.js";
 
 type BuildAppOptions = {
   logger?: FastifyServerOptions<RawServerDefault>["logger"];
   generationWorkerFactory?: (options: GenerationWorkerOptions) => SignalGenerationWorker;
+  audioWorkerFactory?: (options: SignalAudioWorkerOptions) => SignalAudioWorker;
   onGenerationFatal?: () => void | Promise<void>;
+  onAudioFatal?: () => void | Promise<void>;
 };
 
 const resolveLoggerOptions = (options: BuildAppOptions) => {
@@ -36,20 +41,20 @@ const resolveLoggerOptions = (options: BuildAppOptions) => {
 
   return {
     level: env.logLevel,
+    redact: {
+      paths: ["authorization", "cookie", "password", "sessionToken", "apiKey", "loginChallengeCode",
+        "req.headers.authorization", "req.headers.cookie", "headers.authorization", "headers.cookie",
+        "body.password", "body.code", "*.password", "*.sessionToken", "*.apiKey"],
+      censor: "[redacted]",
+    },
   };
 };
 
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify<RawServerDefault>({
     disableRequestLogging: true,
-    genReqId: (request) => {
-      const incomingRequestId = request.headers["x-request-id"];
-      if (Array.isArray(incomingRequestId)) {
-        return incomingRequestId[0] ?? randomUUID();
-      }
-
-      return incomingRequestId ?? randomUUID();
-    },
+    trustProxy: env.trustedProxyCidrs.length === 0 ? false : env.trustedProxyCidrs,
+    genReqId: (request) => safeRequestId(request.headers["x-request-id"]),
     logger: resolveLoggerOptions(options),
   });
 
@@ -60,6 +65,15 @@ export async function buildApp(options: BuildAppOptions = {}) {
     forceCloseApplicationDatabase: () => closeDatabaseConnection({ timeoutSeconds: 0 }),
     onFatal: () => options.onGenerationFatal === undefined ? app.close() : options.onGenerationFatal(),
   });
+  const audioWorker = (options.audioWorkerFactory ?? createSignalAudioWorker)({
+    logger: app.log,
+    shutdownBudgetMs: apiShutdownBudgetMs(env),
+    forceCloseApplicationDatabase: () => closeDatabaseConnection({ timeoutSeconds: 0 }),
+    onFatal: () => {
+      const fatal = options.onAudioFatal ?? options.onGenerationFatal;
+      return fatal === undefined ? app.close() : fatal();
+    },
+  });
   let stopAiSignalScheduler: (() => void) | undefined;
 
   app.addHook("onReady", async () => { generationWorker.start(); });
@@ -67,10 +81,13 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // the existing plugin onClose hooks, including Redis and the primary pool.
   app.addHook("preClose", async () => {
     stopAiSignalScheduler?.();
-    await generationWorker.stop();
+    const stopped = await Promise.allSettled([generationWorker.stop(), audioWorker.stop()]);
+    const failed = stopped.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   });
 
   app.addHook("onClose", async () => {
+    await closeAbuseControl();
     await closeDatabaseConnection();
   });
 
@@ -93,7 +110,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(meRoutes, { prefix: "/api" });
   await app.register(frontendDiagnosticRoutes, { prefix: "/api/frontend-diagnostics" });
   await app.register(reportRoutes, { prefix: "/api/reports" });
-  await app.register(signalRoutes, { prefix: "/api/signals", generationWorker });
+  await app.register(signalRoutes, { prefix: "/api/signals", generationWorker, audioWorker });
   await app.register(monthlyRecapRoutes, { prefix: "/api/me/recaps" });
   await app.register(themeRadioRoutes, { prefix: "/api/theme-radio" });
   await app.register(imageRoutes, { prefix: "/api/images" });

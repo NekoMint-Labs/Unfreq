@@ -1,5 +1,7 @@
 export const runtimeEntryRelative: string;
 export const runtimeArtifactPaths: readonly string[];
+export const runtimeEntryRelatives: Readonly<{ generation: string; abuse: string }>;
+export const runtimeSourcePaths: readonly string[];
 export type IntegrationRuntime = {
   runId: string;
   runDirectory: string;
@@ -20,4 +22,5 @@ export function verifyIntegrationRuntime(options: {
   runtimeDirectory: string;
   ownershipToken: string;
   executingEntry?: string;
+  entry?: "generation" | "abuse";
 }): Promise<IntegrationRuntime>;

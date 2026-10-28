@@ -9,10 +9,17 @@ type FakeWebSocketInit = {
   headers?: Record<string, string>;
 };
 
+const { FakeWebSocket } = vi.hoisted(() => {
 class FakeWebSocket extends EventTarget {
   static instances: FakeWebSocket[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  readyState = FakeWebSocket.CONNECTING;
   binaryType: "arraybuffer" | "blob" = "blob";
   sentMessages: string[] = [];
+  listeners = new Map<string, Map<(...args: unknown[]) => void, (event: Event) => void>>();
 
   constructor(
     public url: string,
@@ -21,16 +28,45 @@ class FakeWebSocket extends EventTarget {
     super();
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => {
+      if (this.readyState !== FakeWebSocket.CONNECTING) return;
+      this.readyState = FakeWebSocket.OPEN;
       this.dispatchEvent(new Event("open"));
     });
   }
 
   close() {
+    if (this.readyState === FakeWebSocket.CLOSED) return;
+    this.readyState = FakeWebSocket.CLOSED;
     this.dispatchEvent(new Event("close"));
   }
 
-  send(message: string) {
+  terminate() { this.close(); }
+
+  on(type: string, callback: (...args: unknown[]) => void) {
+    const wrapped = (event: Event) => {
+      if (type === "message") {
+        const data = (event as FakeWebSocketMessage & Event).data;
+        callback(data, typeof data !== "string");
+      } else if (type === "close") callback(1000, Buffer.alloc(0));
+      else if (type === "error") callback(new Error("synthetic socket error"));
+      else callback();
+    };
+    const byCallback = this.listeners.get(type) ?? new Map();
+    byCallback.set(callback, wrapped); this.listeners.set(type, byCallback);
+    this.addEventListener(type, wrapped);
+    return this;
+  }
+
+  off(type: string, callback: (...args: unknown[]) => void) {
+    const wrapped = this.listeners.get(type)?.get(callback);
+    if (wrapped) this.removeEventListener(type, wrapped);
+    this.listeners.get(type)?.delete(callback);
+    return this;
+  }
+
+  send(message: string, callback?: (error?: Error) => void) {
     this.sentMessages.push(message);
+    callback?.();
   }
 
   emitMessage(data: ArrayBuffer | string) {
@@ -39,6 +75,11 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(event);
   }
 }
+return { FakeWebSocket };
+});
+
+vi.mock("ws", () => ({ default: FakeWebSocket }));
+vi.mock("../../shared/abuse-control.js", () => ({ authorizeProviderDispatch: vi.fn(async () => {}) }));
 
 function createTtsConfig() {
   return {
@@ -309,6 +350,14 @@ describe("tts adapter", () => {
     );
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("今晚的信号");
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("test-key");
+  });
+
+  it("does not retry or open a socket when the owner's dispatch check is uncertain", async () => {
+    const beforeDispatch = vi.fn(async () => { throw new Error("SYNTHETIC_PRIVATE_DB_DETAIL"); });
+    await expect(synthesize("合成音频", undefined, 1, { config: createTtsConfig(), beforeDispatch, retryDelayMs: 0 }))
+      .rejects.toMatchObject({ code: "AI_UNAVAILABLE", details: { abuseRule: "concurrency", reason: "unavailable" } });
+    expect(beforeDispatch).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
   it("rejects unconfigured provider before opening websocket", async () => {

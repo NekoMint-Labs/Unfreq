@@ -191,6 +191,7 @@ export async function generateEmbedding(
           "embedding generation started",
         );
 
+        await authorizeProviderDispatch("embedding");
         await beforeGenerationDispatch("embedding", "embedding");
         const controller = new AbortController();
         combined = combineGenerationAbortSignal(controller.signal);
@@ -264,3 +265,4 @@ export async function generateEmbedding(
 
   throw new AppError("AI_UNAVAILABLE", "Embedding provider unavailable.");
 }
+import { authorizeProviderDispatch } from "../../shared/abuse-control.js";

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { throwIfAbuseStopped } from "./abuse-errors.js";
 
 export type GenerationExecutionStopReason = "obsolete" | "deadline" | "shutdown" | "storage-uncertain" | "aborted";
 export type GenerationDispatchKind = "chat" | "embedding" | "reranker";
@@ -31,6 +32,7 @@ function stoppedBy(signal: AbortSignal): GenerationExecutionStopped {
 }
 
 export function throwIfGenerationStopped(error?: unknown): void {
+  throwIfAbuseStopped(error);
   if (error instanceof GenerationExecutionStopped) throw error;
   const context = execution.getStore();
   if (context?.signal.aborted) throw stoppedBy(context.signal);

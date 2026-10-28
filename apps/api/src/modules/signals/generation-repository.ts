@@ -19,6 +19,7 @@ const runningPhases = ["EXPANDING", "MATCHING", "WRITING"] as const;
 const failureCodes = new Set<GenerationFailureCode>([
   "GENERATION_FAILED", "GENERATION_RETRY_EXHAUSTED", "GENERATION_TIMEOUT",
   "GENERATION_OUTCOME_UNKNOWN", "GENERATION_SUPERSEDED",
+  "GENERATION_RATE_LIMITED", "GENERATION_PROTECTION_UNAVAILABLE",
 ]);
 
 export class GenerationInputUnavailableError extends Error {

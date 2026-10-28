@@ -21,11 +21,13 @@ function toImageRecord(row: ImageRow): ImageRecord {
 
 export class ImageUploadLimitExceeded extends Error {
   count: number;
+  retryAfterSeconds: number;
 
-  constructor(count: number) {
+  constructor(count: number, resetAt = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1)) {
     super("Image upload daily limit exceeded.");
     this.name = "ImageUploadLimitExceeded";
     this.count = count;
+    this.retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
   }
 }
 
@@ -64,7 +66,8 @@ export async function createImageRecordWithDailyLimit(input: {
       });
 
     if (limitRow === undefined || limitRow.count > input.maxDailyCount) {
-      throw new ImageUploadLimitExceeded(limitRow?.count ?? input.maxDailyCount + 1);
+      throw new ImageUploadLimitExceeded(limitRow?.count ?? input.maxDailyCount + 1,
+        Date.parse(`${today}T00:00:00.000Z`) + 86_400_000);
     }
 
     const [row] = await tx

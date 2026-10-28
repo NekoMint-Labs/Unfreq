@@ -47,4 +47,4 @@ These email identities are available for demo login and admin flows:
 - `demo.echo@xinghe.local` -> `FM-22.05`.
 - `demo.signal@xinghe.local` -> `FM-27.51`.
 
-Server deployment keeps `AUTH_LOGIN_CODE_RESPONSE=disabled`. If login delivery is not configured yet, read the API container logs for the `local-log` code during private demos.
+Server deployment keeps `AUTH_LOGIN_CODE_RESPONSE=disabled` and `AUTH_LOGIN_DELIVERY_MODE=disabled`. Use a registered frequency/password for demos; email-code login stays unavailable until a production mail transport is implemented. Production rejects `local-log`, including private server demos.

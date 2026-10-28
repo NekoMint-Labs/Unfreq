@@ -1,0 +1,100 @@
+{
+  "namespace": "review-before-use",
+  "budgets": {
+    "registerIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "registerSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "passwordRequestIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "passwordRequestSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "passwordFailureIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "passwordFailureIdentityIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "emailRequestIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "emailRequestSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "emailVerifyIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "emailVerifySite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "generationRequestUser": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "generationDailyUser": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "generationDailySite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "audioReadIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "audioRequestIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "audioNewIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "audioNewDailySite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "diagnosticIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "diagnosticSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "chatCallsSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "embeddingCallsSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "rerankerCallsSite": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "ttsCharactersSite": {
+      "limit": 0,
+      "windowMs": 60000
+    }
+  },
+  "pendingPerUser": 1,
+  "ttsConcurrency": 1,
+  "ttsTaskTimeoutMs": 1000
+}

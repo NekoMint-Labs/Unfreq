@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
+import { AbuseControlStopped } from "../../shared/abuse-errors.js";
 import {
   GenerationExecutionStopped,
   runWithGenerationExecution,
@@ -143,6 +144,14 @@ export function createSignalGenerationWorker(options: GenerationWorkerOptions = 
       const outcome = await repository.findGenerationAttemptOutcome(claim);
       if (outcome === "COMPLETED" || outcome === "FAILED" || outcome === "OBSOLETE") return;
       if (error instanceof GenerationExecutionStopped && error.reason === "obsolete") return;
+
+      if (error instanceof AbuseControlStopped) {
+        // An explicit budget denial is a known stop, not a Provider failure.
+        // Never retry it or run a cheaper/local fallback after an accepted 201.
+        await repository.failOwnedSignalGeneration({ fence: claim,
+          code: error.reason === "limited" ? "GENERATION_RATE_LIMITED" : "GENERATION_PROTECTION_UNAVAILABLE" });
+        return;
+      }
 
       const deterministic = error instanceof GenerationInputUnavailableError ||
         (error instanceof AppError && ["VALIDATION_ERROR", "FORBIDDEN", "NOT_FOUND", "CONFLICT"].includes(error.code));
