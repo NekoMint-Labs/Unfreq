@@ -1,5 +1,8 @@
 import { AppError } from "../../shared/errors.js";
-import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
+import {
+  assertGenerationActive, GenerationExecutionStopped,
+  getGenerationExecutionContext, throwIfGenerationStopped,
+} from "../../shared/generation-execution.js";
 import { resolveChatProviderConfig } from "./provider-config.js";
 import { createAiReviewRecord } from "./repository.js";
 import {
@@ -96,21 +99,30 @@ async function recordAiReview(params: {
   status: "FALLBACK" | "SUCCEEDED";
 } & AiReviewTarget) {
   await assertGenerationActive();
-  const providerConfig = await resolveChatProviderConfig();
-  await assertGenerationActive();
+  try {
+    const providerConfig = await resolveChatProviderConfig();
+    await assertGenerationActive();
 
-  const review = await createAiReviewRecord({
-    inputText: params.inputText,
-    model: providerConfig.model,
-    outputJson: toOutputJson(params.output),
-    provider: providerConfig.provider,
-    reviewType: params.reviewType,
-    status: params.status,
-    targetId: params.targetId,
-    targetType: params.targetType,
-  });
-  await assertGenerationActive();
-  return review;
+    const review = await createAiReviewRecord({
+      inputText: params.inputText,
+      model: providerConfig.model,
+      outputJson: toOutputJson(params.output),
+      provider: providerConfig.provider,
+      reviewType: params.reviewType,
+      status: params.status,
+      targetId: params.targetId,
+      targetType: params.targetType,
+    });
+    await assertGenerationActive();
+    return review;
+  } catch (error) {
+    throwIfGenerationStopped(error);
+    // The provider may already have returned or the audit insert may have
+    // committed. A managed attempt cannot interpret storage failure as a
+    // material/provider failure and dispatch the split/fallback pipeline.
+    if (getGenerationExecutionContext()) throw new GenerationExecutionStopped("storage-uncertain");
+    throw error;
+  }
 }
 
 function parseAiResult<TOutput>(value: unknown, schema: AiResultSchema<TOutput>): TOutput {

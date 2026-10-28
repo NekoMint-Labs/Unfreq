@@ -180,7 +180,7 @@ async function reviewOrRewriteSignalExpansion(params: {
     params.logger?.warn(
       {
         action: "signal.expansion.review_failed",
-        problems: review.problems,
+        problemCount: review.problems.length,
         reason: "AI_UNAVAILABLE",
         targetType: "SIGNAL",
       },

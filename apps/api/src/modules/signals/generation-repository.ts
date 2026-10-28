@@ -58,13 +58,21 @@ function resultForRows(rows: ReadonlyArray<{ id: string }>): GenerationCasResult
 
 type ClaimRow = {
   signalId: string; attemptId: string; ownerId: string; attemptCount: number;
-  leaseUntil: Date; deadlineAt: Date; remainingMs: number;
+  leaseUntil: Date | string; deadlineAt: Date | string; remainingMs: number;
 };
 
 type ExpiredRow = {
   id: string; attempt_id: string; owner_id: string;
-  attempt_count: number; dispatch_started_at: Date | null;
+  attempt_count: number; dispatch_started_at: Date | string | null;
 };
+
+function claimDate(value: Date | string): Date {
+  // Drizzle installs transparent timestamp parsers on this shared Postgres.js
+  // client. Raw tagged SQL therefore needs decoding at the repository edge.
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error("Generation claim returned an invalid timestamp.");
+  return date;
+}
 
 /** One instance belongs to one app/worker; constructing it opens no connection. */
 export function configureSignalGenerationRepository(options: GenerationRepositoryOptions) {
@@ -153,7 +161,10 @@ export function configureSignalGenerationRepository(options: GenerationRepositor
             s.generation_lease_owner as "ownerId", s.generation_attempt_count as "attemptCount",
             s.generation_lease_until as "leaseUntil", s.generation_attempt_deadline_at as "deadlineAt",
             (extract(epoch from (s.generation_attempt_deadline_at - clock_timestamp())) * 1000)::double precision as "remainingMs"`;
-        return Array.from(rows);
+        return Array.from(rows, (row) => {
+          if (!Number.isFinite(row.remainingMs)) throw new Error("Generation claim returned an invalid remaining deadline.");
+          return { ...row, leaseUntil: claimDate(row.leaseUntil), deadlineAt: claimDate(row.deadlineAt) };
+        });
       });
     },
 

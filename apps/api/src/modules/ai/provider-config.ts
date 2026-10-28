@@ -4,6 +4,7 @@ import { env } from "../../config/env.js";
 import { db } from "../../db/client.js";
 import { providerConfigs } from "../../db/schema.js";
 import { AppError } from "../../shared/errors.js";
+import { GenerationExecutionStopped, getGenerationExecutionContext, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 
 export type ProviderConfigKind = "chat" | "embedding" | "reranker" | "tts";
 
@@ -340,7 +341,12 @@ export async function listProviderConfigsByKind(
       .from(providerConfigs)
       .where(eq(providerConfigs.kind, kind))
       .orderBy(asc(providerConfigs.priority), asc(providerConfigs.createdAt));
-  } catch {
+  } catch (error) {
+    throwIfGenerationStopped(error);
+    // An unavailable configuration query is not evidence that no override
+    // exists. Managed attempts must stop before choosing an environment
+    // provider; ordinary callers retain their existing empty-list fallback.
+    if (getGenerationExecutionContext()) throw new GenerationExecutionStopped("storage-uncertain");
     return [];
   }
 

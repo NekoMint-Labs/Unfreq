@@ -33,6 +33,7 @@ import {
   seedSignalLibrary,
 } from "./service.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
+import { generateReviewedSignalExpansion } from "./service-creation.js";
 
 const signalStore = vi.hoisted(() => {
   return {
@@ -1384,12 +1385,66 @@ describe("signal service AI generation", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       {
         action: "signal.expansion.review_failed",
-        problems: ["没有保留原句关键词"],
+        problemCount: 1,
         reason: "AI_UNAVAILABLE",
         targetType: "SIGNAL",
       },
       "signal expansion review failed",
     );
+  });
+
+  it("keeps sensitive review problems out of warnings after the rewritten expansion is rejected", async () => {
+    const seedMarker = "SYNTHETIC_PRIVATE_SEED_LOG_GUARD";
+    const credentialMarker = "SYNTHETIC_PRIVATE_CREDENTIAL_LOG_GUARD";
+    const seedText = `这段合成原句只用于日志回归：${seedMarker}`;
+    const logger = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    vi.mocked(reviewSignalExpansionWithFallback)
+      .mockResolvedValueOnce({
+        result: {
+          ...defaultExpansionReview,
+          pass: false,
+          preservesOriginalDirection: false,
+          problems: [`第一轮未保留合成原句 ${seedMarker}`],
+          rewriteInstruction: "请按原句方向重写。",
+          score: 2,
+        },
+        reviewId: "00000000-0000-4000-8000-000000000914",
+      })
+      .mockResolvedValueOnce({
+        result: {
+          ...defaultExpansionReview,
+          pass: false,
+          preservesOriginalDirection: false,
+          problems: [
+            `最终审核仍包含合成原句 ${seedMarker}`,
+            `最终审核包含合成凭据 ${credentialMarker}`,
+          ],
+          rewriteInstruction: "请继续修正原句方向。",
+          score: 2,
+        },
+        reviewId: "00000000-0000-4000-8000-000000000915",
+      });
+
+    await expect(generateReviewedSignalExpansion({ seedText, logger })).rejects.toMatchObject({
+      code: "AI_UNAVAILABLE",
+      statusCode: 503,
+    });
+
+    // Exercise initial expansion, rewrite and the second failed review; a
+    // short-circuit before the real rejection branch must not pass this test.
+    expect(generateSignalExpansionWithFallback).toHaveBeenCalledTimes(2);
+    expect(reviewSignalExpansionWithFallback).toHaveBeenCalledTimes(2);
+    expect(reviewSignalExpansionWithFallback).toHaveBeenNthCalledWith(2, expect.objectContaining({ seedText }));
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const serializedWarnings = JSON.stringify(logger.warn.mock.calls);
+    expect(serializedWarnings).not.toContain(seedMarker);
+    expect(serializedWarnings).not.toContain(credentialMarker);
+    expect(logger.warn).toHaveBeenCalledWith({
+      action: "signal.expansion.review_failed",
+      problemCount: 2,
+      reason: "AI_UNAVAILABLE",
+      targetType: "SIGNAL",
+    }, "signal expansion review failed");
   });
 
   it("generates published AI signals after quality check", async () => {

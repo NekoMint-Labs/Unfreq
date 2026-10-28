@@ -1,5 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
+import { GenerationExecutionStopped, runWithGenerationExecution, type GenerationExecutionContext } from "../../shared/generation-execution.js";
+import { callChatProvider } from "./provider-transport.js";
+import { generateEmbedding } from "./embedding.js";
+import { rerankCandidates } from "./reranker.js";
 import {
   createProviderConfig,
   listProviderConfigViews,
@@ -169,6 +173,8 @@ beforeEach(() => {
     ]),
   );
 });
+
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("provider config service", () => {
   it("uses environment config when no database override exists", async () => {
@@ -487,5 +493,73 @@ describe("provider config service", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("configuration database rejection", () => {
+  function configureSyntheticEnvironment() {
+    Object.assign(testState.env, {
+      aiApiKey: "synthetic-env-key", aiBaseUrl: "http://127.0.0.1:9/unit", aiModel: "synthetic-chat",
+      embeddingApiKey: "synthetic-env-key", embeddingBaseUrl: "http://127.0.0.1:9/unit",
+      rerankerApiKey: "synthetic-env-key", rerankerBaseUrl: "http://127.0.0.1:9/unit", rerankerProvider: "synthetic",
+    });
+  }
+  function execution() {
+    const controller = new AbortController();
+    const context: GenerationExecutionContext = {
+      attemptId: "synthetic-config-storage-attempt", signal: controller.signal,
+      assertActive: vi.fn(async () => {}), beforeDispatch: vi.fn(async () => {}),
+    };
+    return { context, controller };
+  }
+
+  it.each(["chat", "embedding", "reranker"] as const)("does not use an environment %s or dispatch when the actual config DB query rejects in a managed attempt", async (kind) => {
+    configureSyntheticEnvironment();
+    const { context, controller } = execution();
+    testState.orderByMock.mockRejectedValue(new Error("synthetic-config-private-error-marker"));
+    // Real config resolution and real adapters are used. HTTP is a complete
+    // synthetic response if the faulty resolver falls back, never a network
+    // request; thus a red result measures the bypass rather than an HTTP fault.
+    const fetchMock = vi.fn(async () => {
+      if (kind === "chat") return new Response(JSON.stringify({ choices: [{ message: { content: "{\"synthetic\":true}" } }] }), { status: 200 });
+      if (kind === "embedding") return new Response(JSON.stringify({ data: [{ embedding: Array.from({ length: testState.env.embeddingDimensions }, () => 0.1) }] }), { status: 200 });
+      return new Response(JSON.stringify({ results: [{ id: "synthetic-candidate", score: 0.8, reason: "synthetic" }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const observed: unknown = await runWithGenerationExecution(context, async () => {
+      if (kind === "chat") return callChatProvider("classify", "synthetic input");
+      if (kind === "embedding") return generateEmbedding("synthetic input", { retryDelayMs: 0 });
+      return rerankCandidates({ queryText: "synthetic input", candidates: [{ id: "synthetic-candidate", distance: 0.1, expandedText: "synthetic candidate" }] });
+    }).then(() => undefined, (error: unknown) => error);
+    expect(controller.signal.aborted).toBe(false);
+    expect(context.assertActive).toHaveBeenCalled();
+    expect({
+      errorName: observed instanceof Error ? observed.name : null,
+      stopReason: observed instanceof GenerationExecutionStopped ? observed.reason : null,
+      providerCalls: fetchMock.mock.calls.length,
+      dispatchFences: vi.mocked(context.beforeDispatch).mock.calls.length,
+    }).toEqual({ errorName: "GenerationExecutionStopped", stopReason: "storage-uncertain", providerCalls: 0, dispatchFences: 0 });
+    expect(String(observed)).not.toContain("synthetic-config-private-error-marker");
+  });
+
+  it("preserves ordinary environment fallback outside a generation context after a database rejection", async () => {
+    configureSyntheticEnvironment();
+    testState.orderByMock.mockRejectedValueOnce(new Error("synthetic database unavailable"));
+    const configs = await resolveChatProviderConfigs();
+    expect(configs).toContainEqual(expect.objectContaining({ apiKey: "synthetic-env-key", baseUrl: "http://127.0.0.1:9/unit" }));
+  });
+
+  it("does not erase a control error supplied by the config storage layer", async () => {
+    const stopped = new GenerationExecutionStopped("obsolete");
+    testState.orderByMock.mockRejectedValueOnce(stopped);
+    await expect(resolveChatProviderConfigs()).rejects.toBe(stopped);
+  });
+
+  it("preserves an already-aborted attempt's reason rather than replacing it with a storage failure", async () => {
+    const { context, controller } = execution();
+    const stopped = new GenerationExecutionStopped("shutdown");
+    controller.abort(stopped);
+    testState.orderByMock.mockRejectedValueOnce(new Error("synthetic database unavailable"));
+    await expect(runWithGenerationExecution(context, resolveChatProviderConfigs)).rejects.toBe(stopped);
   });
 });

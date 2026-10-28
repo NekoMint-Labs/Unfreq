@@ -206,20 +206,18 @@ export async function createSignalDraft(input: CreateSignalInput): Promise<Signa
       subFeeling: input.frequencyProfile?.subFeeling,
     })
     .returning({
-      id: signals.id,
+      ...signalSelection,
+      authorFreqCode: sql<string | null>`(select ${users.freqCode} from ${users} where ${users.id} = ${signals.authorId})`,
     });
 
   if (signal === undefined) {
     throw new Error("Signal insert returned no row.");
   }
 
-  const createdSignal = await findSignalById(signal.id);
-
-  if (createdSignal === undefined) {
-    throw new Error("Signal insert could not be read back.");
-  }
-
-  return createdSignal;
+  // Return the INSERT snapshot. A scanner may claim the row immediately after
+  // commit; a second SELECT could otherwise change the accepted response from
+  // RECEIVED to a later phase before its caller has received the initial ID.
+  return toSignalRecord(signal);
 }
 
 export async function updateSignalGenerationStatus(params: {
