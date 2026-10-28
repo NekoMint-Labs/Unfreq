@@ -1,5 +1,6 @@
 export { maxSignalPublicationVersion } from "./signal-publication.js";
 export type {
+  PublishSignalRequest,
   WithdrawSignalRequest,
   WithdrawSignalResponse,
   OwnerSignalDetail,
