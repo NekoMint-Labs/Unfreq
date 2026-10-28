@@ -11,6 +11,7 @@ import { assertManagedIntegrationEnvironment, installFetchBoundary } from "./har
 import { createProviderStub, type IntegrationProvider, type ProviderRequestHold } from "./provider-stub.js";
 import { fixtureSeed } from "./fixtures.js";
 import { installDispatchFault, readRetryHistory, type RetryHistory } from "./generation-test-db.js";
+import { verifyIntegrationRuntime, type IntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 import type { GenerationControlState } from "./generation-test-controls.js";
 import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage, GenerationWorkerState, GenerationShutdownDiagnostics } from "./generation-process-fixture.js";
 
@@ -65,8 +66,8 @@ export class GenerationProcess {
   private lastBootPhase: GenerationBootPhase | undefined;
   private stopPromise: Promise<void> | undefined;
 
-  constructor(environment: NodeJS.ProcessEnv, private journal: Journal, label: string) {
-    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("./generation-process-fixture.ts", import.meta.url))], {
+  constructor(environment: NodeJS.ProcessEnv, private journal: Journal, label: string, runtime: IntegrationRuntime) {
+    const child = spawn(process.execPath, [runtime.entryPath], {
       cwd: root, env: environment, shell: false, windowsHide: true,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
@@ -222,11 +223,17 @@ export type GenerationHarness = {
   installDispatchFault: (session: GenerationSession, mode: "twice" | "always") => Promise<void>;
   retryHistory: () => Promise<RetryHistory[]>;
   record: (event: string, values?: Record<string, string | number | boolean | null>) => void;
+  captureFailureDiagnostics: () => Promise<void>;
   close: (workFailed?: boolean) => Promise<void>;
 };
 
 export async function createGenerationHarness(caseId: CaseId): Promise<GenerationHarness> {
   const managed = assertManagedIntegrationEnvironment();
+  // Reject missing, old, tampered or source-tree runtimes before creating a
+  // Provider, media directory, connection or disposable database.
+  const runtime = await verifyIntegrationRuntime({ repositoryRoot: root, runId: managed.runId,
+    runtimeDirectory: process.env.UNFREQ_INTEGRATION_RUNTIME_DIR ?? "",
+    ownershipToken: process.env.UNFREQ_INTEGRATION_RUNTIME_TOKEN ?? "" });
   const nonce = randomUUID().replaceAll("-", "").slice(0, 24);
   const digest = hash(managed.runId).slice(0, 10);
   const databaseName = `unfreq_integration_b1_${digest}_${caseId}_${nonce.slice(0, 8)}`;
@@ -239,7 +246,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
   const ownedIds = new Set<string>();
   const registeredIds = new Set<string>();
   let closeClaimGate: (() => Promise<void>) | undefined;
-  const secrets = new Set([fixtureSeed, "generation-stub-only", "unfreq_integration_only", `generation-session-${nonce}`, `generation-provider-${nonce}`]);
+  const secrets = new Set([fixtureSeed, "generation-stub-only", "unfreq_integration_only", runtime.ownershipToken, `generation-session-${nonce}`, `generation-provider-${nonce}`]);
   const journal: Journal = [{ event: "case-created", caseId, databaseName, runId: managed.runId, at: Date.now() }];
   let provider: IntegrationProvider | undefined;
   let restoreFetch: (() => void) | undefined;
@@ -392,6 +399,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
     const readyProvider = provider;
     const environment: NodeJS.ProcessEnv = {
       ...safeSystemEnvironment(), NODE_ENV: "test", UNFREQ_INTEGRATION_MANAGED: "1", UNFREQ_INTEGRATION_RUN_ID: managed.runId,
+      UNFREQ_INTEGRATION_RUNTIME_DIR: runtime.runtimeDirectory, UNFREQ_INTEGRATION_RUNTIME_TOKEN: runtime.ownershipToken,
       UNFREQ_GENERATION_FIXTURE: "1", UNFREQ_GENERATION_PARENT_PID: String(process.pid),
       UNFREQ_GENERATION_CASE: caseId, UNFREQ_GENERATION_NONCE: nonce, UNFREQ_GENERATION_DIRECTORY: directory,
       UNFREQ_GENERATION_MODE: caseId === "stale" || caseId === "failure" ? "repository" : "worker",
@@ -428,10 +436,70 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       if (!value) throw new Error("Owned generation row disappeared.");
       return value;
     };
+    let failureCaptured = false;
+    const captureFailureDiagnostics = async () => {
+      if (failureCaptured) return;
+      failureCaptured = true;
+      // This runs only after the business deadline has already failed. It
+      // records bounded metadata and never changes that verdict or waits idle.
+      const finite = (value: number) => Number.isFinite(value) ? value : -1;
+      const methods = new Set(["createManagedPendingSignal", "claimSignalGenerationBatch", "isSignalGenerationAttemptActive",
+        "readOwnedSignalGenerationInput", "advanceSignalGenerationPhase", "markSignalGenerationDispatch",
+        "renewSignalGenerationLease", "completeOwnedSignalGeneration", "failOwnedSignalGeneration",
+        "requeueUndispatchedSignalGeneration", "recoverExpiredSignalGenerations", "findGenerationAttemptOutcome",
+        "closeSignalGenerationRepository"]);
+      const outcomes = new Set(["PENDING", "RETURNED", "THREW", "APPLIED", "OBSOLETE", "ACTIVE", "INACTIVE", "EMPTY", "CLAIMED", "COMPLETED", "FAILED"]);
+      const phases = new Set(["RECEIVED", "EXPANDING", "MATCHING", "WRITING", "COMPLETED", "FAILED"]);
+      const statuses = new Set(["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"]);
+      try {
+        if (ownedIds.size) {
+          const rows = await readySql<{ id: string; status: string; phase: string; attempt_count: number | null;
+            lease_expired: boolean; deadline_remaining_ms: number | null }[]>`
+            select id, status, generation_status as phase, generation_attempt_count as attempt_count,
+              coalesce(generation_lease_until <= clock_timestamp(), false) as lease_expired,
+              extract(epoch from (generation_attempt_deadline_at - clock_timestamp())) * 1000 as deadline_remaining_ms
+            from signals where id in ${readySql([...ownedIds])}`;
+          for (const value of rows) record("failure-owned-row", { id: value.id,
+            status: statuses.has(value.status) ? value.status : "OTHER", phase: phases.has(value.phase) ? value.phase : "OTHER",
+            attemptCount: value.attempt_count, leaseExpired: value.lease_expired,
+            deadlineRemainingMs: value.deadline_remaining_ms === null ? null : finite(Number(value.deadline_remaining_ms)) });
+        }
+      } catch { record("failure-diagnostics-error", { scope: "database", code: "OWNED_ROW_OBSERVATION_FAILED" }); }
+      for (const child of children.filter((value) => !value.isClosed)) {
+        try {
+          const state = await child.request<GenerationControlState>({ kind: "control-state" }, 1_000);
+          const worker = await child.request<GenerationWorkerState>({ kind: "worker-state" }, 1_000);
+          record("failure-worker-state", { pid: child.pid, activeCount: finite(worker.activeCount), accepting: worker.accepting,
+            timingsDropped: finite(state.timingsDropped), claimCallsCompleted: finite(state.claimCallsCompleted) });
+          for (const timing of state.timings.slice(-256)) {
+            if (!methods.has(timing.method) || !["entry", "exit"].includes(timing.event) || !outcomes.has(timing.outcome)) continue;
+            record("failure-repository-timing", { pid: child.pid, seq: finite(timing.seq), callId: finite(timing.callId),
+              method: timing.method, timingEvent: timing.event, observedAt: finite(timing.at),
+              elapsedMs: finite(timing.elapsedMs), outcome: timing.outcome,
+              ...(timing.signalId !== undefined && ownedIds.has(timing.signalId) ? { id: timing.signalId } : {}),
+              ...(timing.attemptId !== undefined && /^[a-f0-9-]{36}$/u.test(timing.attemptId) ? { attemptId: timing.attemptId } : {}),
+              ...(timing.fromPhase !== undefined && phases.has(timing.fromPhase) ? { fromPhase: timing.fromPhase } : {}),
+              ...(timing.toPhase !== undefined && phases.has(timing.toPhase) ? { toPhase: timing.toPhase } : {}) });
+          }
+        } catch { record("failure-diagnostics-error", { scope: "child", pid: child.pid, code: "OWNED_CHILD_OBSERVATION_FAILED" }); }
+      }
+      const tasks = new Set(["signal-material", "signal-intent-analysis", "signal-fingerprint", "signal-expansion", "signal-expansion-review", "unsupported", "invalid"]);
+      try {
+        record("failure-provider-state", { inFlight: finite(readyProvider.inFlight), requestEventsDropped: finite(readyProvider.requestEventsDropped) });
+        for (const event of readyProvider.requestEvents.slice(-256)) {
+          if (!tasks.has(event.task) || !["received", "completed", "closed"].includes(event.event)) continue;
+          record("failure-provider-request", { seq: finite(event.seq), task: event.task, timingEvent: event.event,
+            observedAt: finite(event.at), elapsedMs: finite(event.elapsedMs) });
+        }
+      } catch { record("failure-diagnostics-error", { scope: "provider", code: "SYNTHETIC_PROVIDER_OBSERVATION_FAILED" }); }
+    };
     return {
-      sql: readySql, provider: readyProvider, journal, record, close, inject, row,
+      sql: readySql, provider: readyProvider, journal, record, close, inject, row, captureFailureDiagnostics,
       async start(label) {
-        const child = new GenerationProcess(environment, journal, label);
+        // Every new PID verifies the same frozen output again; no TSX fallback.
+        const checkedRuntime = await verifyIntegrationRuntime({ repositoryRoot: root, runId: managed.runId,
+          runtimeDirectory: runtime.runtimeDirectory, ownershipToken: runtime.ownershipToken });
+        const child = new GenerationProcess(environment, journal, label, checkedRuntime);
         children.push(child);
         await child.waitReady();
         return child;
@@ -579,7 +647,11 @@ export async function withGenerationHarness(caseId: CaseId, work: (harness: Gene
   let failure: unknown;
   let failed = false;
   try { await work(harness); }
-  catch (error) { failed = true; failure = error; harness.record("work-failed"); }
+  catch (error) {
+    failed = true; failure = error; harness.record("work-failed");
+    try { await harness.captureFailureDiagnostics(); }
+    catch { harness.record("failure-diagnostics-error", { scope: "capture", code: "FAILURE_OBSERVATION_FAILED" }); }
+  }
   try { await harness.close(failed); }
   catch (cleanupError) {
     if (failed) throw new AggregateError([failure, cleanupError], "Generation case and teardown verification both failed; inspect separate experiment/cleanup diagnostics.");

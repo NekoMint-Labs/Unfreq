@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import type { GenerationClaim, GenerationOutput } from "../../src/modules/signal
 import type { SignalGenerationWorker } from "../../src/modules/signals/generation-worker.js";
 import type { GenerationControlState } from "./generation-test-controls.js";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
+import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 
 const commandSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -77,6 +79,10 @@ async function validateEnvironment() {
       !/^[a-f0-9]{24}$/u.test(nonce) || Number(env.UNFREQ_GENERATION_PARENT_PID) !== process.ppid) {
     throw new Error("Invalid generation fixture ownership.");
   }
+  await verifyIntegrationRuntime({ runId,
+    runtimeDirectory: env.UNFREQ_INTEGRATION_RUNTIME_DIR ?? "",
+    ownershipToken: env.UNFREQ_INTEGRATION_RUNTIME_TOKEN ?? "",
+    executingEntry: fileURLToPath(import.meta.url) });
   const digest = createHash("sha256").update(runId).digest("hex").slice(0, 10);
   const databaseName = `unfreq_integration_b1_${digest}_${caseId}_${nonce.slice(0, 8)}`;
   const database = new URL(env.DATABASE_URL ?? "");

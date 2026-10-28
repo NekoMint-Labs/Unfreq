@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
-import { createIntegrationHarness } from "./harness.js";
+import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -28,6 +28,7 @@ type ModerationStatus = "DRAFT" | "REVIEWING" | "HIDDEN" | "DELETED" | "PUBLISHE
 type RequestMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
 let h: Harness;
+let harnessPreparation: Promise<Harness> | undefined;
 let author: Session;
 let reader: Session;
 let admin: Session;
@@ -190,20 +191,32 @@ async function expectNotPublic(id: string, reviewing = false) {
 
 describe("real API core flow against isolated PostgreSQL and Redis", () => {
   beforeAll(async () => {
-    h = await createIntegrationHarness();
+    harnessPreparation = createIntegrationHarness();
+    h = await harnessPreparation;
+    await recordCoreSetupPhase("author-register-start");
     author = await register();
+    await recordCoreSetupPhase("author-register-complete");
     reader = await register();
+    await recordCoreSetupPhase("reader-register-complete");
     admin = await register();
+    await recordCoreSetupPhase("admin-register-complete");
     // Administrator setup affects only the synthetic identity in this run's
     // guarded disposable database. Authentication still uses the real cookie.
     await h.sql`update users set role = 'ADMIN' where id = ${admin.id}`;
     await h.sql`update frequencies set role = 'ADMIN' where id = ${admin.id}`;
+    await recordCoreSetupPhase("admin-promoted");
+    await recordCoreSetupPhase("control-create-start");
     publicControlId = await createDraft();
+    await recordCoreSetupPhase("control-create-complete");
     await publish(publicControlId);
+    await recordCoreSetupPhase("control-publish-complete");
   });
 
   afterAll(async () => {
-    await h?.close();
+    // A hook watchdog is not cancellation. Even if preparation finished late,
+    // wait for the owned harness and close it instead of abandoning its work.
+    const prepared = await harnessPreparation?.catch(() => undefined);
+    await prepared?.close();
   });
 
   it("persists registration, verifies passwords, and authenticates HttpOnly session cookies", async () => {
