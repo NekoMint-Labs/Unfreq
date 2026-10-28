@@ -1,8 +1,11 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { env } from "../../config/env.js";
 import { sessionCookieName } from "../../plugins/auth.js";
 import { AppError } from "../../shared/errors.js";
 import { sendData } from "../../shared/response.js";
+import { getAbuseGuard } from "../../shared/abuse-control.js";
+import { getCanonicalClientIp } from "../../shared/request-identity.js";
+import { normalizeFrequencyCode } from "./identity.js";
 import {
   echoSummaryResponseSchema,
   mySignalsResponseSchema,
@@ -19,6 +22,7 @@ import {
   requestLoginChallenge,
   registerFrequency,
   verifyLoginChallenge,
+  PasswordLoginForbidden,
 } from "./service.js";
 import {
   frequencyLoginBodySchema,
@@ -70,6 +74,18 @@ function toFrequencyResponse(frequency: FrequencyIdentity): FrequencyIdentity & 
   };
 }
 
+const requestRules = {
+  register: ["registerIp", "registerSite"], password: ["passwordRequestIp", "passwordRequestSite"],
+  emailRequest: ["emailRequestIp", "emailRequestSite"], emailVerify: ["emailVerifyIp", "emailVerifySite"],
+} as const;
+function limitedAuthRequest(kind: keyof typeof requestRules) {
+  return { bodyLimit: 2 * 1024, async onRequest(request: FastifyRequest) {
+    const [ipRule, siteRule] = requestRules[kind];
+    await getAbuseGuard().consume([{ rule: ipRule, identity: getCanonicalClientIp(request) },
+      { rule: siteRule, identity: "site" }]);
+  } };
+}
+
 export async function frequencyRoutes(app: FastifyInstance) {
   app.post("/", async (request, reply) => {
     if (request.frequency !== undefined) {
@@ -87,7 +103,7 @@ export async function authRoutes(app: FastifyInstance) {
     throw new AppError("FORBIDDEN", "Guest frequency creation is disabled.");
   });
 
-  app.post("/register", async (request, reply) => {
+  app.post("/register", limitedAuthRequest("register"), async (request, reply) => {
     const parsedBody = registerFrequencyBodySchema.safeParse(request.body);
 
     if (!parsedBody.success) {
@@ -114,7 +130,7 @@ export async function authRoutes(app: FastifyInstance) {
     return sendData(reply, request, result, 201);
   });
 
-  app.post("/login", async (request, reply) => {
+  app.post("/login", limitedAuthRequest("emailRequest"), async (request, reply) => {
     const parsedBody = loginRequestBodySchema.safeParse(request.body);
 
     if (!parsedBody.success) {
@@ -126,8 +142,10 @@ export async function authRoutes(app: FastifyInstance) {
     request.log.info(
       {
         action: "auth.login.challenge.request",
-        email: result.localDelivery.maskedEmail,
-        loginChallengeCode: result.localDelivery.code,
+        ...(!env.isProduction && env.authLoginDeliveryMode === "local-log" ? {
+          email: result.localDelivery.maskedEmail,
+          loginChallengeCode: result.localDelivery.code,
+        } : {}),
         loginChallengeMode: result.delivery.mode,
         loginChallengeRequestId: request.id,
         requestId: request.id,
@@ -143,7 +161,7 @@ export async function authRoutes(app: FastifyInstance) {
     return sendData(reply, request, response);
   });
 
-  app.post("/login/verify", async (request, reply) => {
+  app.post("/login/verify", limitedAuthRequest("emailVerify"), async (request, reply) => {
     const parsedBody = loginVerifyBodySchema.safeParse(request.body);
 
     if (!parsedBody.success) {
@@ -170,14 +188,26 @@ export async function authRoutes(app: FastifyInstance) {
     return sendData(reply, request, result);
   });
 
-  app.post("/frequency/login", async (request, reply) => {
+  app.post("/frequency/login", limitedAuthRequest("password"), async (request, reply) => {
     const parsedBody = frequencyLoginBodySchema.safeParse(request.body);
 
     if (!parsedBody.success) {
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedBody.error.flatten());
     }
 
-    const result = await loginWithFrequencyCredentials(parsedBody.data);
+    const ip = getCanonicalClientIp(request);
+    const reservation = await getAbuseGuard().reserve([
+      { rule: "passwordFailureIp", identity: ip },
+      { rule: "passwordFailureIdentityIp", identity: JSON.stringify([normalizeFrequencyCode(parsedBody.data.frequencyCode), ip]) },
+    ]);
+    let result: Awaited<ReturnType<typeof loginWithFrequencyCredentials>>;
+    try { result = await loginWithFrequencyCredentials(parsedBody.data); }
+    catch (error) {
+      if (error instanceof PasswordLoginForbidden) await reservation.refund();
+      else await reservation.commit();
+      throw error;
+    }
+    await reservation.refund();
 
     reply.header(
       "set-cookie",

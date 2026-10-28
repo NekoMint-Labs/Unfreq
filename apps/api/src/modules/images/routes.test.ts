@@ -317,6 +317,7 @@ describe("image routes", () => {
     });
 
     expect(response.statusCode).toBe(429);
+    expect(Number(response.headers["retry-after"])).toBeGreaterThanOrEqual(1);
     expect(response.json()).toMatchObject({
       error: {
         code: "RATE_LIMITED",

@@ -94,6 +94,7 @@ export async function rerankCandidates(
     let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
 
     try {
+      await authorizeProviderDispatch("reranker");
       await beforeGenerationDispatch("reranker", "rerank");
       const controller = new AbortController();
       combined = combineGenerationAbortSignal(controller.signal);
@@ -158,3 +159,4 @@ export async function rerankCandidates(
 
   throw new AppError("AI_UNAVAILABLE", "Reranker provider unavailable.");
 }
+import { authorizeProviderDispatch } from "../../shared/abuse-control.js";

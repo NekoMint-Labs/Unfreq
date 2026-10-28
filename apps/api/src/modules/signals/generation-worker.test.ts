@@ -3,6 +3,7 @@ import {
   beforeGenerationDispatch, getGenerationExecutionContext,
 } from "../../shared/generation-execution.js";
 import { fixtureFingerprint, fixtureSeed } from "../../../tests/integration/fixtures.js";
+import { AbuseControlStopped } from "../../shared/abuse-errors.js";
 import { createSignalGenerationWorker, type GenerationWorkerConfig, type GenerationWorkerOptions, type SignalGenerationWorker } from "./generation-worker.js";
 import type { SignalGenerationRepository } from "./generation-repository.js";
 import type { GenerationClaim, GenerationOutput, OwnedGenerationInput } from "./generation-types.js";
@@ -350,6 +351,24 @@ describe("generation worker controller", () => {
     // asserting the rejected shutdown; a watchdog timeout is not cleanup.
     held.resolve(output);
     await flush();
+    expect(h.worker.activeCount).toBe(0);
+  });
+
+  it.each(["limited", "unavailable"] as const)("settles a provider protection %s without replaying the generation", async (reason) => {
+    const h = setup();
+    h.queued.push(claim(400));
+    h.execute.mockImplementationOnce(async () => {
+      await beforeGenerationDispatch("chat", "synthetic-first-dispatch");
+      throw new AbuseControlStopped(reason, "chatCallsSite", 1000);
+    });
+    h.worker.start();
+    await flush();
+    expect(h.repository.failOwnedSignalGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      code: reason === "limited" ? "GENERATION_RATE_LIMITED" : "GENERATION_PROTECTION_UNAVAILABLE",
+    }));
+    expect(h.repository.requeueUndispatchedSignalGeneration).not.toHaveBeenCalled();
+    expect(h.repository.completeOwnedSignalGeneration).not.toHaveBeenCalled();
+    expect(h.execute).toHaveBeenCalledTimes(1);
     expect(h.worker.activeCount).toBe(0);
   });
 

@@ -1,4 +1,6 @@
 import { AppError } from "../../shared/errors.js";
+import { reserveAbuse } from "../../shared/abuse-control.js";
+import { GenerationAdmissionDenied } from "./admission-errors.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import type { EmbeddingLogger, EmbeddingResult } from "../ai/embedding.js";
 import {
@@ -640,10 +642,27 @@ export async function createPendingSignal(
     parentSignalId: body.parentSignalId,
   });
 
-  const signal = await createSignalDraft(buildPendingSignalInput({
-    body,
-    frequency: activeFrequency,
-  }));
+  const reservation = await reserveAbuse([
+    { rule: "generationRequestUser", identity: activeFrequency.id },
+    { rule: "generationDailyUser", identity: activeFrequency.id },
+    { rule: "generationDailySite", identity: "site" },
+  ]);
+  let signal;
+  try {
+    signal = await createSignalDraft(buildPendingSignalInput({ body, frequency: activeFrequency }));
+  } catch (error) {
+    // Only this pre-insert rejection proves that no signal was admitted. A lost
+    // database commit acknowledgement must retain its reserved budget.
+    if (error instanceof GenerationAdmissionDenied) await reservation.refund();
+    throw error;
+  }
+  try {
+    await reservation.commit();
+  } catch {
+    // The persisted row is accepted even when Redis loses the acknowledgement;
+    // its reservation is still charged until the original window expires.
+    logger?.warn({ action: "signal.admission.reservation_uncertain" }, "signal admission reservation acknowledgement unavailable");
+  }
   dispatcher.wake();
   return toSignalGenerationDetail(signal);
 }

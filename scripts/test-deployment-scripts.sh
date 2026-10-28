@@ -29,6 +29,9 @@ write_valid_env() {
 API_HOST=0.0.0.0
 API_PORT=4000
 AUTH_LOGIN_CODE_RESPONSE=disabled
+AUTH_LOGIN_DELIVERY_MODE=disabled
+ABUSE_PROTECTION_ENABLED=true
+ABUSE_LIMITS_JSON={"synthetic":"presence-only-preflight-fixture"}
 AI_MODEL=local-fallback
 AI_PROVIDER=openai-compatible
 DATABASE_URL=postgres://postgres:postgres@postgres:5432/unfreq
@@ -140,6 +143,22 @@ test_preflight_rejects_placeholder_env() {
   assert_contains "$TMP_DIR/bad-preflight.err" "Preflight failed:"
 }
 
+test_preflight_rejects_unsafe_auth_and_missing_policy() {
+  for setting in 'AUTH_LOGIN_DELIVERY_MODE=local-log' 'AUTH_LOGIN_CODE_RESPONSE=enabled' 'ABUSE_PROTECTION_ENABLED=false' 'ABUSE_LIMITS_JSON='; do
+    write_valid_env
+    printf '%s\n' "$setting" >> "$TMP_DIR/.env"
+    if (
+      cd "$TMP_DIR"
+      PATH="$STUB_BIN:$PATH" UNFREQ_TEST_CALL_LOG="$CALL_LOG" \
+        ./scripts/deployment-stack.sh server preflight > "$TMP_DIR/rejected.out" 2> "$TMP_DIR/rejected.err"
+    ); then
+      printf 'Expected unsafe authentication or absent policy to fail preflight.\n' >&2
+      exit 1
+    fi
+    assert_contains "$TMP_DIR/rejected.err" 'Preflight failed:'
+  done
+}
+
 test_config_uses_example_env_when_env_is_missing() {
   : > "$CALL_LOG"
   rm -f "$TMP_DIR/.env"
@@ -183,6 +202,7 @@ write_stub_commands
 run_case "deployment shell syntax" test_shell_syntax
 run_case "deployment preflight success" test_preflight_passes_with_valid_env
 run_case "deployment preflight placeholder rejection" test_preflight_rejects_placeholder_env
+run_case "deployment preflight unsafe authentication and absent policy rejection" test_preflight_rejects_unsafe_auth_and_missing_policy
 run_case "deployment config env fallback" test_config_uses_example_env_when_env_is_missing
 run_case "deployment smoke command wiring" test_smoke_checks_expected_urls_and_services
 
