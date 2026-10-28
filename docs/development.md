@@ -10,6 +10,8 @@ npm run check
 npm run e2e
 npm run api:check
 npm run web:check
+npm run web:test
+npm run api:integration
 npm run deploy:test
 ```
 
@@ -32,17 +34,18 @@ Dockerfile.web  Web 镜像
 
 ## GitHub Actions CI
 
-工作流位于 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，在 PR、推送到 `main` 或手动触发时运行。三个任务独立并行，一个失败不会取消其他任务：
+工作流位于 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，在 PR、推送到 `main` 或手动触发时运行。四类任务独立并行，一个失败不会取消其他任务：
 
 | 任务 | 检查内容 |
 | --- | --- |
 | `api checks` | `npm run api:check`：lint、contracts/API 类型检查、API 单元测试、构建 |
-| `web checks` | `npm run web:check` 加 Web 单元测试：lint、contracts/Web 类型检查、构建、测试 |
+| `web checks` | `npm run web:check`：lint、contracts/Web 类型检查、Web 单测、构建 |
+| `Isolated API integration` | `npm run api:integration`：真实 Fastify、全新 PostgreSQL / Redis、本地 HTTP AI 桩 |
 | `Deployment script tests` | `sh scripts/test-deployment-scripts.sh`，与 `npm run deploy:test` 相同 |
 
 API/Web 使用与 Docker 镜像一致的 Node.js 22，通过 `npm ci` 按锁文件安装依赖并缓存 npm 下载。同一 PR/分支的新运行会取消旧运行。
 
-这套 CI 不需要仓库 secrets、真实 AI 服务、PostgreSQL 或 Redis；部署脚本测试使用替身命令，不部署应用。浏览器 E2E 和 Docker 镜像构建暂不纳入默认 CI。
+这套 CI 不需要仓库 secrets 或真实 AI 服务。集成任务自行创建临时 PostgreSQL / Redis，其他任务不要求这些服务；部署脚本测试使用替身命令，不部署应用。浏览器 E2E 和应用 Docker 镜像构建暂不纳入默认 CI。隔离策略、命令和证据边界见[测试说明](./testing.md)。
 
 ## 质量检查
 
