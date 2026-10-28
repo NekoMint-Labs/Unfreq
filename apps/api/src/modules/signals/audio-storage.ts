@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { access, mkdir, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, open, unlink } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { env } from "../../config/env.js";
 
@@ -31,9 +31,17 @@ export function buildSignalAudioStorageKey(
   return `${signalId}-${channel}.mp3`;
 }
 
-export async function writeSignalAudio(storageKey: string, data: Buffer, options: { signal?: AbortSignal } = {}): Promise<void> {
+export async function writeSignalAudio(storageKey: string, data: Buffer,
+  options: { signal?: AbortSignal; onCreated?: () => void } = {}): Promise<void> {
   await mkdir(resolve(env.ttsStorageDir), { recursive: true });
-  await writeFile(resolveAudioPath(storageKey), data, { flag: "wx", signal: options.signal });
+  options.signal?.throwIfAborted();
+  // wx proves creation belongs to this caller. EEXIST never invokes onCreated,
+  // while a later abort/write error can still leave an owned partial file.
+  const file = await open(resolveAudioPath(storageKey), "wx");
+  try {
+    options.onCreated?.();
+    await file.writeFile(data, { signal: options.signal });
+  } finally { await file.close(); }
 }
 
 /** Only call for the current attempt's private file after a definitive non-reference decision. */

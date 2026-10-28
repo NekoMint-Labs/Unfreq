@@ -1,11 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { testProviderConfig } from "./provider-health.js";
+import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
+import { AbuseControlStopped } from "../../shared/abuse-errors.js";
+
+vi.mock("../../shared/abuse-control.js", () => ({ authorizeProviderDispatch: vi.fn() }));
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  vi.mocked(authorizeProviderDispatch).mockReset().mockResolvedValue(undefined);
 });
 
 describe("provider health checks", () => {
+  it.each([
+    ["chat", "limited"], ["chat", "unavailable"],
+    ["embedding", "limited"], ["embedding", "unavailable"],
+    ["reranker", "limited"], ["reranker", "unavailable"],
+  ] as const)("does not dispatch a %s probe when shared protection is %s", async (kind, reason) => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const rule = { chat: "chatCallsSite", embedding: "embeddingCallsSite", reranker: "rerankerCallsSite" } as const;
+    const stopped = new AbuseControlStopped(reason, rule[kind], 1000);
+    vi.mocked(authorizeProviderDispatch).mockRejectedValueOnce(stopped);
+    await expect(testProviderConfig(kind, {
+      apiKey: "synthetic-probe-key", baseUrl: "https://probe.invalid/v1", model: "synthetic", provider: "synthetic",
+    })).rejects.toBe(stopped);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("tests chat providers against chat completions endpoint", async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
