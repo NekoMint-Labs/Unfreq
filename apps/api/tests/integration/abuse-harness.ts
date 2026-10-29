@@ -33,6 +33,7 @@ export class AbuseProcess {
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private stopping: Promise<void> | undefined;
   private lastBootPhase = "before-validation";
+  private bootFailure: Error | undefined;
   constructor(entry: string, environment: NodeJS.ProcessEnv) {
     this.child = spawn(process.execPath, [entry], { cwd: root, env: environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     this.pid = this.child.pid ?? -1;
@@ -43,8 +44,9 @@ export class AbuseProcess {
     let bytes = 0;
     const output = (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65_536) { this.infrastructureErrors.push("OUTPUT_LIMIT"); void this.kill().catch(() => {}); } };
     this.child.stdout?.on("data", output); this.child.stderr?.on("data", output);
-    this.child.once("close", () => {
-      this.ended = true; close(); reject(new Error("Owned B3 process closed before ready."));
+    this.child.once("close", (code, signal) => {
+      this.ended = true; close();
+      reject(this.bootFailure ?? new Error(`Owned B3 process closed before ready at ${this.lastBootPhase} (code ${code ?? "none"}, signal ${signal ?? "none"}).`));
       for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new Error("Owned B3 process closed during command.")); }
       this.pending.clear();
     });
@@ -69,7 +71,9 @@ export class AbuseProcess {
   async waitReady() {
     let timer: NodeJS.Timeout | undefined;
     try { await Promise.race([this.ready, new Promise<never>((_, reject) => { timer = setTimeout(() => {
-      this.infrastructureErrors.push("READY_TIMEOUT"); void this.kill().then(() => reject(new Error(`B3 cold boot exceeded 20s at ${this.lastBootPhase} after terminating its PID.`)), reject);
+      this.infrastructureErrors.push("READY_TIMEOUT");
+      this.bootFailure = new Error(`B3 cold boot exceeded 20s at ${this.lastBootPhase} after terminating its PID.`);
+      void this.kill().then(() => reject(this.bootFailure), reject);
     }, 20_000); })]); }
     catch (error) { await this.kill(); throw error; }
     finally { if (timer) clearTimeout(timer); }
