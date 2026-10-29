@@ -835,7 +835,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await expectPublicationRejection(id, "NOT_FOUND", () => confirm());
       await h.sql`update signals set author_id = ${author.id}, fingerprint_json = '{"primaryBand":"self_mirror","tags":[1]}'::jsonb where id = ${id}`;
       await expectPublicationRejection(id, "CONFLICT", () => confirm());
-      await h.sql`update signals set fingerprint_json = ${h.sql.json(fixtureFingerprint)}, expanded_text = '   ' where id = ${id}`;
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify(fixtureFingerprint)}::jsonb, expanded_text = '   ' where id = ${id}`;
       await expectPublicationRejection(id, "CONFLICT", () => confirm());
       await h.sql`update signals set expanded_text = ${fixtureExpansion.expandedText} where id = ${id}`;
       const [account] = await h.sql<{ status: string }[]>`select status from users where id = ${author.id}`;
