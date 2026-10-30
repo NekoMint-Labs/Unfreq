@@ -1038,7 +1038,7 @@ button:disabled {
     radial-gradient(ellipse at 18% 20%, rgba(118, 140, 190, 0.024), transparent 30%),
     radial-gradient(ellipse at 78% 82%, rgba(210, 214, 224, 0.018), transparent 32%),
     #03050b;
-  touch-action: none;
+  touch-action: auto;
 }
 
 .galaxy-stage::before {
@@ -1224,20 +1224,34 @@ button:disabled {
   position: fixed;
   inset: 0;
   z-index: 999;
-  display: grid;
-  align-content: start;
-  width: 100vw;
+  display: block;
+  width: 100%;
+  max-width: none;
+  max-height: 100dvh;
+  margin: 0;
+  color: var(--text-primary);
+  overscroll-behavior: contain;
   min-height: 100dvh;
   height: 100dvh;
-  overflow-y: auto;
+  overflow: hidden;
   border: 0;
   background:
     radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.04), transparent 26rem),
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.88));
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.88)), #06070b;
   backdrop-filter: blur(15px);
-  padding: 34px 20px 72px;
+  padding: 0;
   box-shadow: none;
   pointer-events: auto;
+}
+
+.galaxy-sheet:not([open]) { display: none; }
+.galaxy-reader-scroll { height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 34px 20px 72px; }
+.galaxy-sheet::backdrop { background: rgba(0, 0, 0, 0.35); }
+.galaxy-canvas-host { touch-action: none; }
+.galaxy-sample-list { touch-action: auto; overscroll-behavior: contain; }
+.galaxy-stage button:focus-visible, .galaxy-stage a:focus-visible,
+.galaxy-stage summary:focus-visible, .galaxy-sheet :focus-visible {
+  outline: 2px solid #e4e4e7; outline-offset: 3px;
 }
 
 .galaxy-sheet .galaxy-detail-content {
@@ -1253,7 +1267,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 26px;
-  color: rgba(255, 255, 255, 0.32);
+  color: #bfc2cf;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.2em;
@@ -1271,13 +1285,13 @@ button:disabled {
   right: 18px;
   z-index: 1000;
   display: inline-flex;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.22);
+  background: #101217;
   color: rgba(255, 255, 255, 0.62);
   font-family: var(--font-mono);
   font-size: 25px;
@@ -1290,7 +1304,7 @@ button:disabled {
 
 .galaxy-close-button:hover {
   border-color: rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.06);
+  background: #22252c;
   color: rgba(255, 255, 255, 0.86);
 }
 
@@ -1301,6 +1315,7 @@ button:disabled {
 }
 
 .galaxy-reading-text {
+  overflow-wrap: anywhere;
   font-size: 1.18rem;
   line-height: 1.86;
   max-width: 24em;
@@ -1333,9 +1348,9 @@ button:disabled {
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.035);
   padding: 0 13px;
-  color: rgba(255, 255, 255, 0.58);
+  color: #d0d3dd;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.16em;
   line-height: 1;
   text-transform: uppercase;
@@ -1378,7 +1393,8 @@ button:disabled {
   order: -1;
   margin-top: 0;
   margin-bottom: 48px;
-  min-height: 0;
+  min-height: 44px;
+  color: #bfc2cf;
   border: 0;
   background: transparent;
   padding: 0;
@@ -1390,6 +1406,12 @@ button:disabled {
   transition:
     color 700ms var(--ease-out),
     opacity 700ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .galaxy-stage *, .galaxy-sheet *, .galaxy-sheet {
+    animation: none !important; transition: none !important; scroll-behavior: auto !important;
+  }
 }
 
 .galaxy-sheet .galaxy-return-link:hover {
@@ -1422,8 +1444,9 @@ button:disabled {
     mask-image: none;
   }
 
-  .galaxy-sheet {
-    align-content: center;
+  .galaxy-reader-scroll {
+    display: grid;
+    align-content: safe center;
     padding: 8vh 7vw;
   }
 

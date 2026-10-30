@@ -13,7 +13,7 @@ import {
 } from "three";
 import { pseudoRandom } from "./galaxy-layout";
 
-export function GalaxyDust({ count, isMuted }: { count: number; isMuted: boolean }) {
+export function GalaxyDust({ count, isMuted, reducedMotion }: { count: number; isMuted: boolean; reducedMotion: boolean }) {
   const materialRef = useRef<PointsMaterial>(null);
   const geometry = useMemo(() => {
     const colors: number[] = [];
@@ -58,7 +58,7 @@ export function GalaxyDust({ count, isMuted }: { count: number; isMuted: boolean
     }
 
     const targetOpacity = isMuted ? 0.014 : 0.088;
-    const alpha = 1 - Math.exp(-delta * 2.2);
+    const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 2.2);
     materialRef.current.opacity = MathUtils.lerp(
       materialRef.current.opacity,
       targetOpacity,
@@ -86,10 +86,12 @@ export function GalaxyDistantStars({
   count,
   isMuted,
   isMobileHitArea,
+  reducedMotion,
 }: {
   count: number;
   isMobileHitArea: boolean;
   isMuted: boolean;
+  reducedMotion: boolean;
 }) {
   const materialRef = useRef<PointsMaterial>(null);
   const geometry = useMemo(() => {
@@ -135,7 +137,7 @@ export function GalaxyDistantStars({
     }
 
     const targetOpacity = isMuted ? 0.055 : isMobileHitArea ? 0.26 : 0.3;
-    const alpha = 1 - Math.exp(-delta * 1.8);
+    const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 1.8);
     materialRef.current.opacity = MathUtils.lerp(
       materialRef.current.opacity,
       targetOpacity,
@@ -162,23 +164,25 @@ export function GalaxyDistantStars({
 export function GalaxyNebula({
   isMuted,
   texture,
+  reducedMotion,
 }: {
   isMuted: boolean;
   texture?: CanvasTexture;
+  reducedMotion: boolean;
 }) {
   const materialRef = useRef<SpriteMaterial>(null);
   const elapsedRef = useRef(0);
 
   useFrame((_, delta) => {
-    elapsedRef.current += delta;
+    if (!reducedMotion) elapsedRef.current += delta;
 
     if (materialRef.current === null) {
       return;
     }
 
-    const drift = Math.sin(elapsedRef.current * 0.12) * 0.025;
+    const drift = reducedMotion ? 0 : Math.sin(elapsedRef.current * 0.12) * 0.025;
     const targetOpacity = isMuted ? 0.08 : 0.18 + drift;
-    const alpha = 1 - Math.exp(-delta * 1.6);
+    const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 1.6);
     materialRef.current.opacity = MathUtils.lerp(
       materialRef.current.opacity,
       targetOpacity,

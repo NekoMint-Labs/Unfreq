@@ -28,8 +28,9 @@ exclusion, author publication, anonymous public reading, PNG signature and
 1200x630 dimensions, share-link copying, and 390px Galaxy WebGL/filter navigation.
 The mock enforces synthetic permissions to detect failures at the Web boundary;
 its permission implementation is not evidence about real backend authorization.
-Galaxy checks here do not establish keyboard accessibility, point-selection
-usability, frame rate or physical-device performance.
+Basic canvas checks alone do not establish keyboard accessibility. D3 cases below
+exercise core keyboard reading; these fixtures still do not establish frame rate,
+physical-device performance or compatibility with every screen reader.
 
 Each case resets only the mock's process-local publication state through a test-only
 loopback endpoint, so publication does not make cases or retries depend on order.
@@ -65,5 +66,14 @@ integration tests.
 D2 checks the artistic-position legend, keyboard expansion, desktop and 390px
 layout, and the association note after selecting a real canvas point. Unit tests
 cover candidate counting; browser fixtures do not establish that users understand
-the explanation. The production suite now has twelve cases. Full Galaxy keyboard
-reading, focus lifecycle and reduced motion remain D3 work.
+the explanation.
+
+D3 adds four cases: keyboard-only list selection, dialog focus loops and restoration,
+resonance/save and nested report dismissal; failed WebGL context creation; context
+loss; and 390px long-text reading with 200% root text size and 44px action targets.
+The motion case compares two canvas-region screenshots with unrelated CSS
+animations disabled in both captures, then confirms that normal motion changes the
+image. It also tests live preference changes. Text contrast checks use computed
+foreground colors against a conservative dark-background bound, not a full WCAG
+audit. The production suite now has sixteen cases. Physical screen-reader and
+mobile-device acceptance remains separate.

@@ -59,6 +59,9 @@ const relationshipSignal = makeSignal(
   },
 );
 const signals = new Map([privateSignal, publicSignal, relationshipSignal].map((signal) => [signal.id, signal]));
+const publicOriginalText = publicSignal.expandedText;
+const savedSignals = new Set();
+const resonatedSignals = new Set();
 
 function identity(request) {
   const value = (request.headers.cookie ?? "").split(";")
@@ -115,6 +118,8 @@ const server = createServer(async (request, response) => {
     publicSignal.withdrawn = false; revokeAfterPublicReads = undefined;
     publicSignal.galaxyPosition = { x: 0.1, y: -0.2, z: 0.3 };
     reportReceipts.clear(); reportSequence = 0;
+    publicSignal.expandedText = publicOriginalText;
+    savedSignals.clear(); resonatedSignals.clear();
     for (const id of signals.keys()) if (id.startsWith("d1000000-")) signals.delete(id);
     return ok(response, { synthetic: true });
   }
@@ -140,6 +145,20 @@ const server = createServer(async (request, response) => {
       }));
     }
     return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/long-galaxy-expression") {
+    publicSignal.expandedText = `${"这是一段用于验证移动阅读的合成表达，需要完整显示并可以向下滚动。".repeat(60)} ${"x".repeat(180)} D3_LONG_END`;
+    return ok(response, { synthetic: true });
+  }
+  const interaction = /^\/api\/signals\/([^/]+)\/(save|resonance)$/.exec(url.pathname);
+  if (interaction && request.method === "POST") {
+    const signal = signals.get(interaction[1]);
+    if (!signal || signal.status !== "PUBLISHED" || signal.withdrawn) return fail(response, 404, "NOT_FOUND");
+    if (!current) return fail(response, 401, "UNAUTHORIZED");
+    const key = `${current.id}:${signal.id}`;
+    if (interaction[2] === "save") { savedSignals.add(key); return ok(response, { save: { hasSaved: true } }); }
+    resonatedSignals.add(key);
+    return ok(response, { resonance: { hasResonated: true, resonanceCount: [...resonatedSignals].filter((entry) => entry.endsWith(`:${signal.id}`)).length } });
   }
   const reportStatusMatch = /^\/api\/reports\/signal\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && reportStatusMatch) {

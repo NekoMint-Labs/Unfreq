@@ -40,6 +40,8 @@ tags:
 - The reading panel explains rule candidates using only IDs already in the returned sample. It deduplicates incoming and outgoing records and distinguishes candidate count from drawn link count; zero records remain an explicit zero, without invented reasons or percentages.
 - The API may return an empty `points` array; the frontend must render a truthful empty state. Legacy `theme` queries map known display labels to confirmed primary bands; new clients use the public `primaryBand` and confirmed tags, never private `frequencyProfile`. `themeOptions` is for older clients only and must not drive new UI.
 - `/galaxy` is a full-bleed 3D view.
+- The same bounded public sample has an optional DOM list supporting keyboard selection and reading actions. Closing the native reading dialog restores its trigger (canvas/focus-link selections use the list toggle). The dialog has a labelled heading, contained Tab navigation and Escape handling; nested report dismissal preserves the reader.
+- Disabling graphics, failed WebGL2 support checks and context loss keep the sample readable through the list. Reduced-motion preferences update live, disabling automatic rotation, twinkle, camera easing and reader translation while keeping direct controls. This does not change authorization, sampling or matching.
 
 ## ENG-004 Random tuning
 

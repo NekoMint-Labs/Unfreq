@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext } from "playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page } from "playwright/test";
 
 const apiBaseUrl = `http://127.0.0.1:${process.env.RUNTIME_API_PORT ?? 4200}`;
 const privateSeed = "PRIVATE-SEED-runtime-7a38";
@@ -11,6 +11,14 @@ async function signIn(context: BrowserContext, frequencyCode = "FM 78.23") {
     data: { frequencyCode, password: "runtime-password" },
   });
   expect(response.status()).toBe(200);
+}
+
+async function tabTo(page: Page, target: Locator) {
+  for (let count = 0; count < 18; count += 1) {
+    if (await target.evaluate((element) => element === document.activeElement)) return;
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
 }
 
 test.beforeEach(async ({ request }) => {
@@ -298,6 +306,143 @@ test("D2 explains artistic positions, rule associations and decorative appearanc
   await page.screenshot({ path: testInfo.outputPath("d2-association-note.png") });
 });
 
+
+test("D3 keyboard reading traps and restores focus, including a nested report", async ({ page, context }) => {
+  await signIn(context);
+  await page.goto("/galaxy");
+  const toggle = page.getByRole("button", { name: "查看样本列表", exact: true });
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  const list = page.getByRole("complementary", { name: "星图样本列表" });
+  const readerTrigger = list.locator(".galaxy-sample-read").first();
+  await tabTo(page, readerTrigger);
+  await page.keyboard.press("Enter");
+  const reader = page.getByRole("dialog", { name: /信号阅读/ });
+  await expect(reader).toBeVisible();
+  const close = reader.getByRole("button", { name: "关闭信号详情" });
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(reader.getByRole("button", { name: /隐 去/ })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await tabTo(page, reader.getByRole("button", { name: /^我也想过/ }));
+  await page.keyboard.press("Enter");
+  await expect(reader.getByRole("status")).toContainText("共鸣已经送出");
+  await tabTo(page, reader.getByRole("button", { name: "收藏", exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(reader.getByRole("status").filter({ hasText: "信号已经收藏" })).toBeVisible();
+  const report = reader.getByRole("button", { name: "举报", exact: true });
+  await tabTo(page, report);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "举报这条信号" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(reader).toBeVisible();
+  await expect(report).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(reader).toHaveCount(0);
+  await expect(readerTrigger).toBeFocused();
+  await expect(list).toBeVisible();
+  await expect(list).not.toContainText(privateSeed);
+  await page.keyboard.press("Escape");
+  await expect(toggle).toBeFocused();
+});
+
+test("D3 WebGL creation failure leaves the same public sample readable", async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: unknown[]) {
+      if (kind.startsWith("webgl") || kind === "experimental-webgl") return null;
+      return Reflect.apply(original, this, [kind, ...args]);
+    } as typeof original;
+  });
+  await page.goto("/galaxy");
+  await expect(page.getByRole("status").filter({ hasText: "三维视图不可用" })).toBeVisible();
+  const list = page.getByRole("complementary", { name: "星图样本列表" });
+  await expect(list.locator(".galaxy-sample-read")).toHaveCount(2);
+  await expect(list).not.toContainText(privateSeed);
+  await tabTo(page, list.locator(".galaxy-sample-read").first());
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: /信号阅读/ })).toContainText("PUBLIC-RUNTIME-SIGNAL");
+  await page.keyboard.press("Escape");
+  await expect(list.locator(".galaxy-sample-read").first()).toBeFocused();
+});
+
+test("D3 context loss opens list reading without losing the sample", async ({ page }) => {
+  await page.goto("/galaxy");
+  const canvas = page.locator(".galaxy-canvas-host canvas");
+  await expect(canvas).toBeVisible();
+  await canvas.evaluate((element) => element.dispatchEvent(new Event("webglcontextlost", { cancelable: true })));
+  await expect(page.getByRole("status").filter({ hasText: "三维视图不可用" })).toBeVisible();
+  await expect(page.locator(".galaxy-sample-read")).toHaveCount(2);
+});
+
+test("D3 reduced motion freezes the canvas and mobile long text stays readable at 200 percent text size", async ({ page, context }, testInfo) => {
+  await context.request.post(`${apiBaseUrl}/__runtime/long-galaxy-expression`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/galaxy");
+  const stage = page.locator(".galaxy-stage");
+  await expect(stage).toHaveAttribute("data-motion", "reduced");
+  const canvas = page.locator(".galaxy-canvas-host canvas");
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(1_000);
+  const still = await canvas.screenshot({ animations: "disabled" });
+  await page.waitForTimeout(500);
+  const stillAfter = await canvas.screenshot({ animations: "disabled" });
+  await testInfo.attach("reduced-before", { body: still, contentType: "image/png" });
+  await testInfo.attach("reduced-after", { body: stillAfter, contentType: "image/png" });
+  expect(Buffer.compare(still, stillAfter)).toBe(0);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(stage).toHaveAttribute("data-motion", "full");
+  const moving = await canvas.screenshot({ animations: "disabled" });
+  await page.waitForTimeout(500);
+  expect(Buffer.compare(moving, await canvas.screenshot({ animations: "disabled" }))).not.toBe(0);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(stage).toHaveAttribute("data-motion", "reduced");
+  await page.waitForTimeout(500);
+  const stillAgain = await canvas.screenshot({ animations: "disabled" });
+  await page.waitForTimeout(500);
+  expect(Buffer.compare(stillAgain, await canvas.screenshot({ animations: "disabled" }))).toBe(0);
+  await page.getByRole("button", { name: "关闭三维视图" }).click();
+  await expect(canvas).toHaveCount(0);
+  await page.locator(".galaxy-sample-read").first().click();
+  const reader = page.getByRole("dialog", { name: /信号阅读/ });
+  await expect(reader).toContainText("D3_LONG_END");
+  await page.screenshot({ path: testInfo.outputPath("d3-reader-mobile.png") });
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  expect(await reader.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+  expect(await reader.locator(".galaxy-reader-scroll").evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await reader.getByRole("button", { name: "举报", exact: true }).scrollIntoViewIfNeeded();
+  await expect(reader.getByRole("button", { name: "关闭信号详情" })).toBeInViewport();
+  for (const control of await reader.locator(".galaxy-sheet-actions button:visible,.galaxy-close-button").all()) {
+    const rect = await control.boundingBox();
+    expect(rect?.height).toBeGreaterThanOrEqual(44);
+    expect(rect?.width).toBeGreaterThanOrEqual(44);
+  }
+  const contrast = await reader.evaluate((element) => {
+    // Conservative background bound above the reader's dark gradient layers.
+    const background = [44, 46, 56];
+    const luminance = (rgb: number[]) => rgb.map((v) => {
+      const n = v / 255; return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    return Array.from(element.querySelectorAll(".galaxy-reading-text,.galaxy-sheet-tags,.galaxy-sheet-actions button,.galaxy-return-link,.galaxy-close-button")).filter((node) => node.getClientRects().length > 0).map((node) => {
+      const values = getComputedStyle(node).color.match(/[\d.]+/g)!.map(Number);
+      const alpha = values[3] ?? 1;
+      const foreground = values.slice(0, 3).map((channel, index) => channel * alpha + background[index] * (1 - alpha));
+      return (luminance(foreground) + 0.05) / (luminance(background) + 0.05);
+    });
+  });
+  for (const ratio of contrast) expect(ratio).toBeGreaterThanOrEqual(4.5);
+  await page.screenshot({ path: testInfo.outputPath("d3-reader-mobile-text-200.png") });
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".galaxy-sample-read").first()).toBeFocused();
+  await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.locator(".galaxy-sample-read").first().click();
+  await expect(reader.getByRole("heading", { name: /信号阅读/ })).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("d3-reader-desktop-long.png") });
+});
 
 test("author withdrawal removes sharing and requires a fresh visible preview to republish", async ({ page, context, browser, baseURL }, testInfo) => {
   await signIn(context);
