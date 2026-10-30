@@ -28,7 +28,6 @@ const signalStatuses = ["DELETED", "DRAFT", "HIDDEN", "PUBLISHED", "REVIEWING"] 
 const signalEchoStatuses = ["DELETED", "HIDDEN", "PUBLISHED", "REVIEWING"] as const;
 const signalAudioStatuses = ["FAILED", "NOT_REQUESTED", "PENDING", "READY"] as const;
 const signalRiskLevels = ["HIGH", "LOW", "MEDIUM"] as const;
-const signalMatchSources = ["FALLBACK", "PUBLISHED", "SEEDED"] as const;
 const frequencyRoles = ["ADMIN", "USER"] as const;
 const frequencyStatuses = ["ACTIVE", "BANNED", "MUTED"] as const;
 
@@ -138,26 +137,38 @@ const isSignalPosition = (value: unknown): boolean => {
   );
 };
 
-const isSignalMatchSummary = (value: unknown): boolean => {
-  return (
-    isRecord(value) &&
-    isOptional(value.distance, isFiniteNumber) &&
-    isString(value.expandedText) &&
-    isFrequencyProfile(value.frequencyProfile) &&
-    isString(value.frequencyCode) &&
-    isString(value.id) &&
-    isString(value.primaryEmotion) &&
-    isNonNegativeInteger(value.resonanceCount) &&
-    isFiniteNumber(value.score) &&
-    value.score >= 0 &&
-    isOptional(value.seedText, isString) &&
-    isString(value.signalType) &&
-    isEnumValue(value.source, signalMatchSources) &&
-    isString(value.summary) &&
-    isStringArray(value.tags) &&
-    isString(value.title)
-  );
-};
+const exactKeys = (value: UnknownRecord, required: string[], optional: string[] = []) =>
+  required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+const isVersion = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 2147483647;
+const isPublicContent = (value: unknown): value is UnknownRecord => isRecord(value) &&
+  isString(value.expandedText) && value.expandedText.trim().length > 0 &&
+  isOptional(value.authorFreqCode, (code) => isString(code) && /^FM[ -]\d{2}\.\d{2}$/u.test(code)) &&
+  isStringArray(value.tags) && value.tags.length <= 3 && new Set(value.tags).size === value.tags.length &&
+  value.tags.every((tag) => tag.length > 0 && tag.length <= 16 && tag === tag.trim()) &&
+  isOptional(value.primaryBand, (band) => isEnumValue(band, signalPrimaryBands) && isStringArray(value.tags) && value.tags.includes(publicBandLabels[String(band)]));
+const publicBandLabels: Record<string, string> = { self_mirror: "自我镜像", emotional_undercurrent: "情绪暗流", relationship_nebula: "关系星云", time_ring: "时间星环", meaning_deep_space: "意义深空", stagnant_orbit: "停滞轨道", era_cluster: "时代星群" };
+const publicContentKeys = ["expandedText", "tags"];
+const publicContentOptionalKeys = ["authorFreqCode", "primaryBand"];
+export const isPublicationPreview = (value: unknown): value is import("@unfreq/contracts").SignalPublicationPreview =>
+  isRecord(value) && exactKeys(value, ["content", "digest", "version"]) && isPublicContent(value.content) &&
+  exactKeys(value.content, publicContentKeys, publicContentOptionalKeys) && isString(value.digest) && /^[a-f0-9]{64}$/u.test(value.digest) && isVersion(value.version);
+const isPublicationActions = (value: unknown): boolean => isRecord(value) &&
+  exactKeys(value, ["canPublish", "canWithdraw", "state", "version"], ["preview", "publishedContent"]) &&
+  isBoolean(value.canPublish) && isBoolean(value.canWithdraw) && isVersion(value.version) &&
+  isEnumValue(value.state, ["DRAFT", "PUBLIC", "WITHDRAWN", "REVIEWING", "HIDDEN", "DELETED", "GENERATING", "FAILED", "UNCONFIRMED"]) &&
+  isOptional(value.preview, (preview) => isPublicationPreview(preview) && preview.version === value.version) &&
+  (!value.canPublish || isPublicationPreview(value.preview)) && isOptional(value.publishedContent, (content) =>
+    isPublicContent(content) && exactKeys(content, publicContentKeys, publicContentOptionalKeys));
+const isSignalMatchSummary = (value: unknown): boolean => isPublicContent(value) &&
+  exactKeys(value, [...publicContentKeys, "id", "score", "source", "resonanceCount", "publicationVersion"], publicContentOptionalKeys) &&
+  isString(value.id) && isFiniteNumber(value.score) && value.score >= 0 && value.source === "PUBLISHED" &&
+  isNonNegativeInteger(value.resonanceCount) && isVersion(value.publicationVersion) && value.publicationVersion > 0;
+export const isPublicSignalDetail = (value: unknown): value is import("@unfreq/contracts").PublicSignalDetail =>
+  isPublicContent(value) && exactKeys(value, [...publicContentKeys, "id", "createdAt", "updatedAt", "publishedAt", "publicationVersion", "status", "visibility", "echoCount", "resonanceCount", "source", "matches"], [...publicContentOptionalKeys, "hasSaved"]) &&
+  isString(value.id) && isString(value.createdAt) && isString(value.updatedAt) && isString(value.publishedAt) &&
+  isVersion(value.publicationVersion) && value.publicationVersion > 0 && value.status === "PUBLISHED" && value.visibility === "PUBLIC" &&
+  isNonNegativeInteger(value.echoCount) && isNonNegativeInteger(value.resonanceCount) && isEnumValue(value.source, signalSources) &&
+  isOptional(value.hasSaved, isBoolean) && Array.isArray(value.matches) && value.matches.every(isSignalMatchSummary);
 
 const isSignalDetail = (value: unknown): boolean => {
   return (
@@ -201,25 +212,11 @@ const isSignalDetail = (value: unknown): boolean => {
   );
 };
 
-const isReviewingSignalRestrictedDetail = (value: unknown): boolean => {
-  return (
-    isRecord(value) &&
-    isString(value.createdAt) &&
-    isString(value.id) &&
-    value.status === "REVIEWING" &&
-    isString(value.updatedAt) &&
-    value.visibility === "REVIEW_RESTRICTED"
-  );
-};
-
-const isSignalPreviewDetail = (value: unknown): boolean => {
-  return (
-    isSignalDetail(value) &&
-    isRecord(value) &&
-    value.status === "DRAFT" &&
-    value.visibility === "PREVIEW_OWNER"
-  );
-};
+const isReviewingSignalRestrictedDetail = (value: unknown): boolean => isRecord(value) &&
+  exactKeys(value, ["id", "status", "visibility", "createdAt", "updatedAt"]) && value.status === "REVIEWING" && value.visibility === "REVIEW_RESTRICTED" &&
+  isString(value.id) && isString(value.createdAt) && isString(value.updatedAt);
+const isOwnerSignalDetail = (value: unknown): boolean => isSignalDetail(value) && isRecord(value) &&
+  value.visibility === "PRIVATE_OWNER" && isPublicationActions(value.publication);
 
 const isSignalGenerationDetail = (value: unknown): boolean => {
   return (
@@ -232,26 +229,15 @@ const isSignalGenerationDetail = (value: unknown): boolean => {
     isString(value.seedText) &&
     isEnumValue(value.status, signalStatuses) &&
     isString(value.updatedAt) &&
+    isOptional(value.publication, isPublicationActions) &&
     value.visibility === "GENERATION_OWNER"
   );
 };
 
-const isGalaxyPoint = (value: unknown): boolean => {
-  return (
-    isRecord(value) &&
-    isString(value.createdAt) &&
-    isString(value.expandedText) &&
-    isFrequencyProfile(value.frequencyProfile) &&
-    isString(value.frequencyCode) &&
-    isString(value.id) &&
-    isBoolean(value.isMine) &&
-    isStringArray(value.matchIds) &&
-    isSignalPosition(value.position) &&
-    isNonNegativeInteger(value.resonanceCount) &&
-    isEnumValue(value.source, signalSources) &&
-    isString(value.theme)
-  );
-};
+const isGalaxyPoint = (value: unknown): boolean => isPublicContent(value) &&
+  exactKeys(value, [...publicContentKeys, "id", "createdAt", "publicationVersion", "position", "source", "isMine", "matchIds", "resonanceCount"], publicContentOptionalKeys) &&
+  isString(value.id) && isString(value.createdAt) && isVersion(value.publicationVersion) && value.publicationVersion > 0 &&
+  isSignalPosition(value.position) && isEnumValue(value.source, signalSources) && isBoolean(value.isMine) && isStringArray(value.matchIds) && isNonNegativeInteger(value.resonanceCount);
 
 const isBandOption = (value: unknown): boolean => {
   return (
@@ -289,6 +275,7 @@ const isSignalEchoDetail = (value: unknown): boolean => {
 const isMySignalSummary = (value: unknown): boolean => {
   return (
     isRecord(value) &&
+    isOptional(value.publicationState, (state) => isEnumValue(state, ["DRAFT", "PUBLIC", "WITHDRAWN", "REVIEWING", "HIDDEN", "DELETED", "GENERATING", "FAILED", "UNCONFIRMED"])) &&
     isString(value.createdAt) &&
     isString(value.expandedText) &&
     isFrequencyProfile(value.frequencyProfile) &&
@@ -300,15 +287,10 @@ const isMySignalSummary = (value: unknown): boolean => {
   );
 };
 
-const isSavedSignalSummary = (value: unknown): boolean => {
-  return (
-    isMySignalSummary(value) &&
-    isRecord(value) &&
-    isOptional(value.authorFreqCode, isString) &&
-    isString(value.savedAt) &&
-    isString(value.theme)
-  );
-};
+const isSavedSignalSummary = (value: unknown): boolean => isPublicContent(value) &&
+  exactKeys(value, [...publicContentKeys, "id", "createdAt", "savedAt", "publicationVersion", "status", "resonanceCount", "source"], publicContentOptionalKeys) &&
+  isString(value.id) && isString(value.createdAt) && isString(value.savedAt) && isVersion(value.publicationVersion) && value.publicationVersion > 0 &&
+  value.status === "PUBLISHED" && isNonNegativeInteger(value.resonanceCount) && isEnumValue(value.source, signalSources);
 
 const isFrequencyIdentity = (value: unknown): boolean => {
   return (
@@ -333,9 +315,9 @@ export const isSignalResponse = (value: unknown): value is SignalResponse => {
   return (
     isRecord(value) &&
     (
-      isSignalDetail(value.signal) ||
-      isSignalPreviewDetail(value.signal) ||
       isReviewingSignalRestrictedDetail(value.signal) ||
+      isPublicSignalDetail(value.signal) ||
+      isOwnerSignalDetail(value.signal) ||
       isSignalGenerationDetail(value.signal)
     )
   );
@@ -349,7 +331,7 @@ export const isPublishSignalResponse = (value: unknown): value is PublishSignalR
   return (
     isRecord(value) &&
     isRecord(value.signal) &&
-    isSignalDetail(value.signal) &&
+    isOwnerSignalDetail(value.signal) &&
     value.signal.status === "PUBLISHED"
   );
 };
@@ -358,7 +340,7 @@ export const isSignalHallResponse = (value: unknown): value is SignalHallRespons
   return (
     isRecord(value) &&
     Array.isArray(value.signals) &&
-    value.signals.every(isSignalDetail)
+    value.signals.every(isPublicSignalDetail)
   );
 };
 

@@ -1,3 +1,4 @@
+import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationExecutionStopped, runWithGenerationExecution, type GenerationExecutionContext } from "../../shared/generation-execution.js";
 import { fixtureFingerprint } from "../../../tests/integration/fixtures.js";
@@ -6,15 +7,16 @@ import type { SignalSemanticMatchRecord } from "./types.js";
 
 const calls = vi.hoisted(() => ({
   embeddingConfigured: vi.fn(), embedding: vi.fn(), rerankerConfigured: vi.fn(), rerank: vi.fn(),
-  semantic: vi.fn(), keyword: vi.fn(),
+  semantic: vi.fn(), keyword: vi.fn(), recheck: vi.fn(),
 }));
 vi.mock("../ai/embedding.js", () => ({ isEmbeddingProviderConfigured: calls.embeddingConfigured, generateEmbedding: calls.embedding }));
 vi.mock("../ai/reranker.js", () => ({ isRerankerProviderConfigured: calls.rerankerConfigured, rerankCandidates: calls.rerank }));
-vi.mock("./repository.js", () => ({ listPublishedSemanticSignalMatchCandidates: calls.semantic, listPublishedSignalMatchCandidates: calls.keyword }));
+vi.mock("./repository.js", () => ({ listPublishedSemanticSignalMatchCandidates: calls.semantic, recheckPublicSignals: calls.recheck, listPublishedSignalMatchCandidates: calls.keyword }));
 vi.mock("./service-embedding.js", () => ({ buildSignalEmbeddingText: () => "synthetic embedding input" }));
 
-const candidate: SignalSemanticMatchRecord = {
-  id: "synthetic-candidate", authorId: null, authorFreqCode: "FM-UNIT", frequencyId: null,
+const candidate: SignalSemanticMatchRecord = confirmUnitPublication({
+  publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
+  id: "synthetic-candidate", authorId: "00000000-0000-4000-8000-000000000101", authorFreqCode: "FM-10.01", frequencyId: null,
   audioError: null, audioStatus: "NOT_REQUESTED", audioStorageKey: null, audioStorageKeyLeft: null, audioStorageKeyRight: null,
   audioUrl: null, audioUrlLeft: null, audioUrlRight: null,
   createdAt: new Date("2026-01-01T00:00:00Z"), updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -25,7 +27,7 @@ const candidate: SignalSemanticMatchRecord = {
   coreNeed: null, emotionTone: null, innerConflict: null, matchSignalId: null, parentSignalId: null,
   primaryBand: "self_mirror", programJson: { bridgeNarration: "synthetic", closingQuestion: "synthetic?", hostIntro: "synthetic", leftSignalSummary: "synthetic", programTitle: "synthetic", shareQuote: "synthetic" },
   qualityReason: null, qualityScore: null, source: "human", status: "PUBLISHED", subFeeling: "self_acceptance", isKept: false,
-};
+});
 const input = { expandedText: "synthetic expansion", fingerprint: fixtureFingerprint, rawInput: "synthetic input" };
 
 function execution() {
@@ -49,6 +51,7 @@ beforeEach(() => {
   calls.rerank.mockReset().mockResolvedValue({ model: "synthetic", provider: "synthetic", results: [{ id: candidate.id, reason: "synthetic", score: 0.9 }] });
   calls.semantic.mockReset().mockResolvedValue([candidate]);
   calls.keyword.mockReset().mockResolvedValue([]);
+  calls.recheck.mockReset().mockImplementation(async (rows: SignalSemanticMatchRecord[]) => rows.map((row) => row.expandedText === undefined ? candidate : row));
 });
 
 describe("matching cancellation does not become an ordinary degradation", () => {
@@ -105,4 +108,24 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     expect(calls.rerank).not.toHaveBeenCalled();
     expect(calls.keyword).not.toHaveBeenCalled();
   });
+  it("sends only confirmed candidate text and the approved public query to providers", async () => {
+    const original = candidate.expandedText;
+    candidate.expandedText = "PRIVATE-unconfirmed-candidate-edit";
+    try {
+      await findSameFrequencyMatches({ ...input, publicQuery: true });
+      expect(calls.embedding.mock.calls[0]?.[0]).toBe(input.expandedText);
+      expect(calls.rerank.mock.calls[0]?.[0].candidates[0].expandedText).toBe("synthetic public candidate");
+    } finally { candidate.expandedText = original; }
+  });
+  it("does not dispatch a candidate withdrawn while provider configuration is loading", async () => {
+    calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValue([]);
+    expect((await findSameFrequencyMatches(input)).matches).toEqual([]);
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+  it("drops a candidate whose publication epoch changed while reranking was in flight", async () => {
+    calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValueOnce([candidate]).mockResolvedValue([]);
+    expect((await findSameFrequencyMatches(input)).matches).toEqual([]);
+    expect(calls.rerank).toHaveBeenCalledTimes(1);
+  });
+
 });

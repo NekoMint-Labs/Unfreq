@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { createServer as tcpServer, connect, type Socket } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,8 @@ export class AbuseProcess {
   readonly ready: Promise<void>;
   readonly closed: Promise<void>;
   readonly infrastructureErrors: string[] = [];
+  readonly bootEvents: { phase: string; at: number; elapsedMs: number }[] = [];
+  private spawnedAt = Date.now();
   private ended = false;
   private sequence = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
@@ -54,11 +56,11 @@ export class AbuseProcess {
       if (!raw || typeof raw !== "object" || !("kind" in raw)) return;
       const message = raw as AbuseMessage;
       if (message.kind === "boot") {
-        if (message.pid !== this.pid || !["validation-start", "validation-complete", "db-guard-start", "db-guard-complete", "app-import-start", "app-build-start", "app-ready-start"].includes(message.phase) || !Number.isSafeInteger(message.at)) {
+        if (message.pid !== this.pid || !["validation-start", "validation-complete", "db-guard-start", "db-guard-complete", "app-import-start", "app-import-complete", "app-build-start", "app-build-complete", "app-ready-start"].includes(message.phase) || !Number.isSafeInteger(message.at)) {
           this.infrastructureErrors.push("INVALID_BOOT_EVENT"); void this.kill().catch(() => {});
-        } else this.lastBootPhase = message.phase;
+        } else { this.lastBootPhase = message.phase; this.bootEvents.push({ phase: message.phase, at: message.at, elapsedMs: Date.now() - this.spawnedAt }); }
       }
-      if (message.kind === "ready") { if (message.pid === this.pid) accept(); else { this.infrastructureErrors.push("PID_MISMATCH"); void this.kill().catch(() => {}); } }
+      if (message.kind === "ready") { if (message.pid === this.pid) { this.bootEvents.push({ phase: "ready", at: Date.now(), elapsedMs: Date.now() - this.spawnedAt }); accept(); } else { this.infrastructureErrors.push("PID_MISMATCH"); void this.kill().catch(() => {}); } }
       if (message.kind === "fatal") { this.infrastructureErrors.push("FIXTURE_FATAL"); reject(new Error("Owned B3 fixture failed.")); void this.kill().catch(() => {}); }
       if (message.kind === "reply") {
         const item = this.pending.get(message.id); if (!item) return;
@@ -264,6 +266,10 @@ export async function createAbuseHarness(caseId: AbuseCase) {
       if (dirname(resolve(directory)) !== resolve(tmpdir()) || !basename(directory).startsWith(`unfreq-abuse-${nonce}-`)) throw new Error("Refusing unowned B3 media removal.");
       await rm(directory, { recursive: true, force: true });
     });
+    await mkdir(join(root, "test-results", "b3"), { recursive: true });
+    await writeFile(join(root, "test-results", "b3", `boot-${managed.runId}-${caseId}-${nonce.slice(0, 8)}.json`),
+      JSON.stringify({ runId: managed.runId, caseId, cleanupErrors: errors.length,
+        children: children.map((child) => ({ pid: child.pid, bootEvents: child.bootEvents, infrastructureErrors: child.infrastructureErrors })) }, null, 2));
     if (errors.length) throw new AggregateError(errors, "B3 experiment cleanup or fixture boundary failed.");
   })();
   try {

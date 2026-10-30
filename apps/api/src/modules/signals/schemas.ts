@@ -1,3 +1,5 @@
+import { maxSignalPublicationVersion } from "@unfreq/contracts/signals";
+import { signalPublicContentSchema, signalPublicationPreviewSchema, publicMatchSchema } from "./publication.js";
 import { z } from "zod";
 import {
   signalPrimaryBands,
@@ -170,12 +172,21 @@ export const signalGenerationDetailSchema = z.object({
   visibility: z.literal("GENERATION_OWNER"),
 });
 
-export const signalResultDetailSchema = z.union([
-  signalPreviewDetailSchema,
-  signalDetailSchema,
-  reviewingSignalRestrictedDetailSchema,
-  signalGenerationDetailSchema,
-]);
+export const publicationRequestSchema = z.strictObject({ expectedVersion: z.number().int().min(0).max(maxSignalPublicationVersion), digest: z.string().regex(/^[a-f0-9]{64}$/u) });
+export const withdrawalRequestSchema = publicationRequestSchema.omit({ digest: true });
+export const publicationActionsSchema = z.strictObject({ canPublish: z.boolean(), canWithdraw: z.boolean(),
+  version: z.number().int().min(0).max(maxSignalPublicationVersion),
+  state: z.enum(["DRAFT", "PUBLIC", "WITHDRAWN", "REVIEWING", "HIDDEN", "DELETED", "GENERATING", "FAILED", "UNCONFIRMED"]),
+  preview: signalPublicationPreviewSchema.optional(), publishedContent: signalPublicContentSchema.optional() });
+export const publicSignalDetailSchema = signalPublicContentSchema.safeExtend({
+  id: z.uuid(), createdAt: z.string(), updatedAt: z.string(), publishedAt: z.string(),
+  publicationVersion: z.number().int().min(1), status: z.literal("PUBLISHED"), visibility: z.literal("PUBLIC"),
+  echoCount: z.number().int().nonnegative(), resonanceCount: z.number().int().nonnegative(),
+  source: z.enum(["ai_generated", "human", "seed"]), hasSaved: z.boolean().optional(), matches: z.array(publicMatchSchema) });
+export const ownerSignalDetailSchema = signalDetailSchema.omit({ matches: true }).extend({
+  visibility: z.literal("PRIVATE_OWNER"), matches: z.array(publicMatchSchema), publication: publicationActionsSchema });
+export const signalResultDetailSchema = z.union([publicSignalDetailSchema, ownerSignalDetailSchema, reviewingSignalRestrictedDetailSchema,
+  signalGenerationDetailSchema.extend({ publication: publicationActionsSchema.optional() })]);
 
 export const signalAudioDetailSchema = z.object({
   audioError: z.string().optional(),
@@ -189,6 +200,8 @@ export const signalAudioDetailSchema = z.object({
 export const signalAudioResponseSchema = z.object({
   audio: signalAudioDetailSchema,
 });
+
+export const signalAudioVersionQuerySchema = z.strictObject({ v: z.coerce.number().int().min(1).max(maxSignalPublicationVersion).optional() });
 
 export const signalAudioSideParamsSchema = signalIdParamsSchema.extend({
   side: z.enum(["left", "main", "right"]),
@@ -209,11 +222,11 @@ export const signalResponseSchema = z.object({
 });
 
 export const signalMatchesResponseSchema = z.object({
-  matches: z.array(signalMatchSummarySchema),
+  matches: z.array(publicMatchSchema),
 });
 
 export const signalHallResponseSchema = z.object({
-  signals: z.array(signalDetailSchema),
+  signals: z.array(publicSignalDetailSchema),
 });
 
 export const signalGalaxyResponseSchema = z.object({
@@ -222,7 +235,8 @@ export const signalGalaxyResponseSchema = z.object({
     value: z.enum(signalPrimaryBands),
   })),
   generatedAt: z.string(),
-  points: z.array(galaxySignalPointSchema),
+  points: z.array(signalPublicContentSchema.safeExtend({ id: z.uuid(), createdAt: z.string(), publicationVersion: z.number().int().min(1),
+    position: signalGalaxyPositionSchema, source: z.enum(["ai_generated", "human", "seed"]), isMine: z.boolean(), matchIds: z.array(z.uuid()), resonanceCount: z.number().int().nonnegative() })),
   themeOptions: z.array(z.string().min(1)),
 });
 
@@ -248,6 +262,7 @@ export const signalSaveResponseSchema = z.object({
 });
 
 export const mySignalSummarySchema = z.object({
+  publicationState: publicationActionsSchema.shape.state.optional(),
   createdAt: z.string(),
   expandedText: z.string(),
   frequencyProfile: signalFrequencyProfileSchema,
@@ -281,7 +296,8 @@ export const savedSignalSummarySchema = mySignalSummarySchema.extend({
 });
 
 export const savedSignalsResponseSchema = z.object({
-  signals: z.array(savedSignalSummarySchema),
+  signals: z.array(signalPublicContentSchema.safeExtend({ id: z.uuid(), createdAt: z.string(), savedAt: z.string(), publicationVersion: z.number().int().min(1),
+    status: z.literal("PUBLISHED"), resonanceCount: z.number().int().nonnegative(), source: z.enum(["ai_generated", "human", "seed"]) })),
 });
 
 export type CreatePublishedSignalBody = z.infer<typeof createPublishedSignalBodySchema>;

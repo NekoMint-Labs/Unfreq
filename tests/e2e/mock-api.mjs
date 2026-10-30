@@ -1,3 +1,4 @@
+import { content, preview, publicView, ownerView, galaxyPoint } from "./publication-fixture.mjs";
 import { createServer } from "node:http";
 
 const port = Number(process.env.E2E_API_PORT ?? 4100);
@@ -266,10 +267,7 @@ const server = createServer(async (request, response) => {
     ok(response, {
       signals: [
         {
-          ...toMySignalSummary(matchSignal),
-          authorFreqCode: matchSignal.authorFreqCode,
-          savedAt: now,
-          theme: frequencyProfile.displayText,
+          ...content(matchSignal), id: matchSignal.id, createdAt: now, savedAt: now, publicationVersion: 1, status: "PUBLISHED", resonanceCount: matchSignal.resonanceCount, source: matchSignal.source,
         },
       ],
     });
@@ -290,6 +288,8 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    response.setHeader("set-cookie", "unfreq_e2e_owner=1; Path=/; HttpOnly; SameSite=Lax");
+    primarySignal.publicationVersion = 0; primarySignal.withdrawn = false;
     primaryPublished = false;
     primarySignal.rawInput = seedText;
     primarySignal.seedText = seedText;
@@ -309,13 +309,12 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && url.pathname === `/api/signals/${primarySignalId}/publish`) {
-    primaryPublished = true;
-    primarySignal.status = "PUBLISHED";
-    ok(response, {
-      signal: {
-        ...primarySignal,
-      },
-    });
+    const body = await readBody(request);
+    const expected = preview(primarySignal);
+    if (body.expectedVersion !== expected.version || body.digest !== expected.digest) { sendJson(response, 409, { error: { code: "CONFLICT", message: "Refresh preview" }, meta: { requestId: "e2e" } }); return; }
+    primaryPublished = true; primarySignal.withdrawn = false;
+    primarySignal.status = "PUBLISHED"; primarySignal.publicationVersion += 1;
+    ok(response, { signal: ownerView(primarySignal) });
     return;
   }
 
@@ -355,18 +354,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (signalId === primarySignalId && !primaryPublished) {
-      ok(response, {
-        signal: {
-          ...primarySignal,
-          status: "DRAFT",
-          visibility: "PREVIEW_OWNER",
-        },
-      });
-      return;
+    if (signalId === primarySignalId && (request.headers.cookie ?? "").includes("unfreq_e2e_owner=1")) {
+      ok(response, action === "publication-preview" ? { preview: preview(signal) } : { signal: ownerView(signal) }); return;
     }
-
-    ok(response, { signal });
+    if (signalId === primarySignalId && !primaryPublished) { notFound(response); return; }
+    ok(response, { signal: publicView(signal) });
     return;
   }
 
@@ -393,19 +385,7 @@ const server = createServer(async (request, response) => {
 });
 
 function toGalaxyPoint(signal, isMine) {
-  return {
-    createdAt: signal.createdAt,
-    expandedText: signal.expandedText,
-    frequencyCode: signal.authorFreqCode,
-    frequencyProfile,
-    id: signal.id,
-    isMine,
-    matchIds: signal.id === primarySignalId ? [matchSignalId] : [primarySignalId],
-    position: signal.galaxyPosition,
-    resonanceCount: signal.resonanceCount,
-    source: signal.source,
-    theme: frequencyProfile.displayText,
-  };
+  return galaxyPoint(signal, isMine, signal.id === primarySignalId ? [matchSignalId] : primaryPublished ? [primarySignalId] : []);
 }
 
 function toMySignalSummary(signal) {

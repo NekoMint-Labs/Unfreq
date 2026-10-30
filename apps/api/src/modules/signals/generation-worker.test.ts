@@ -64,6 +64,7 @@ function input(fence: { signalId: string }): OwnedGenerationInput {
 }
 function completedRecord(id: string): SignalRecord {
   return {
+    publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
     id, authorId: uuid(8000), authorFreqCode: "FM 00.01", frequencyId: uuid(8000),
     audioError: null, audioStatus: "NOT_REQUESTED", audioStorageKey: null, audioStorageKeyLeft: null, audioStorageKeyRight: null,
     audioUrl: null, audioUrlLeft: null, audioUrlRight: null,

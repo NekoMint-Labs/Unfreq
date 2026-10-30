@@ -2,170 +2,51 @@ import { AppError } from "../../shared/errors.js";
 import type { EmbeddingLogger } from "../ai/embedding.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import type { SignalGalaxyQuery } from "./schemas.js";
-import {
-  findPublishedSignalById,
-  findRandomPublishedSignal,
-  findSignalResultById,
-  findSignalSave,
-  getFrequencyLastSeenAt,
-  listPublishedGalaxySignals,
-  listPublishedGalaxyThemes,
-  listPublishedSignals,
-  listSavedSignalsForFrequency,
-  listSignalsForAuthor,
-  summarizeSignalResonancesSince,
-  touchFrequencyLastSeenAt,
-} from "./repository.js";
-import {
-  galaxyLimit,
-  galaxyThemeOptionLimit,
-  hallLimit,
-  maxMatchCount,
-  mySignalsLimit,
-  savedSignalsLimit,
-} from "./service-constants.js";
+import { findPublishedSignalById, findRandomPublishedSignal, findSignalResultById, findSignalSave,
+  getFrequencyLastSeenAt, listPublishedGalaxyThemes, listPublishedGalaxySignals, listPublishedSignals, listSavedSignalsForFrequency,
+  listSignalsForAuthor, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
+import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSignalsLimit, maxMatchCount } from "./service-constants.js";
 import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
 import { findSameFrequencyMatches, scoreSignalMatch } from "./service-matching.js";
-import {
-  buildStableGalaxyPosition,
-  getSignalFrequencyProfile,
-  isFiniteGalaxyPosition,
-  sumResonanceCount,
-  toMySignalSummary,
-  toSavedSignalSummary,
-  toShortText,
-  toSignalGenerationDetail,
-  toSignalDetail,
-  toSignalPreviewDetail,
-  withSaveState,
-} from "./service-mappers.js";
+import { buildStableGalaxyPosition, isFiniteGalaxyPosition, sumResonanceCount, toMySignalSummary,
+  toSignalGenerationDetail, toSignalDetail } from "./service-mappers.js";
+import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
+import { isPublicSignal, publicationProjection } from "./publication-policy.js";
+import { previewSignalPublicationForOwner } from "./service-publication-confirmation.js";
 import { signalBandLabels, signalPrimaryBands } from "./frequency-taxonomy.js";
-import type {
-  EchoSummary,
-  GalaxyResult,
-  GalaxySignalPoint,
-  MySignalsResult,
-  MySignalSummary,
-  ReviewingSignalRestrictedDetail,
-  SavedSignalsResult,
-  SignalDetail,
-  SignalGalaxyPosition,
-  SignalMatchSummary,
-  SignalRecord,
-  SignalResultDetail,
-} from "./types.js";
+import type { EchoSummary, GalaxyResult, MySignalsResult, MySignalSummary, SavedSignalsResult,
+  SignalRecord, SignalResultDetail } from "./types.js";
+import type { OwnerSignalDetail, PublicSignalDetail, PublicSignalMatchSummary, SignalPublicationActions } from "@unfreq/contracts/signals";
 
-export async function getSignalHall(): Promise<SignalDetail[]> {
-  const signals = await listPublishedSignals(hallLimit);
+const notFound = () => new AppError("NOT_FOUND", "Signal not found.");
 
-  return signals.map(toSignalDetail);
-}
-
-function toGalaxyPoint(params: {
-  currentFrequencyId?: string;
-  matchIds: string[];
-  position: SignalGalaxyPosition;
-  signal: SignalRecord;
-}): GalaxySignalPoint {
-  const frequencyProfile = getSignalFrequencyProfile(params.signal);
-  const isCurrentFrequencySignal =
-    params.currentFrequencyId !== undefined &&
-    (params.signal.frequencyId === params.currentFrequencyId ||
-      params.signal.authorId === params.currentFrequencyId);
-
-  return {
-    createdAt: params.signal.createdAt.toISOString(),
-    expandedText: toShortText(params.signal.expandedText, 180),
-    frequencyProfile,
-    frequencyCode: params.signal.authorFreqCode ?? params.signal.fingerprintJson.frequency,
-    id: params.signal.id,
-    isMine: isCurrentFrequencySignal,
-    matchIds: params.matchIds,
-    position: params.position,
-    resonanceCount: params.signal.resonanceCount,
-    source: params.signal.source,
-    theme: frequencyProfile.displayText,
-  };
-}
-
-function getGalaxyMatchIds(signal: SignalRecord, allSignals: SignalRecord[]): string[] {
-  const matchIds = new Set<string>();
-  const visibleSignalIds = new Set(allSignals.map((candidate) => candidate.id));
-
-  if (signal.matchSignalId !== null && visibleSignalIds.has(signal.matchSignalId)) {
-    matchIds.add(signal.matchSignalId);
-  }
-
-  allSignals
-    .filter((candidate) => candidate.id !== signal.id)
-    .map((candidate) => {
-      return {
-        candidate,
-        score: scoreSignalMatch(signal.fingerprintJson, candidate),
-      };
-    })
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      return left.candidate.id.localeCompare(right.candidate.id);
-    })
-    .forEach((candidate) => {
-      if (matchIds.size < maxMatchCount) {
-        matchIds.add(candidate.candidate.id);
-      }
-    });
-
-  return Array.from(matchIds).slice(0, maxMatchCount);
-}
-
-export async function getSignalGalaxy(
-  frequency: AuthenticatedFrequency | undefined,
-  query: SignalGalaxyQuery = {},
-  logger?: EmbeddingLogger,
-): Promise<GalaxyResult> {
-  const [signals, themeOptions] = await Promise.all([
-    listPublishedGalaxySignals({
-      band: query.band,
-      limit: galaxyLimit,
-      theme: query.theme,
-    }),
-    listPublishedGalaxyThemes(galaxyThemeOptionLimit),
-  ]);
-  const points = signals.map((signal) => {
-    const position = buildStableGalaxyPosition(signal);
-
-    if (!isFiniteGalaxyPosition(signal.galaxyPosition)) {
-      queueSignalGalaxyPositionWrite({
-        logger,
-        position,
-        signal,
-      });
-    }
-
-    return toGalaxyPoint({
-      currentFrequencyId: frequency?.id,
-      matchIds: getGalaxyMatchIds(signal, signals),
-      position,
-      signal,
-    });
+export async function getSignalHall(): Promise<PublicSignalDetail[]> {
+  const rows = await listPublishedSignals(hallLimit);
+  return (await recheckPublicSignals(rows)).flatMap((signal) => {
+    const detail = projectPublicSignal(publicationProjection(signal));
+    return detail === undefined ? [] : [detail];
   });
+}
 
-  return {
-    bandOptions: signalPrimaryBands.map((band) => ({
-      label: signalBandLabels[band],
-      value: band,
-    })),
-    generatedAt: new Date().toISOString(),
-    points: points.filter((point) => {
-      return isFiniteGalaxyPosition(point.position);
-    }),
-    themeOptions: themeOptions.map((theme) => {
-      return signalBandLabels[theme as keyof typeof signalBandLabels] ?? theme;
-    }),
-  };
+export async function getSignalGalaxy(frequency: AuthenticatedFrequency | undefined,
+  query: SignalGalaxyQuery = {}, logger?: EmbeddingLogger): Promise<GalaxyResult> {
+  const [rows, themeOptions] = await Promise.all([listPublishedGalaxySignals({ band: query.band, limit: galaxyLimit, theme: query.theme }), listPublishedGalaxyThemes(galaxyThemeOptionLimit)]);
+  const current = await recheckPublicSignals(rows);
+  const visibleSignalIds = new Set(current.map((signal) => signal.id));
+  const points = current.flatMap((signal) => {
+    const position = buildStableGalaxyPosition(signal);
+    if (!isFiniteGalaxyPosition(signal.galaxyPosition)) queueSignalGalaxyPositionWrite({ logger, position, signal });
+    const matchIds = current.filter((item) => item.id !== signal.id)
+      .map((item) => ({ id: item.id, score: scoreSignalMatch(signal.fingerprintJson, item) }))
+      .filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+      .slice(0, maxMatchCount).map((item) => item.id);
+    const point = projectPublicGalaxy({ ...publicationProjection(signal), position, visibleSignalIds,
+      isMine: frequency !== undefined && (signal.authorId === frequency.id || signal.frequencyId === frequency.id), matchIds });
+    return point === undefined ? [] : [point];
+  });
+  return { generatedAt: new Date().toISOString(), points,
+    bandOptions: signalPrimaryBands.map((value) => ({ label: signalBandLabels[value], value })),
+    themeOptions };
 }
 
 export async function getMySignals(
@@ -191,7 +72,12 @@ export async function getSavedSignals(
   });
 
   return {
-    signals: signals.map(toSavedSignalSummary),
+    signals: (await recheckPublicSignals(signals)).flatMap((current) => {
+      const saved = signals.find((item) => item.id === current.id);
+      if (saved === undefined) return [];
+      const projected = projectPublicSaved({ ...publicationProjection(current), signal: { ...current, savedAt: saved.savedAt } });
+      return projected === undefined ? [] : [projected];
+    }),
   };
 }
 
@@ -242,125 +128,84 @@ export async function getMyEchoSummary(
   };
 }
 
-async function toPublishedSignalDetail(signal: SignalRecord): Promise<SignalDetail> {
-  const matchResult = await findSameFrequencyMatches({
-    excludeSignalId: signal.id,
-    expandedText: signal.expandedText,
-    fingerprint: signal.fingerprintJson,
-    rawInput: signal.rawInput,
+
+async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency): Promise<PublicSignalDetail> {
+  if (!isPublicSignal(signal)) throw notFound();
+  const snapshot = parsePublicationSnapshot(signal.publicationSnapshot)!;
+  const result = await findSameFrequencyMatches({ excludeSignalId: signal.id,
+    publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
+  const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
+  const candidates = result.matches.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
+  // Parent and every match are rechecked together after provider/save awaits.
+  const current = await recheckPublicSignals([signal, ...candidates.map((match) => ({ id: match.id, publicationVersion: match.publicationVersion! }))]);
+  const parent = current.find((item) => item.id === signal.id);
+  if (parent === undefined) throw notFound();
+  const matches = candidates.flatMap((match) => {
+    const row = current.find((item) => item.id === match.id);
+    const projected = row === undefined ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score });
+    return projected === undefined ? [] : [projected];
   });
-
-  return {
-    ...toSignalDetail(signal),
-    matches: matchResult.matches,
-  };
+  const detail = projectPublicSignal({ ...publicationProjection(parent, signal.publicationVersion), matches,
+    ...(frequency === undefined ? {} : { hasSaved: save !== undefined }) });
+  if (detail === undefined) throw notFound();
+  return detail;
 }
 
-function isOwnedByFrequency(signal: SignalRecord, frequency: AuthenticatedFrequency): boolean {
-  return signal.frequencyId === frequency.id || signal.authorId === frequency.id;
-}
-
-function toReviewingRestrictedDetail(
-  signal: SignalRecord,
-): ReviewingSignalRestrictedDetail {
-  return {
-    createdAt: signal.createdAt.toISOString(),
-    id: signal.id,
-    status: "REVIEWING",
-    updatedAt: signal.updatedAt.toISOString(),
-    visibility: "REVIEW_RESTRICTED",
-  };
-}
-
-export async function getSignalDetail(id: string): Promise<SignalDetail> {
+export async function getSignalDetail(id: string): Promise<PublicSignalDetail> {
   const signal = await findPublishedSignalById(id);
-
-  if (signal === undefined) {
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
+  if (signal === undefined) throw notFound();
   return toPublishedSignalDetail(signal);
 }
 
-export async function getSignalDetailForFrequency(
-  id: string,
-  frequency: AuthenticatedFrequency | undefined,
-): Promise<SignalResultDetail> {
+async function ownerActions(signal: SignalRecord, frequency: AuthenticatedFrequency): Promise<SignalPublicationActions> {
+  let state: SignalPublicationActions["state"] = signal.status === "HIDDEN" ? "HIDDEN" :
+    signal.status === "REVIEWING" ? "REVIEWING" : signal.withdrawnAt !== null ? "WITHDRAWN" :
+    signal.generationStatus === "FAILED" ? "FAILED" : signal.generationStatus !== "COMPLETED" ? "GENERATING" :
+    isPublicSignal(signal) ? "PUBLIC" : signal.status === "DRAFT" ? "DRAFT" : "UNCONFIRMED";
+  let preview: SignalPublicationActions["preview"];
+  if (frequency.status === "ACTIVE" && ["PUBLIC", "WITHDRAWN", "DRAFT", "UNCONFIRMED"].includes(state) && signal.generationStatus === "COMPLETED") {
+    try { preview = await previewSignalPublicationForOwner(signal.id, frequency); }
+    catch (error) { if (!(error instanceof AppError) || !["CONFLICT", "FORBIDDEN", "NOT_FOUND"].includes(error.code)) throw error; }
+    if (preview !== undefined && preview.version !== signal.publicationVersion) throw new AppError("CONFLICT", "Signal changed. Refresh before continuing.");
+  }
+  if (isPublicSignal(signal)) state = "PUBLIC";
+  const content = parsePublicationSnapshot(signal.publicationSnapshot)?.content;
+  return { state, version: signal.publicationVersion, canPublish: preview !== undefined && state !== "PUBLIC",
+    canWithdraw: frequency.status !== "BANNED" && signal.withdrawnAt === null,
+    ...(preview === undefined ? {} : { preview }), ...(content === undefined ? {} : { publishedContent: content }) };
+}
+
+export async function getSignalDetailForFrequency(id: string, frequency: AuthenticatedFrequency | undefined): Promise<SignalResultDetail> {
   const signal = await findSignalResultById(id);
-
-  if (signal === undefined) {
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  if (signal.generationStatus !== "COMPLETED") {
-    if (frequency !== undefined && isOwnedByFrequency(signal, frequency)) {
-      return toSignalGenerationDetail(signal);
-    }
-
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  if (signal.status === "DRAFT") {
-    if (frequency !== undefined && isOwnedByFrequency(signal, frequency)) {
-      return toSignalPreviewDetail(signal);
-    }
-
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  if (signal.status !== "PUBLISHED" && signal.status !== "REVIEWING") {
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  if (signal.status === "REVIEWING") {
-    if (frequency !== undefined && isOwnedByFrequency(signal, frequency)) {
-      return toSignalDetail(signal);
-    }
-
-    return toReviewingRestrictedDetail(signal);
-  }
-
-  const detail = await toPublishedSignalDetail(signal);
-
-  if (frequency === undefined) {
+  if (signal === undefined || signal.status === "DELETED" || signal.status === "HIDDEN") throw notFound();
+  const owned = frequency !== undefined && (signal.authorId ?? signal.frequencyId) === frequency.id && frequency.status !== "BANNED";
+  if (owned) {
+    const publication = await ownerActions(signal, frequency);
+    const matches = isPublicSignal(signal) ? (await toPublishedSignalDetail(signal)).matches : [];
+    // The second read fences owner actions that raced with moderation/withdrawal.
+    const latest = await findSignalResultById(id);
+    if (latest === undefined || latest.publicationVersion !== signal.publicationVersion) throw notFound();
+    if (signal.generationStatus !== "COMPLETED") return { ...toSignalGenerationDetail(signal), publication };
+    const detail: OwnerSignalDetail = { ...toSignalDetail(signal), visibility: "PRIVATE_OWNER", matches, publication };
     return detail;
   }
-
-  const save = await findSignalSave({
-    frequencyId: frequency.id,
-    signalId: id,
-  });
-
-  return withSaveState(detail, save !== undefined);
+  if (signal.status === "REVIEWING" && signal.withdrawnAt === null) return {
+    id: signal.id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED",
+    createdAt: signal.createdAt.toISOString(), updatedAt: signal.updatedAt.toISOString(),
+  };
+  if (!isPublicSignal(signal)) throw notFound();
+  return toPublishedSignalDetail(signal, frequency);
 }
 
-export async function getSignalMatches(id: string): Promise<SignalMatchSummary[]> {
-  const signal = await findPublishedSignalById(id);
-
-  if (signal === undefined) {
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  const matchResult = await findSameFrequencyMatches({
-    excludeSignalId: signal.id,
-    expandedText: signal.expandedText,
-    fingerprint: signal.fingerprintJson,
-    rawInput: signal.rawInput,
-  });
-
-  return matchResult.matches;
+export async function getSignalMatches(id: string): Promise<PublicSignalMatchSummary[]> {
+  return (await getSignalDetail(id)).matches;
 }
 
-export async function getRandomSignal(
-  frequency: AuthenticatedFrequency | undefined,
-): Promise<SignalDetail> {
-  const signal = await findRandomPublishedSignal({
-    excludeFrequencyId: frequency?.id,
-  });
-
-  if (signal === undefined) {
-    throw new AppError("NOT_FOUND", "Signal not found.");
-  }
-
-  return toSignalDetail(signal);
+export async function getRandomSignal(frequency: AuthenticatedFrequency | undefined): Promise<PublicSignalDetail> {
+  const signal = await findRandomPublishedSignal({ excludeFrequencyId: frequency?.id });
+  if (signal === undefined) throw notFound();
+  const [current] = await recheckPublicSignals([signal]);
+  const detail = current === undefined ? undefined : projectPublicSignal(publicationProjection(current, signal.publicationVersion));
+  if (detail === undefined) throw notFound();
+  return detail;
 }

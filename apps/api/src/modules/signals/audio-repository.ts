@@ -1,3 +1,5 @@
+import { publicSignalCondition, isPublicSignal } from "./publication-policy.js";
+import { parsePublicationSnapshot } from "./publication.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -13,9 +15,10 @@ export type AudioFailureCode = "AUDIO_UNAVAILABLE" | "AUDIO_RATE_LIMITED" | "AUD
 export type AudioClaimResult = { outcome: "CLAIMED"; attempt: AudioAttempt } |
   { outcome: "CACHED"; signal: SignalRecord } | { outcome: "UNAVAILABLE" };
 
-const publicAudio = () => and(eq(signals.status, "PUBLISHED"), eq(signals.generationStatus, "COMPLETED"));
+const publicAudio = publicSignalCondition;
 const ownedAudio = (attempt: AudioAttempt) => and(publicAudio(), eq(signals.id, attempt.signal.id),
-  eq(signals.audioAttemptId, attempt.attemptId), eq(signals.audioStatus, "PENDING"));
+  eq(signals.audioAttemptId, attempt.attemptId), eq(signals.audioStatus, "PENDING"),
+  eq(signals.publicationVersion, attempt.signal.publicationVersion), eq(signals.audioPublicationVersion, attempt.signal.publicationVersion));
 const returningSnapshot = {
   ...signalSelection,
   authorFreqCode: sql<string | null>`(select ${users.freqCode} from ${users} where ${users.id} = ${signals.authorId})`,
@@ -45,30 +48,37 @@ export function createSignalAudioRepository(options: {
     assertOpen();
     const [row] = await db.select(signalSelection).from(signals).leftJoin(users, eq(signals.authorId, users.id))
       .where(and(eq(signals.id, id), publicAudio())).limit(1);
-    return row === undefined ? undefined : toSignalRecord(row);
+    return row === undefined || !isPublicSignal(toSignalRecord(row)) ? undefined : toSignalRecord(row);
   }
 
   return {
     readPublished,
-    async claim(id: string): Promise<AudioClaimResult> {
+    async claim(id: string, expectedVersion?: number): Promise<AudioClaimResult> {
       assertOpen();
+      const candidate = await readPublished(id);
+      if (candidate === undefined || (expectedVersion !== undefined && candidate.publicationVersion !== expectedVersion)) return { outcome: "UNAVAILABLE" };
       const attemptId = randomUUID();
       const [row] = await db.update(signals).set({ audioStatus: "PENDING", audioError: null,
-        audioAttemptId: attemptId, updatedAt: sql`clock_timestamp()` })
-        .where(and(eq(signals.id, id), publicAudio(), inArray(signals.audioStatus, ["NOT_REQUESTED", "FAILED"])))
+        audioAttemptId: attemptId, audioPublicationVersion: signals.publicationVersion, updatedAt: sql`clock_timestamp()` })
+        .where(and(eq(signals.id, id), publicAudio(), eq(signals.publicationVersion, candidate.publicationVersion), or(inArray(signals.audioStatus, ["NOT_REQUESTED", "FAILED"]), isNull(signals.audioPublicationVersion), sql`${signals.audioPublicationVersion} <> ${signals.publicationVersion}`)))
         .returning(returningSnapshot);
-      if (row !== undefined) return { outcome: "CLAIMED", attempt: { attemptId, signal: toSignalRecord(row) } };
+      if (row !== undefined) {
+        const signal = toSignalRecord(row);
+        const snapshot = parsePublicationSnapshot(signal.publicationSnapshot);
+        if (snapshot === undefined) return { outcome: "UNAVAILABLE" };
+        return { outcome: "CLAIMED", attempt: { attemptId, signal: { ...signal, expandedText: snapshot.content.expandedText } } };
+      }
       const signal = await readPublished(id);
       if (signal === undefined) return { outcome: "UNAVAILABLE" };
-      if (signal.audioStatus === "PENDING" || signal.audioStatus === "READY") return { outcome: "CACHED", signal };
+      if (signal.audioPublicationVersion === signal.publicationVersion && (signal.audioStatus === "PENDING" || signal.audioStatus === "READY")) return { outcome: "CACHED", signal };
       // Do not repeat a claim after an indeterminate state transition.
       throw new Error("Audio claim state changed.");
     },
-    async markUnavailable(id: string): Promise<SignalRecord | undefined> {
+    async markUnavailable(id: string, expectedVersion?: number): Promise<SignalRecord | undefined> {
       assertOpen();
       const [row] = await db.update(signals).set({ audioStatus: "FAILED", audioError: "TTS provider is not configured.",
         updatedAt: sql`clock_timestamp()` })
-        .where(and(eq(signals.id, id), publicAudio(), isNull(signals.audioAttemptId),
+        .where(and(eq(signals.id, id), publicAudio(), expectedVersion === undefined ? undefined : eq(signals.publicationVersion, expectedVersion), isNull(signals.audioAttemptId),
           inArray(signals.audioStatus, ["NOT_REQUESTED", "FAILED"]))).returning(returningSnapshot);
       return row === undefined ? readPublished(id) : toSignalRecord(row);
     },

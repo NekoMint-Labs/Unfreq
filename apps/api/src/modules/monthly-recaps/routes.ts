@@ -14,6 +14,7 @@ import {
 } from "./service.js";
 
 export async function monthlyRecapRoutes(app: FastifyInstance) {
+  app.addHook("onRequest", async (_request, reply) => { reply.header("cache-control", "private, no-store, max-age=0"); });
   app.get("/latest", async (request, reply) => {
     const frequency = request.requireFrequency();
     const recap = await getLatestMonthlyRecap(frequency);

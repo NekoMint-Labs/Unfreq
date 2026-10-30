@@ -1,3 +1,6 @@
+import { signalBandLabels } from "./frequency-taxonomy.js";
+import { buildPublicationPreview, confirmPublicationSnapshot } from "./publication.js";
+import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { generateSignalFingerprintWithFallback } from "../ai/service.js";
@@ -232,6 +235,30 @@ vi.mock("../ai/service.js", () => {
   };
 });
 
+vi.mock("./publication-repository.js", () => {
+  const candidate = (input: { id: string; actorId: string }) => {
+    const signal = signalStores.rows.find((row) => row.id === input.id);
+    if (!signal || signal.authorId !== input.actorId || ["HIDDEN", "DELETED"].includes(signal.status)) return { outcome: "NOT_FOUND" as const };
+    if (!["DRAFT", "PUBLISHED"].includes(signal.status) || signal.generationStatus !== "COMPLETED") return { outcome: "CONFLICT" as const };
+    return { outcome: "READY" as const, signal, preview: buildPublicationPreview(signal, signal.publicationVersion) };
+  };
+  return {
+    readOwnedPublicationPreview: vi.fn(async (input) => {
+      const value = candidate(input);
+      return value.outcome === "READY" ? { outcome: "READY", preview: value.preview } : value;
+    }),
+    confirmOwnedSignalPublication: vi.fn(async (input) => {
+      const value = candidate(input);
+      if (value.outcome !== "READY") return value;
+      if (value.preview.digest !== input.digest || value.preview.version !== input.expectedVersion) return { outcome: "CONFLICT" };
+      const snapshot = confirmPublicationSnapshot(value.preview, new Date("2026-10-30T00:00:00Z"));
+      Object.assign(value.signal, { status: "PUBLISHED", withdrawnAt: null, publicationVersion: value.signal.publicationVersion + 1, publicationSnapshot: snapshot });
+      return { outcome: "PUBLISHED", id: input.id, publicationVersion: value.signal.publicationVersion, snapshot };
+    }),
+    withdrawOwnedSignal: vi.fn(async () => ({ outcome: "NOT_FOUND" })),
+  };
+});
+
 vi.mock("./repository.js", () => {
   class SignalNotFoundForInteraction extends Error {
     constructor() {
@@ -244,14 +271,17 @@ vi.mock("./repository.js", () => {
     return signalStores.rows.find((row) => row.id === id);
   };
   const isPublicCompletedSignal = (row: SignalRecord) => {
-    return row.status === "PUBLISHED" && row.generationStatus === "COMPLETED";
+    return row.status === "PUBLISHED" && row.generationStatus === "COMPLETED" && row.withdrawnAt === null && row.publicationSnapshot !== null;
   };
 
   return {
     SignalNotFoundForInteraction,
+    recheckPublicSignals: vi.fn(async (expected: { id: string; publicationVersion: number }[]) => signalStores.rows.filter((row) =>
+      isPublicCompletedSignal(row) && expected.some((item) => item.id === row.id && item.publicationVersion === row.publicationVersion))),
     createSignalDraft: vi.fn((input: CreateSignalInput) => {
       const now = new Date("2026-05-10T12:00:00.000Z");
       const signal: SignalRecord = {
+        publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
         authorFreqCode: input.authorId === undefined ? null : "FM-27.51",
         authorId: input.authorId ?? null,
         audioError: null,
@@ -298,6 +328,7 @@ vi.mock("./repository.js", () => {
         updatedAt: now,
       };
 
+      if (signal.status === "PUBLISHED" && signal.generationStatus === "COMPLETED") confirmUnitPublication(signal);
       signalStores.rows.push(signal);
 
       return Promise.resolve(signal);
@@ -360,7 +391,7 @@ vi.mock("./repository.js", () => {
           new Set(
             signalStores.rows
               .filter(isPublicCompletedSignal)
-              .map((row) => row.primaryBand ?? row.fingerprintJson.theme)
+              .map((row) => signalBandLabels[row.primaryBand ?? row.fingerprintJson.primaryBand])
               .filter((theme) => theme.length > 0),
           ),
         ).sort((left, right) => left.localeCompare(right, "zh-CN")),
@@ -795,6 +826,15 @@ afterEach(async () => {
   app = undefined;
 });
 
+function publicationPayload(id: string) {
+  const signal = signalStores.rows.find((row) => row.id === id);
+  if (signal?.generationStatus === "COMPLETED" && signal.authorId !== null) {
+    const preview = buildPublicationPreview(signal, signal.publicationVersion);
+    return { expectedVersion: preview.version, digest: preview.digest };
+  }
+  return { expectedVersion: 0, digest: "0".repeat(64) };
+}
+
 async function completeSignalFixture(id: string) {
   const signal = signalStores.rows.find((row) => row.id === id);
   if (signal === undefined) throw new Error("Missing route unit fixture.");
@@ -823,6 +863,7 @@ function setSignalStatus(id: string, status: SignalStatus) {
 
   if (signal !== undefined) {
     signal.status = status;
+    if (status === "PUBLISHED") confirmUnitPublication(signal);
   }
 }
 
@@ -931,7 +972,7 @@ describe("signal routes", () => {
           expandedText: routeExpansion.expandedText,
           id: signal.id,
           status: "DRAFT",
-          visibility: "PREVIEW_OWNER",
+          visibility: "PRIVATE_OWNER",
         },
       },
     });
@@ -1004,7 +1045,7 @@ describe("signal routes", () => {
         authorization: "Bearer active-token",
       },
       method: "POST",
-      payload: {},
+      payload: publicationPayload(signal.id),
       url: `/api/signals/${signal.id}/publish`,
     });
     const publicResponse = await testApp.inject({
@@ -1043,7 +1084,7 @@ describe("signal routes", () => {
         authorization: "Bearer other-token",
       },
       method: "POST",
-      payload: {},
+      payload: publicationPayload(signal.id),
       url: `/api/signals/${signal.id}/publish`,
     });
     const ownerResponse = await testApp.inject({
@@ -1065,7 +1106,7 @@ describe("signal routes", () => {
         signal: {
           id: signal.id,
           status: "DRAFT",
-          visibility: "PREVIEW_OWNER",
+          visibility: "PRIVATE_OWNER",
         },
       },
     });
@@ -1088,7 +1129,7 @@ describe("signal routes", () => {
         authorization: "Bearer active-token",
       },
       method: "POST",
-      payload: {},
+      payload: publicationPayload(signal.id),
       url: `/api/signals/${signal.id}/publish`,
     });
 
@@ -1110,7 +1151,7 @@ describe("signal routes", () => {
         authorization: "Bearer active-token",
       },
       method: "POST",
-      payload: {},
+      payload: publicationPayload(signal.id),
       url: `/api/signals/${signal.id}/publish`,
     });
 
@@ -1297,9 +1338,7 @@ describe("signal routes", () => {
         authorization: "Bearer active-token",
       },
       method: "POST",
-      payload: {
-        seedText: "今晚想把这段匿名信号留在这里，等一个同频的人。",
-      },
+      payload: { expectedVersion: 0, digest: "0".repeat(64) },
       url: "/api/signals/00000000-0000-4000-8000-000000000001/publish",
     });
 
@@ -1373,7 +1412,7 @@ describe("signal routes", () => {
         points: [
           {
             id: signal.id,
-            theme: "关系星云 · 被理解需求",
+            tags: expect.arrayContaining(["关系星云"]),
             position: {
               x: expect.any(Number),
               y: expect.any(Number),
@@ -1603,6 +1642,7 @@ describe("signal routes", () => {
         theme: "希望",
       };
       secondSignal.primaryBand = "meaning_deep_space";
+      confirmUnitPublication(secondSignal);
       secondSignal.subFeeling = "effort_doubt";
       secondSignal.coreNeed = "确认努力是否值得";
       secondSignal.emotionTone = "清醒疲惫";
@@ -1621,10 +1661,10 @@ describe("signal routes", () => {
         points: [
           {
             id: secondDraft.id,
-            theme: "意义深空 · 努力怀疑",
+            primaryBand: "meaning_deep_space",
           },
         ],
-        themeOptions: ["意义深空", "关系星云"],
+        themeOptions: expect.arrayContaining(["意义深空", "关系星云"]),
       },
     });
     expect(response.json().data.points).not.toContainEqual(
@@ -1665,42 +1705,9 @@ describe("signal routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      data: {
-        signal: {
-          fingerprint: {
-            coreNeed: "希望被理解",
-            displayText: "关系星云 · 被理解需求",
-            energy: 0.5,
-            emotionTone: "安静复杂",
-            frequency: "FM-27.51",
-            hiddenNeed: "希望被理解",
-            innerConflict: "想靠近别人，又担心打扰别人",
-            narrativeConflict: "想靠近别人，又担心打扰别人",
-            openness: 0.5,
-            primaryBand: "relationship_nebula",
-            primaryEmotion: "安静复杂",
-            resonanceKeywords: ["孤独", "夜晚"],
-            riskLevel: "LOW",
-            secondaryEmotions: [],
-            signalType: "relationship_nebula",
-            subFeeling: "need_to_be_understood",
-            tags: ["孤独", "夜晚"],
-            theme: "关系",
-            title: "旧信号",
-          },
-          frequencyProfile: {
-            coreNeed: "希望被理解",
-            displayText: "关系星云 · 被理解需求",
-            primaryBand: "relationship_nebula",
-            resonanceKeywords: ["孤独", "夜晚"],
-            subFeeling: "need_to_be_understood",
-          },
-          id: draft.id,
-          status: "PUBLISHED",
-        },
-      },
-    });
+    const result = response.json().data.signal;
+    expect(result).toMatchObject({ id: draft.id, status: "PUBLISHED", visibility: "PUBLIC", expandedText: routeExpansion.expandedText });
+    for (const key of ["seedText", "rawInput", "fingerprint", "frequencyProfile", "program"]) expect(result).not.toHaveProperty(key);
   });
 
   it("queries audio without starting TTS and fails explicit audio request when TTS is unconfigured", async () => {
@@ -1749,6 +1756,7 @@ describe("signal routes", () => {
 
     const draft = await createSignal(testApp, "PUBLISHED");
     signalStores.rows[0].audioStatus = "READY";
+    signalStores.rows[0].audioPublicationVersion = signalStores.rows[0].publicationVersion;
     signalStores.rows[0].audioStorageKey = `${draft.id}.mp3`;
     signalStores.rows[0].audioStorageKeyLeft = `${draft.id}.mp3`;
     signalStores.rows[0].audioStorageKeyRight = `${draft.id}.mp3`;
@@ -1963,7 +1971,7 @@ describe("signal routes", () => {
           {
             id: signalId,
             savedAt: "2026-05-10T12:04:00.000Z",
-            theme: "关系星云 · 被理解需求",
+            tags: expect.arrayContaining(["关系星云"]),
           },
         ],
       },

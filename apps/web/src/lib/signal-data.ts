@@ -1,5 +1,6 @@
-import { ApiClientError, apiClient } from "@/lib/api-client";
+import { ApiClientError, apiClient } from "./api-client";
 import {
+  isPublicSignalDetail,
   isCreateSignalEchoResponse,
   isCreateSignalResponse,
   isEchoSummaryResponse,
@@ -14,7 +15,7 @@ import {
   isSignalResonanceResponse,
   isSignalResponse,
   isSignalSaveResponse,
-} from "@/lib/api-response-validators";
+} from "./api-response-validators";
 import type {
   CreateSignalResponse,
   CreateSignalEchoResponse,
@@ -26,7 +27,6 @@ import type {
   MonthlyRecapResponse,
   MySignalsResponse,
   PublishSignalResponse,
-  SignalDetail,
   SignalAudioDetail,
   SignalAudioResponse,
   SignalEchoDetail,
@@ -38,7 +38,9 @@ import type {
   SignalResponse,
   SignalSaveResponse,
   SignalResultDetail,
-  SignalPreviewDetail,
+  OwnerSignalDetail,
+  PublicSignalDetail,
+  PublishSignalRequest,
   SavedSignalsResponse,
   SignalPrimaryBand,
 } from "@unfreq/contracts";
@@ -54,20 +56,26 @@ export type CreateSignalEchoInput = {
 
 export type SignalResonanceInput = Record<string, never>;
 
-export function isSignalDetail(signal: SignalResultDetail): signal is SignalDetail {
-  return !("visibility" in signal);
+export function isSignalDetail(signal: SignalResultDetail): signal is PublicSignalDetail {
+  return signal.visibility === "PUBLIC";
 }
-
-export function isSignalGenerationDetail(
-  signal: SignalResultDetail,
-): signal is SignalGenerationDetail {
-  return "visibility" in signal && signal.visibility === "GENERATION_OWNER";
+export function isSignalGenerationDetail(signal: SignalResultDetail): signal is SignalGenerationDetail {
+  return signal.visibility === "GENERATION_OWNER";
 }
-
-export function isSignalPreviewDetail(
-  signal: SignalResultDetail,
-): signal is SignalPreviewDetail {
-  return "visibility" in signal && signal.visibility === "PREVIEW_OWNER";
+export function isSignalPreviewDetail(signal: SignalResultDetail): signal is OwnerSignalDetail {
+  return signal.visibility === "PRIVATE_OWNER";
+}
+/** Always anonymous, including when a signed-in author opens a share card. */
+export async function getPublicSignal(id: string): Promise<PublicSignalDetail | undefined> {
+  try {
+    const result = await apiClient.get<SignalResponse>(`/api/signals/${encodeURIComponent(id)}`, {
+      credentials: "omit", cache: "no-store", validate: isSignalResponse,
+    });
+    return isPublicSignalDetail(result.signal) ? result.signal : undefined;
+  } catch (error) {
+    if (error instanceof ApiClientError && [400, 404].includes(error.status)) return undefined;
+    throw error;
+  }
 }
 
 export async function createSignal(input: CreateSignalInput): Promise<SignalGenerationDetail> {
@@ -80,17 +88,17 @@ export async function createSignal(input: CreateSignalInput): Promise<SignalGene
   return result.signal;
 }
 
-export async function publishSignal(signalId: string): Promise<SignalDetail> {
-  const result = await apiClient.post<PublishSignalResponse, Record<string, never>>(
+export async function publishSignal(signalId: string, confirmation: PublishSignalRequest): Promise<OwnerSignalDetail> {
+  const result = await apiClient.post<PublishSignalResponse, PublishSignalRequest>(
     `/api/signals/${signalId}/publish`,
-    {},
+    confirmation,
     { validate: isPublishSignalResponse },
   );
 
   return result.signal;
 }
 
-export async function getSignalHall(): Promise<SignalDetail[]> {
+export async function getSignalHall(): Promise<PublicSignalDetail[]> {
   const result = await apiClient.get<SignalHallResponse>("/api/signals/hall", {
     cache: "no-store",
     validate: isSignalHallResponse,
@@ -211,7 +219,7 @@ export async function generateMonthlyRecap(yearMonth?: string): Promise<MonthlyR
   return result.recap;
 }
 
-export async function getRandomSignal(): Promise<SignalDetail | undefined> {
+export async function getRandomSignal(): Promise<PublicSignalDetail | undefined> {
   try {
     const result = await apiClient.get<SignalResponse>("/api/signals/random", {
       cache: "no-store",

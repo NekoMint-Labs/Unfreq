@@ -3,14 +3,16 @@ import { AppError } from "../../shared/errors.js";
 import { isTtsProviderConfigured, type TtsLogger } from "../ai/tts.js";
 import { readSignalAudio } from "./audio-storage.js";
 import type { SignalAudioWorker } from "./audio-worker.js";
-import { findPublishedSignalById, markSignalAudioFailed } from "./repository.js";
+import { findPublishedSignalById, markSignalAudioFailed, recheckPublicSignals } from "./repository.js";
 import { toSignalAudioDetail, toUnavailableTtsAudioDetail } from "./service-mappers.js";
 import type { SignalAudioDetail } from "./types.js";
 
 export async function getSignalAudio(id: string, _logger?: TtsLogger): Promise<SignalAudioDetail> {
   const signal = await findPublishedSignalById(id);
   if (signal === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
-  return toSignalAudioDetail(signal);
+  const [current] = await recheckPublicSignals([signal]);
+  if (current === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
+  return toSignalAudioDetail(current);
 }
 
 export async function requestSignalAudio(id: string, logger?: TtsLogger,
@@ -20,22 +22,28 @@ export async function requestSignalAudio(id: string, logger?: TtsLogger,
   if (context?.worker !== undefined) return context.worker.request(id, context.clientIp, logger);
   const signal = await findPublishedSignalById(id);
   if (signal === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
-  if (signal.audioStatus === "READY" || signal.audioStatus === "PENDING") return toSignalAudioDetail(signal);
+  if (signal.audioPublicationVersion === signal.publicationVersion && (signal.audioStatus === "READY" || signal.audioStatus === "PENDING")) return toSignalAudioDetail(signal);
   if (!(await isTtsProviderConfigured())) {
     const fallback = await markSignalAudioFailed({ id, error: "TTS provider is not configured." });
-    return toUnavailableTtsAudioDetail(fallback ?? signal);
+    const [current] = await recheckPublicSignals([signal]);
+    if (current === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
+    return toUnavailableTtsAudioDetail(fallback ?? current);
   }
   // Compatibility callers may read cached/local fallback results, but cannot
   // start a global/legacy unsupervised paid job by omitting context.
   throw new AbuseControlStopped("unavailable", "configuration");
 }
 
-export async function getSignalAudioDownload(id: string, side: "left" | "main" | "right"):
+export async function getSignalAudioDownload(id: string, side: "left" | "main" | "right", expectedPublicationVersion?: number):
 Promise<{ sizeBytes?: number; stream: Awaited<ReturnType<typeof readSignalAudio>> }> {
   const signal = await findPublishedSignalById(id);
   if (signal === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
-  if (signal.audioStatus !== "READY") throw new AppError("CONFLICT", "Signal audio is not ready.");
+  if (expectedPublicationVersion !== undefined && expectedPublicationVersion !== signal.publicationVersion) throw new AppError("NOT_FOUND", "Signal audio version not found.");
+  if (signal.audioPublicationVersion !== signal.publicationVersion || signal.audioStatus !== "READY") throw new AppError("CONFLICT", "Signal audio is not ready.");
   const storageKey = side === "main" ? signal.audioStorageKey : side === "left" ? signal.audioStorageKeyLeft : signal.audioStorageKeyRight;
   if (storageKey === null) throw new AppError("NOT_FOUND", "Signal audio not found.");
-  return { stream: await readSignalAudio(storageKey) };
+  const stream = await readSignalAudio(storageKey);
+  const [current] = await recheckPublicSignals([signal]);
+  if (current === undefined) { stream.destroy(); throw new AppError("NOT_FOUND", "Signal not found."); }
+  return { stream };
 }

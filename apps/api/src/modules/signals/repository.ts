@@ -1,3 +1,6 @@
+import { signalBandLabels } from "./frequency-taxonomy.js";
+import { publicSignalFilters, isPublicSignal } from "./publication-policy.js";
+import { parsePublicationSnapshot } from "./publication.js";
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { env } from "../../config/env.js";
@@ -39,6 +42,10 @@ export class SignalNotFoundForInteraction extends Error {
 }
 
 export const signalSelection = {
+  publicationVersion: signals.publicationVersion,
+  publicationSnapshot: signals.publicationSnapshot,
+  withdrawnAt: signals.withdrawnAt,
+  audioPublicationVersion: signals.audioPublicationVersion,
   authorFreqCode: users.freqCode,
   authorId: signals.authorId,
   audioError: signals.audioError,
@@ -86,6 +93,10 @@ export const signalSelection = {
 };
 
 type SignalSelectionRow = {
+  publicationVersion: number;
+  publicationSnapshot: unknown;
+  withdrawnAt: Date | null;
+  audioPublicationVersion: number | null;
   authorFreqCode: string | null;
   authorId: string | null;
   audioError: string | null;
@@ -149,12 +160,7 @@ function toSemanticSignalRecord(
   };
 }
 
-function getPublicCompletedSignalFilters() {
-  return [
-    eq(signals.status, "PUBLISHED"),
-    eq(signals.generationStatus, "COMPLETED"),
-  ];
-}
+const getPublicCompletedSignalFilters = publicSignalFilters;
 
 async function findSignalById(id: string): Promise<SignalRecord | undefined> {
   const [row] = await db
@@ -321,7 +327,7 @@ export async function listPublishedGalaxySignals(params: {
   const filters = getPublicCompletedSignalFilters();
 
   if (params.band !== undefined) {
-    filters.push(eq(signals.primaryBand, params.band));
+    filters.push(sql<boolean>`${signals.publicationSnapshot}->'content'->>'primaryBand' = ${params.band}`);
   } else if (params.theme !== undefined) {
     const legacyBandByTheme: Record<string, SignalPrimaryBand> = {
       情绪暗流: "emotional_undercurrent",
@@ -335,9 +341,9 @@ export async function listPublishedGalaxySignals(params: {
     const legacyBand = legacyBandByTheme[params.theme];
 
     if (legacyBand !== undefined) {
-      filters.push(eq(signals.primaryBand, legacyBand));
+      filters.push(sql<boolean>`${signals.publicationSnapshot}->'content'->>'primaryBand' = ${legacyBand}`);
     } else {
-      filters.push(sql<boolean>`${signals.fingerprintJson}->>'theme' = ${params.theme}`);
+      filters.push(sql<boolean>`false`);
     }
   }
 
@@ -353,22 +359,12 @@ export async function listPublishedGalaxySignals(params: {
 }
 
 export async function listPublishedGalaxyThemes(limit: number): Promise<string[]> {
-  const rows = await db
-    .select({
-      theme: sql<string>`coalesce(${signals.primaryBand}::text, ${signals.fingerprintJson}->>'theme')`,
-    })
-    .from(signals)
-    .where(and(
-      ...getPublicCompletedSignalFilters(),
-      sql<boolean>`coalesce(${signals.primaryBand}::text, ${signals.fingerprintJson}->>'theme', '') <> ''`,
-    ))
-    .groupBy(sql`coalesce(${signals.primaryBand}::text, ${signals.fingerprintJson}->>'theme')`)
-    .orderBy(sql`coalesce(${signals.primaryBand}::text, ${signals.fingerprintJson}->>'theme')`)
-    .limit(limit);
-
-  return rows
-    .map((row) => row.theme.trim())
-    .filter((theme) => theme.length > 0);
+  const rows = await listPublishedSignals(256);
+  const current = await recheckPublicSignals(rows);
+  return [...new Set(current.flatMap((signal) => {
+    const band = parsePublicationSnapshot(signal.publicationSnapshot)?.content.primaryBand;
+    return band === undefined ? [] : [signalBandLabels[band]];
+  }))].sort().slice(0, limit);
 }
 
 export async function findSignalSave(params: {
@@ -631,12 +627,13 @@ export async function createSignalEcho(params: {
     const [signal] = await tx
       .select({
         id: signals.id,
+        publicationSnapshot: signals.publicationSnapshot,
       })
       .from(signals)
       .where(and(eq(signals.id, params.signalId), ...getPublicCompletedSignalFilters()))
-      .limit(1);
+      .limit(1).for("update");
 
-    if (signal === undefined) {
+    if (signal === undefined || parsePublicationSnapshot(signal.publicationSnapshot) === undefined) {
       throw new SignalNotFoundForInteraction();
     }
 
@@ -716,12 +713,13 @@ export async function createSignalResonance(params: {
     const [signal] = await tx
       .select({
         resonanceCount: signals.resonanceCount,
+        publicationSnapshot: signals.publicationSnapshot,
       })
       .from(signals)
       .where(and(eq(signals.id, params.signalId), ...getPublicCompletedSignalFilters()))
-      .limit(1);
+      .limit(1).for("update");
 
-    if (signal === undefined) {
+    if (signal === undefined || parsePublicationSnapshot(signal.publicationSnapshot) === undefined) {
       throw new SignalNotFoundForInteraction();
     }
 
@@ -807,6 +805,9 @@ export async function deleteSignalByAdmin(id: string): Promise<SignalRecord | un
     .update(signals)
     .set({
       ...invalidateManagedGenerationForAdmin("DELETED"),
+      publicationVersion: sql`${signals.publicationVersion} + 1`,
+      audioPublicationVersion: null,
+      audioStatus: "NOT_REQUESTED", audioAttemptId: null, audioError: null,
       status: "DELETED",
       updatedAt: new Date(),
     })
@@ -826,38 +827,13 @@ export async function updateSignalStatusByAdmin(params: {
     .update(signals)
     .set({
       ...invalidateManagedGenerationForAdmin(params.status),
+      publicationVersion: sql`${signals.publicationVersion} + 1`,
+      audioPublicationVersion: null,
+      audioStatus: "NOT_REQUESTED", audioAttemptId: null, audioError: null,
       status: params.status,
       updatedAt: new Date(),
     })
     .where(eq(signals.id, params.id))
-    .returning({
-      id: signals.id,
-    });
-
-  return updated === undefined ? undefined : findSignalById(updated.id);
-}
-
-export async function publishSignalForFrequency(params: {
-  frequencyId: string;
-  id: string;
-}): Promise<SignalRecord | undefined> {
-  const [updated] = await db
-    .update(signals)
-    .set({
-      status: "PUBLISHED",
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(signals.id, params.id),
-        eq(signals.status, "DRAFT"),
-        eq(signals.generationStatus, "COMPLETED"),
-        or(
-          eq(signals.frequencyId, params.frequencyId),
-          eq(signals.authorId, params.frequencyId),
-        ),
-      ),
-    )
     .returning({
       id: signals.id,
     });
@@ -1078,12 +1054,13 @@ export async function deleteSignalResonance(params: {
     const [signal] = await tx
       .select({
         resonanceCount: signals.resonanceCount,
+        publicationSnapshot: signals.publicationSnapshot,
       })
       .from(signals)
       .where(and(eq(signals.id, params.signalId), ...getPublicCompletedSignalFilters()))
-      .limit(1);
+      .limit(1).for("update");
 
-    if (signal === undefined) {
+    if (signal === undefined || parsePublicationSnapshot(signal.publicationSnapshot) === undefined) {
       throw new SignalNotFoundForInteraction();
     }
 
@@ -1132,12 +1109,13 @@ export async function createSignalSave(params: {
     const [signal] = await tx
       .select({
         id: signals.id,
+        publicationSnapshot: signals.publicationSnapshot,
       })
       .from(signals)
       .where(and(eq(signals.id, params.signalId), ...getPublicCompletedSignalFilters()))
-      .limit(1);
+      .limit(1).for("update");
 
-    if (signal === undefined) {
+    if (signal === undefined || parsePublicationSnapshot(signal.publicationSnapshot) === undefined) {
       throw new SignalNotFoundForInteraction();
     }
 
@@ -1223,4 +1201,13 @@ export async function listPublishedSignalEchoes(signalId: string): Promise<Signa
       ),
     )
     .orderBy(asc(signalEchoes.createdAt));
+}
+
+/** Recheck the exact epochs observed before asynchronous work, in one query. */
+export async function recheckPublicSignals(expected: readonly { id: string; publicationVersion: number }[]): Promise<SignalRecord[]> {
+  if (expected.length === 0) return [];
+  const rows = await db.select(signalSelection).from(signals).leftJoin(users, eq(signals.authorId, users.id))
+    .where(and(inArray(signals.id, expected.map((item) => item.id)), ...publicSignalFilters()));
+  const versions = new Map(expected.map((item) => [item.id, item.publicationVersion]));
+  return rows.map(toSignalRecord).filter((row) => versions.get(row.id) === row.publicationVersion && isPublicSignal(row));
 }

@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 import { notFound } from "next/navigation";
-import { getSignal, isSignalDetail } from "@/lib/signal-data";
+import { getPublicSignal } from "@/lib/signal-data";
 
 export const runtime = "edge";
 
@@ -27,18 +27,20 @@ function truncateCardText(value: string): string {
   return `${normalized.slice(0, maxCardTextLength - 1)}…`;
 }
 
-export async function GET(_request: Request, context: SignalOgRouteContext) {
+export async function GET(request: Request, context: SignalOgRouteContext) {
   const { signalId } = await context.params;
-  const signal = await getSignal(signalId);
+  const signal = await getPublicSignal(signalId);
 
-  if (signal === undefined || !isSignalDetail(signal)) {
+  if (signal === undefined) {
     notFound();
   }
 
-  const frequencyCode = signal.authorFreqCode ?? signal.fingerprint.frequency;
+  const version = new URL(request.url).searchParams.get("v");
+  if (version !== null && (!/^[1-9]\d{0,9}$/u.test(version) || Number(version) !== signal.publicationVersion)) notFound();
+  const frequencyCode = signal.authorFreqCode ?? "Unfreq";
   const cardText = truncateCardText(signal.expandedText);
 
-  return new ImageResponse(
+  const rendered = new ImageResponse(
     (
       <div
         lang="zh-CN"
@@ -183,8 +185,14 @@ export async function GET(_request: Request, context: SignalOgRouteContext) {
     {
       ...imageSize,
       headers: {
-        "cache-control": "public, max-age=300, stale-while-revalidate=86400",
+        "cache-control": "private, no-store, max-age=0",
       },
     },
   );
+  const bytes = await rendered.arrayBuffer();
+  // PNG rendering is asynchronous: recheck before releasing the rendered copy.
+  const current = await getPublicSignal(signalId);
+  if (current === undefined || current.publicationVersion !== signal.publicationVersion) notFound();
+  return new Response(bytes, { headers: rendered.headers });
+
 }

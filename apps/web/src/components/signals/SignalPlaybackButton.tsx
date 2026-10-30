@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { env } from "@/lib/env";
+import { allowsBrowserSpeechFallback } from "@/lib/signal-audio-policy";
+import { resolveSignalAudioUrl } from "@/lib/signal-audio-url";
 import { getSignalAudio, requestSignalAudio } from "@/lib/signal-data";
 import type { SignalAudioDetail } from "@unfreq/contracts";
 import { SignalActionFeedback } from "./SignalActionFeedback";
@@ -22,13 +25,6 @@ const pollIntervalMs = 1_500;
 const maxPollCount = 12;
 const playbackStopEventName = "unfreq:signal-playback-stop";
 
-function toAbsoluteAudioUrl(value: string): string {
-  if (value.startsWith("http://") || value.startsWith("https://")) {
-    return value;
-  }
-
-  return value;
-}
 
 function getReadyAudioUrl(audio: SignalAudioDetail | undefined): string | undefined {
   if (audio?.audioStatus !== "READY") {
@@ -123,7 +119,7 @@ export function SignalPlaybackButton({
 
     audioRef.current?.pause();
 
-    const nextAudio = new Audio(toAbsoluteAudioUrl(url));
+    const nextAudio = new Audio(resolveSignalAudioUrl(url, env.publicApiBaseUrl));
     audioRef.current = nextAudio;
 
     const stop = () => {
@@ -171,8 +167,14 @@ export function SignalPlaybackButton({
 
     if (readyAudioUrl !== undefined) {
       try {
-        await playServerAudio();
-      } catch {
+        const current = signalId === undefined ? audio : await getSignalAudio(signalId);
+        setAudio(current);
+        if (getReadyAudioUrl(current) === undefined) { setError("音频状态已改变，请再次播放。"); return; }
+        await playServerAudio(current);
+      } catch (caughtError) {
+        if (!allowsBrowserSpeechFallback(caughtError)) {
+          setAudio(undefined); stopPlayback(); setError("这条信号暂不可播放。"); return;
+        }
         if (!fallbackToBrowserSpeech()) {
           setError("音频暂时无法播放。");
         }
@@ -208,7 +210,10 @@ export function SignalPlaybackButton({
       if (!fallbackToBrowserSpeech()) {
         setError("音频暂时无法播放。");
       }
-    } catch {
+    } catch (caughtError) {
+      if (!allowsBrowserSpeechFallback(caughtError)) {
+        setAudio(undefined); stopPlayback(); setError("这条信号暂不可播放。"); return;
+      }
       if (!fallbackToBrowserSpeech()) {
         setError("音频暂时没有生成。");
       }

@@ -145,6 +145,7 @@ export async function confirmOwnedSignalPublication(
       publicationSnapshot: snapshot, status: "PUBLISHED", withdrawnAt: null,
       publicationVersion: sql`${signals.publicationVersion} + 1`, updatedAt: confirmedAt,
       audioAttemptId: null, audioPublicationVersion: null, audioStatus: "NOT_REQUESTED", audioError: null,
+      audioUrl: null, audioUrlLeft: null, audioUrlRight: null,
     }).where(eq(signals.id, candidate.signal.id)).returning({ id: signals.id, publicationVersion: signals.publicationVersion });
     if (published === undefined) throw new Error("Signal confirmation did not return a row.");
     return { outcome: "PUBLISHED", ...published, snapshot };
@@ -156,6 +157,8 @@ export async function withdrawOwnedSignal(
   input: WithdrawOwnedSignalInput,
 ): Promise<WithdrawOwnedSignalResult> {
   return db.transaction(async (tx) => {
+    const [actor] = await tx.select({ status: users.status }).from(users).where(eq(users.id, input.actorId)).limit(1).for("share");
+    if (actor === undefined || actor.status === "BANNED") return { outcome: "NOT_FOUND" };
     const [signal] = await tx.select({
       id: signals.id,
       authorId: signals.authorId,
@@ -188,6 +191,7 @@ export async function withdrawOwnedSignal(
     const [withdrawn] = await tx.update(signals).set({
       withdrawnAt: sql`clock_timestamp()`,
       publicationVersion: sql`${signals.publicationVersion} + 1`,
+      audioPublicationVersion: null,
       ...(stopGeneration ? {
         generationStatus: "FAILED" as const,
         generationError: "GENERATION_SUPERSEDED",
