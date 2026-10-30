@@ -16,7 +16,7 @@ import type { EmbeddingLogger } from "./embedding.js";
 const rerankerTimeoutMs = 5_000;
 
 export type RerankCandidateInput = {
-  distance: number;
+  distance?: number;
   expandedText: string;
   id: string;
 };

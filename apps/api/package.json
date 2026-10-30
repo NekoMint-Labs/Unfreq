@@ -11,6 +11,7 @@
     "embeddings:backfill": "node dist/scripts/backfill-embeddings.js",
     "galaxy:backfill": "node dist/scripts/backfill-galaxy-positions.js",
     "lint": "eslint .",
+    "matches:evaluate": "node dist/scripts/evaluate-matches.js",
     "migrate": "drizzle-kit migrate",
     "migrate:generate": "drizzle-kit generate",
     "signals:seed": "node dist/scripts/seed-signals.js",

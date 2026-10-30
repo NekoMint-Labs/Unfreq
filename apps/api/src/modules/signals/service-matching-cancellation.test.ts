@@ -72,7 +72,8 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     calls.rerank.mockRejectedValueOnce(stopped);
     const warn = vi.fn();
     await expect(runWithGenerationExecution(ctx, () => findSameFrequencyMatches({ ...input, logger: { info: vi.fn(), error: vi.fn(), warn } }))).rejects.toBe(stopped);
-    expect(calls.keyword).not.toHaveBeenCalled();
+    expect(calls.keyword).toHaveBeenCalledTimes(1);
+    expect(calls.keyword.mock.invocationCallOrder[0]).toBeLessThan(calls.rerank.mock.invocationCallOrder[0]!);
     expect(warn).not.toHaveBeenCalled();
   });
 

@@ -278,6 +278,7 @@ export function toMatchSummary(signal: SignalRecord, score: number): SignalMatch
   const fingerprint = getSignalResponseFingerprint(signal);
 
   return {
+    contentSource: signal.source,
     expandedText: parsePublicationSnapshot(signal.publicationSnapshot)?.content.expandedText ?? "",
     frequencyProfile,
     frequencyCode: signal.authorFreqCode ?? fingerprint.frequency,

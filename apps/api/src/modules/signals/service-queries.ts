@@ -18,6 +18,7 @@ import type { EchoSummary, GalaxyResult, MySignalsResult, SavedSignalsResult,
   SignalRecord, SignalResultDetail } from "./types.js";
 import type { OwnerSignalDetail, PublicSignalDetail, PublicSignalMatchSummary, SignalPublicationActions } from "@unfreq/contracts/signals";
 import { decodeHistoryCursor } from "./history-cursor.js";
+import { isMatchEligible, type MatchScope } from "./match-policy.js";
 
 const notFound = () => new AppError("NOT_FOUND", "Signal not found.");
 
@@ -138,7 +139,11 @@ export async function getMyEchoSummary(
 async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency, logger?: EmbeddingLogger): Promise<PublicSignalDetail> {
   if (!isPublicSignal(signal)) throw notFound();
   const snapshot = parsePublicationSnapshot(signal.publicationSnapshot)!;
+  const matchScope: MatchScope = { excludeSignalId: signal.id,
+    excludeAuthorIds: [...new Set([signal.authorId ?? signal.frequencyId, frequency?.id].filter((id): id is string => id !== null && id !== undefined))] };
   const result = await findSameFrequencyMatches({ excludeSignalId: signal.id,
+    excludeAuthorIds: matchScope.excludeAuthorIds,
+    publicTags: snapshot.content.tags, publicBand: snapshot.content.primaryBand,
     logger, publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
   const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
   const candidates = result.matches.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
@@ -148,7 +153,8 @@ async function toPublishedSignalDetail(signal: SignalRecord, frequency?: Authent
   if (parent === undefined) throw notFound();
   const matches = candidates.flatMap((match) => {
     const row = current.find((item) => item.id === match.id);
-    const projected = row === undefined ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score, scoreProvenance: match.scoreProvenance });
+    const projected = row === undefined || !isMatchEligible(row, matchScope) || (row.authorId ?? row.frequencyId) === (parent.authorId ?? parent.frequencyId)
+      ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score, scoreProvenance: match.scoreProvenance });
     return projected === undefined ? [] : [projected];
   });
   const detail = projectPublicSignal({ ...publicationProjection(parent, signal.publicationVersion), matches,
@@ -157,10 +163,10 @@ async function toPublishedSignalDetail(signal: SignalRecord, frequency?: Authent
   return detail;
 }
 
-export async function getSignalDetail(id: string, logger?: EmbeddingLogger): Promise<PublicSignalDetail> {
+export async function getSignalDetail(id: string, logger?: EmbeddingLogger, frequency?: AuthenticatedFrequency): Promise<PublicSignalDetail> {
   const signal = await findPublishedSignalById(id);
   if (signal === undefined) throw notFound();
-  return toPublishedSignalDetail(signal, undefined, logger);
+  return toPublishedSignalDetail(signal, frequency, logger);
 }
 
 async function ownerActions(signal: SignalRecord, frequency: AuthenticatedFrequency): Promise<SignalPublicationActions> {
@@ -203,8 +209,8 @@ export async function getSignalDetailForFrequency(id: string, frequency: Authent
   return toPublishedSignalDetail(signal, frequency, logger);
 }
 
-export async function getSignalMatches(id: string, logger?: EmbeddingLogger): Promise<PublicSignalMatchSummary[]> {
-  return (await getSignalDetail(id, logger)).matches;
+export async function getSignalMatches(id: string, logger?: EmbeddingLogger, frequency?: AuthenticatedFrequency): Promise<PublicSignalMatchSummary[]> {
+  return (await getSignalDetail(id, logger, frequency)).matches;
 }
 
 export async function getRandomSignal(frequency: AuthenticatedFrequency | undefined): Promise<PublicSignalDetail> {

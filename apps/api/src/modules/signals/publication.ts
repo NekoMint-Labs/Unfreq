@@ -163,6 +163,7 @@ const matchScoreProvenanceSchema = z.strictObject({
   reason: z.enum(["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed"]),
 });
 export const publicMatchSchema = z.strictObject({
+  contentSource: sourceSchema.optional(),
   scoreProvenance: matchScoreProvenanceSchema.optional(),
   expandedText: nonblankTextSchema,
   authorFreqCode: frequencyCodeSchema.optional(),
@@ -245,6 +246,7 @@ export function projectPublicSignal(input: ProjectionInput<PublicMetadata &
       ...publicContent(match),
       id: match.id,
       score: match.score,
+      ...(match.contentSource === undefined ? {} : { contentSource: match.contentSource }),
       ...(match.scoreProvenance === undefined ? {} : { scoreProvenance: match.scoreProvenance }),
       source: match.source,
       resonanceCount: match.resonanceCount,
@@ -264,6 +266,7 @@ export function projectPublicMatch(
     ...publicContent(basis.snapshot.content),
     id: basis.metadata.id,
     score: score.data,
+    contentSource: basis.metadata.source,
     ...(provenance.success ? { scoreProvenance: provenance.data } : {}),
     source: "PUBLISHED",
     resonanceCount: basis.metadata.resonanceCount,

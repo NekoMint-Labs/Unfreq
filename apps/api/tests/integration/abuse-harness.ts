@@ -302,6 +302,7 @@ export async function createAbuseHarness(caseId: AbuseCase) {
       AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "",
       EMBEDDING_API_KEY: ["providerembedding", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", EMBEDDING_BASE_URL: ["providerembedding", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "synthetic-embedding", EMBEDDING_PROVIDER: "integration-loopback", EMBEDDING_VERSION: "b3-synthetic-v1",
       RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker", RERANKER_SCORE_SCALE: "zero_to_one",
+    SIGNAL_MATCH_SEMANTIC_CANDIDATES: "12", SIGNAL_MATCH_RULE_CANDIDATES: "24", SIGNAL_MATCH_MIN_SCORE: "80", SIGNAL_MATCH_MAX_RERANK_CHARACTERS: "12000",
       TTS_API_KEY: "abuse-stub-only", TTS_BASE_URL: provider.wsUrl, TTS_PROVIDER: "integration-loopback", TTS_MODEL: "synthetic-tts", TTS_VOICE_LEFT: "synthetic", TTS_VOICE_RIGHT: "synthetic",
       TTS_STORAGE_DIR: join(directory, "audio"), IMAGE_STORAGE_DIR: join(directory, "images"), IMAGE_MAX_BYTES: "2097152",
       SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault", "reports"].includes(caseId) ? "true" : "false",

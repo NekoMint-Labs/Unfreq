@@ -160,9 +160,14 @@ const isPublicationActions = (value: unknown): boolean => isRecord(value) &&
   isOptional(value.preview, (preview) => isPublicationPreview(preview) && preview.version === value.version) &&
   (!value.canPublish || isPublicationPreview(value.preview)) && isOptional(value.publishedContent, (content) =>
     isPublicContent(content) && exactKeys(content, publicContentKeys, publicContentOptionalKeys));
+const isMatchScoreProvenance = (value: unknown): boolean => isRecord(value) &&
+  exactKeys(value, ["version", "scale", "method", "reason"]) && value.version === "match-score-v1" && value.scale === "zero_to_hundred" &&
+  isEnumValue(value.method, ["rules", "cosine", "reranker"]) &&
+  isEnumValue(value.reason, ["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed"]);
 const isSignalMatchSummary = (value: unknown): boolean => isPublicContent(value) &&
-  exactKeys(value, [...publicContentKeys, "id", "score", "source", "resonanceCount", "publicationVersion"], publicContentOptionalKeys) &&
-  isString(value.id) && isFiniteNumber(value.score) && value.score >= 0 && value.source === "PUBLISHED" &&
+  exactKeys(value, [...publicContentKeys, "id", "score", "source", "resonanceCount", "publicationVersion"], [...publicContentOptionalKeys, "contentSource", "scoreProvenance"]) &&
+  isOptional(value.contentSource, (source) => isEnumValue(source, signalSources)) && isOptional(value.scoreProvenance, isMatchScoreProvenance) &&
+  isString(value.id) && isFiniteNumber(value.score) && value.score >= 0 && value.score <= 100 && value.source === "PUBLISHED" &&
   isNonNegativeInteger(value.resonanceCount) && isVersion(value.publicationVersion) && value.publicationVersion > 0;
 export const isPublicSignalDetail = (value: unknown): value is import("@unfreq/contracts").PublicSignalDetail =>
   isPublicContent(value) && exactKeys(value, [...publicContentKeys, "id", "createdAt", "updatedAt", "publishedAt", "publicationVersion", "status", "visibility", "echoCount", "resonanceCount", "source", "matches"], [...publicContentOptionalKeys, "hasSaved"]) &&

@@ -17,6 +17,7 @@ import {
 } from "../../db/schema.js";
 import { serializePgVector } from "../../db/vector.js";
 import { isEmbeddingSpaceKey } from "../ai/embedding-space.js";
+import { isMatchEligible, type MatchScope } from "./match-policy.js";
 import type { EmbeddingResult } from "../ai/embedding.js";
 import type {
   CreateSignalInput,
@@ -441,8 +442,17 @@ export async function findRandomPublishedSignal(params: {
 export async function listPublishedSignalMatchCandidates(
   limit: number,
   excludeSignalId?: string,
+  scope: MatchScope = {},
 ): Promise<SignalRecord[]> {
-  const filters = getPublicCompletedSignalFilters();
+  const filters = [...getPublicCompletedSignalFilters(), ...matchScopeFilters(scope)];
+  const tags = [...new Set(scope.tags ?? [])].filter((tag) => tag.length > 0 && tag.length <= 16).slice(0, 3);
+  // Recall ordering uses only confirmed labels, not private Seed/profile text.
+  // This chooses a pool; E2 remains the only final scoring definition.
+  const sameBand = scope.band === undefined ? sql`0` : sql`case when ${signals.publicationSnapshot}->'content'->>'primaryBand' = ${scope.band} then 1 else 0 end`;
+  const overlap = tags.length === 0 ? sql`0` : sql`(select count(*) from jsonb_array_elements_text(
+    case when jsonb_typeof(${signals.publicationSnapshot}->'content'->'tags') = 'array'
+    then ${signals.publicationSnapshot}->'content'->'tags' else '[]'::jsonb end) as label(value)
+    where label.value = any(array[${sql.join(tags.map((tag) => sql`${tag}`), sql`, `)}]::text[]))`;
 
   if (excludeSignalId !== undefined) {
     filters.push(ne(signals.id, excludeSignalId));
@@ -453,10 +463,18 @@ export async function listPublishedSignalMatchCandidates(
     .from(signals)
     .leftJoin(users, eq(signals.authorId, users.id))
     .where(and(...filters))
-    .orderBy(desc(signals.createdAt))
+    .orderBy(desc(sameBand), desc(overlap), desc(signals.createdAt), asc(signals.id))
     .limit(limit);
 
-  return rows.map(toSignalRecord);
+  return rows.map(toSignalRecord).filter((row) => isMatchEligible(row, scope));
+}
+
+function matchScopeFilters(scope: MatchScope) {
+  if ((scope.corpusIds?.length ?? 0) > 1000 || (scope.excludeAuthorIds?.length ?? 0) > 10) throw new Error("Matching scope is too large.");
+  const owner = sql`coalesce(${signals.authorId}, ${signals.frequencyId})`;
+  return [eq(signals.source, "human"), sql`${owner} is not null`,
+    ...(scope.excludeAuthorIds ?? []).map((id) => sql`${owner} is distinct from ${id}::uuid`),
+    ...(scope.corpusIds === undefined ? [] : [inArray(signals.id, [...scope.corpusIds])])];
 }
 
 export async function listPublishedSemanticSignalMatchCandidates(
@@ -464,13 +482,14 @@ export async function listPublishedSemanticSignalMatchCandidates(
   limit: number,
   excludeSignalId: string | undefined,
   space: Omit<EmbeddingResult, "embedding">,
+  scope: MatchScope = {},
 ): Promise<SignalSemanticMatchRecord[]> {
   // Legacy vectors have no provable template/normalization lineage. They stay
   // readable, but cannot be silently treated as members of a new space.
   if (!isEmbeddingSpaceKey(space.version) || embedding.length !== space.dimensions) return [];
   const queryVector = serializePgVector(embedding);
   const distance = sql<number>`${signals.embedding} <=> ${queryVector}::vector`.mapWith(Number);
-  const filters = [...getPublicCompletedSignalFilters(), isNotNull(signals.embedding)];
+  const filters = [...getPublicCompletedSignalFilters(), ...matchScopeFilters(scope), isNotNull(signals.embedding)];
 
   filters.push(eq(signals.embeddingVersion, space.version), eq(signals.embeddingProvider, space.provider),
     eq(signals.embeddingModel, space.model), eq(signals.embeddingDimensions, space.dimensions),
@@ -490,12 +509,12 @@ export async function listPublishedSemanticSignalMatchCandidates(
     .from(signals)
     .leftJoin(users, eq(signals.authorId, users.id))
     .where(and(...filters))
-    .orderBy(distance)
+    .orderBy(distance, asc(signals.id))
     .limit(limit);
 
   return rows
     .map(toSemanticSignalRecord)
-    .filter((row) => Number.isFinite(row.distance));
+    .filter((row) => Number.isFinite(row.distance) && isMatchEligible(row, scope));
 }
 
 export async function listSignalsMissingEmbedding(limit: number): Promise<SignalRecord[]> {

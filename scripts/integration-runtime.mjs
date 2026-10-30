@@ -11,7 +11,7 @@ export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRel
 const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
   "modules/ai/service", "modules/ai/repository", "modules/ai/provider-execution", "modules/ai/embedding-space", "modules/signals/service-embedding", "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
-  "modules/signals/service-creation", "modules/ai/reranker-adapter", "modules/signals/match-scoring", "modules/frontend-diagnostics/routes", "db/schema",
+  "modules/signals/service-creation", "modules/ai/reranker-adapter", "modules/signals/match-scoring", "modules/signals/match-policy", "modules/signals/match-evaluation", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/service-queries", "modules/signals/service-matching", "modules/signals/service-interactions",
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
   "modules/signals/publication-policy", "modules/signals/galaxy-sampling", "modules/signals/history-cursor", "modules/monthly-recaps/repository", "modules/signals/repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
@@ -27,7 +27,7 @@ export const runtimeArtifactPaths = Object.freeze([
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
 export const runtimeSourcePaths = Object.freeze([
-  "apps/api/tests/integration/provider-stub.ts",
+  "apps/api/tests/integration/provider-stub.ts", "apps/api/tests/integration/matching-evaluation.ts", "apps/api/tests/fixtures/e3-matches.v1.json", "apps/api/tests/fixtures/e3-matches.v1.sha256",
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
   "apps/api/tests/integration/generation-process-fixture.ts",
   "apps/api/tests/integration/generation-test-controls.ts",

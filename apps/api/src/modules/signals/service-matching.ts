@@ -1,5 +1,4 @@
 import { composeMatchScore, cosineRelevance, matchScoreVersion } from "./match-scoring.js";
-import { isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
@@ -16,7 +15,9 @@ import {
   recheckPublicSignals,
   listPublishedSignalMatchCandidates,
 } from "./repository.js";
-import { matchCandidateLimit, maxMatchCount } from "./service-constants.js";
+import { maxMatchCount } from "./service-constants.js";
+import { isMatchEligible, matchPolicyVersion, resolveMatchPolicy, type MatchPolicy, type MatchScope } from "./match-policy.js";
+import type { AiExecutionMetadata } from "../ai/provider-execution.js";
 import { buildSignalEmbeddingText } from "./service-embedding.js";
 import { toSafeErrorReason } from "./service-errors.js";
 import {
@@ -61,210 +62,149 @@ export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: Sign
   return score;
 }
 
-async function findKeywordSameFrequencyMatches(
-  fingerprint: SignalFingerprint,
-  options: {
-    excludeSignalId?: string;
-  } = {},
-): Promise<SignalMatchSummary[]> {
-  await assertGenerationActive();
-  const publishedCandidates = await listPublishedSignalMatchCandidates(
-    matchCandidateLimit,
-    options.excludeSignalId,
-  );
-  await assertGenerationActive();
-  const publishedMatches = publishedCandidates
-    .filter((candidate) => candidate.id !== options.excludeSignalId && isPublicSignal(candidate))
-    .map<SignalMatchSummary>((candidate) => ({ ...toMatchSummary(candidate, composeMatchScore(undefined, scoreSignalMatch(fingerprint, candidate))),
-      scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred" as const, method: "rules" as const, reason: "rules_only" as const } }))
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
+type MatchCandidate = { signal: SignalRecord; distance?: number };
+export type MatchDiagnostics = {
+  policyVersion: string; semanticIds: string[]; poolIds: string[]; rankedIds: string[];
+  acceptedCount: number; minScore: number; latencyMs: number; inputCharacters: number;
+  embeddingExecution?: AiExecutionMetadata; rerankerExecution?: AiExecutionMetadata;
+};
+export type MatchInput = {
+  classification?: AiSignalSeedClassification; excludeSignalId?: string; excludeAuthorIds?: readonly string[];
+  corpusIds?: readonly string[]; publicTags?: readonly string[]; publicBand?: SignalFingerprint["primaryBand"];
+  expandedText: string; fingerprint: SignalFingerprint; logger?: EmbeddingLogger;
+  rawInput: string; publicQuery?: boolean; policy?: MatchPolicy;
+};
 
-      return left.id.localeCompare(right.id);
-    })
-    .slice(0, maxMatchCount);
-
-  return publishedMatches;
-}
-
-async function rerankSemanticMatches(params: {
-  candidates: SignalSemanticMatchRecord[];
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-}): Promise<SignalMatchSummary[]> {
-  await assertGenerationActive();
-  const applyScore = (candidate: SignalSemanticMatchRecord, retrieval: number,
-    method: "cosine" | "reranker", reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed"): SignalMatchSummary => ({
-    ...toSemanticMatchSummary(candidate),
-    score: composeMatchScore(retrieval, scoreSignalMatch(params.fingerprint, candidate)),
-    scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred" as const, method, reason },
-  });
-  const sorted = (matches: SignalMatchSummary[]) => matches.sort((a,b) => b.score - a.score || a.id.localeCompare(b.id));
-  const cosineFallback = (reason: "reranker_not_configured" | "reranker_failed") => sorted(params.candidates.map((candidate) =>
-    applyScore(candidate, cosineRelevance(candidate.distance), "cosine", reason)));
-
-  const observed = params.candidates;
-  const current = await recheckPublicSignals(observed);
-  params.candidates = observed.filter((candidate) => current.some((row) => row.id === candidate.id));
-  const configured = await isRerankerProviderConfigured();
-  await assertGenerationActive();
-  if (!configured) {
-    return cosineFallback("reranker_not_configured");
-  }
-
+async function semanticCandidates(input: MatchInput, scope: MatchScope, policy: MatchPolicy): Promise<{ embedding?: EmbeddingResult; candidates: SignalSemanticMatchRecord[] }> {
+  let embedding: EmbeddingResult | undefined;
   try {
-    const latest = await recheckPublicSignals(params.candidates);
-    params.candidates = params.candidates.filter((candidate) => latest.some((row) => row.id === candidate.id));
     await assertGenerationActive();
-    if (params.candidates.length === 0) return [];
-    const reranked = await rerankCandidates({
-      candidates: params.candidates.map((candidate) => {
-        return {
-          distance: candidate.distance,
-          expandedText: parsePublicationSnapshot(candidate.publicationSnapshot)!.content.expandedText,
-          id: candidate.id,
-        };
-      }),
-      queryText: params.expandedText,
-    }, undefined, { logger: params.logger });
+    const configured = await isEmbeddingProviderConfigured();
     await assertGenerationActive();
-    const scoreById = new Map(reranked.results.map((result) => [result.id, result.score]));
-    // Defence in depth: a mocked/older adapter must not reintroduce per-ID mixing.
-    if (reranked.scoreScale !== "zero_to_one" || scoreById.size !== params.candidates.length || reranked.results.length !== params.candidates.length ||
-        reranked.results.some((result) => normalizeRerankerScore(result.rawScore, result.rawScale) !== result.score) ||
-        params.candidates.some((candidate) => { const score = scoreById.get(candidate.id); return score === undefined || !Number.isFinite(score) || score < 0 || score > 1; })) {
-      throw new Error("Incomplete normalized rerank batch.");
-    }
-    const matches = sorted(params.candidates.map((candidate) => applyScore(candidate, scoreById.get(candidate.id)!, "reranker", "reranker_complete")));
-    const legacy = params.candidates.map((candidate) => {
-      const result = reranked.results.find((item) => item.id === candidate.id)!;
-      return { id: candidate.id, score: Number((0.6 * result.rawScore + scoreSignalMatch(params.fingerprint, candidate)).toFixed(4)) };
-    }).sort((a,b) => b.score-a.score || a.id.localeCompare(b.id));
-    params.logger?.info({ action: "signal.match.scoring", version: matchScoreVersion, execution: reranked.execution,
-      previous: legacy, current: matches.map((match) => ({ id: match.id, score: match.score })),
-      rawScores: reranked.results.map(({ id, rawScore, rawScale, score }) => ({ id, rawScore, rawScale, normalizedScore: score })) }, "match score scale comparison; no quality claim");
-    return matches;
-  } catch (error) {
-    throwIfGenerationStopped(error);
-    await assertGenerationActive();
-    params.logger?.warn(
-      {
-        action: "signal.reranker.fallback",
-        reason: toSafeErrorReason(error),
-        targetType: "SIGNAL",
-      },
-      "signal reranker fell back",
-    );
-
-    return cosineFallback("reranker_failed");
-  }
-}
-
-async function findSemanticSameFrequencyMatches(params: {
-  classification?: AiSignalSeedClassification;
-  excludeSignalId?: string;
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-  rawInput: string;
-  publicQuery?: boolean;
-}): Promise<{ embedding: EmbeddingResult; matches: SignalMatchSummary[] } | undefined> {
-  await assertGenerationActive();
-  const configured = await isEmbeddingProviderConfigured();
-  await assertGenerationActive();
-  if (!configured) {
-    return undefined;
-  }
-
-  try {
-    const embedding = await generateEmbedding(
-      buildSignalEmbeddingText({
-        classification: params.classification,
-        expandedText: params.expandedText,
-        fingerprint: params.fingerprint,
-        seedText: params.rawInput,
-      }),
-      {
-        logger: params.logger,
-        purpose: params.publicQuery ? "public-detail" : "creation",
-      },
-    );
-    await assertGenerationActive();
-    const semanticCandidates = await listPublishedSemanticSignalMatchCandidates(
-      embedding.embedding,
-      maxMatchCount,
-      params.excludeSignalId,
-      embedding,
-    );
-    await assertGenerationActive();
-    const eligible = semanticCandidates.filter((candidate) => isPublicSignal(candidate) && Number.isFinite(candidate.distance) && candidate.distance >= 0 && candidate.distance <= 2);
-    params.logger?.info({ action: "signal.semantic_match.candidates", purpose: params.publicQuery ? "public-detail" : "creation",
-      version: embedding.version, provider: embedding.provider, model: embedding.model,
-      dimensions: embedding.dimensions, candidates: eligible.length, legacyVectorsIncluded: false }, "semantic candidates selected within one embedding space");
-    const matches = await rerankSemanticMatches({
-      candidates: eligible,
-      expandedText: params.expandedText,
-      fingerprint: params.fingerprint,
-      logger: params.logger,
+    if (!configured) return { candidates: [] };
+    embedding = await generateEmbedding(buildSignalEmbeddingText(input), {
+      logger: input.logger, purpose: input.publicQuery ? "public-detail" : "creation",
     });
     await assertGenerationActive();
-
-    const rankedMatches = matches
-      .filter((candidate) => candidate.id !== params.excludeSignalId)
-      .slice(0, maxMatchCount);
-
-    return {
-      embedding,
-      matches: rankedMatches,
-    };
-  } catch (error) {
-    throwIfGenerationStopped(error);
+    const rows = await listPublishedSemanticSignalMatchCandidates(embedding.embedding, policy.semanticCandidates, scope.excludeSignalId, embedding, scope);
     await assertGenerationActive();
-    params.logger?.warn(
-      {
-        action: "signal.semantic_match.fallback",
-        reason: toSafeErrorReason(error),
-        targetType: "SIGNAL",
-      },
-      "signal semantic matching fell back",
-    );
-
-    return undefined;
+    const candidates = rows.filter((row) => isMatchEligible(row, scope) && Number.isFinite(row.distance) && row.distance >= 0 && row.distance <= 2);
+    input.logger?.info({ action: "signal.semantic_match.candidates", version: embedding.version,
+      candidates: candidates.length, requested: policy.semanticCandidates, legacyVectorsIncluded: false }, "same-space public candidate recall");
+    return { embedding, candidates };
+  } catch (error) {
+    throwIfGenerationStopped(error); await assertGenerationActive();
+    input.logger?.warn({ action: "signal.semantic_match.fallback", reason: toSafeErrorReason(error) }, "semantic recall unavailable");
+    return { embedding, candidates: [] };
   }
 }
 
-export async function findSameFrequencyMatches(params: {
-  classification?: AiSignalSeedClassification;
-  excludeSignalId?: string;
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-  rawInput: string;
-  publicQuery?: boolean;
-}): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[] }> {
-  await assertGenerationActive();
-  const semanticResult = await findSemanticSameFrequencyMatches(params);
-  await assertGenerationActive();
-  const keywordMatches = await findKeywordSameFrequencyMatches(params.fingerprint, {
-    excludeSignalId: params.excludeSignalId,
-  });
-  await assertGenerationActive();
-
-  if (semanticResult === undefined || semanticResult.matches.length === 0) {
-    const current = await recheckPublicSignals(keywordMatches.flatMap((match) => match.publicationVersion === undefined ? [] : [{ id: match.id, publicationVersion: match.publicationVersion }]));
-    return { embedding: semanticResult?.embedding, matches: keywordMatches.filter((match) => current.some((row) => row.id === match.id)) };
+function mergeCandidates(semantic: SignalSemanticMatchRecord[], rules: SignalRecord[], scope: MatchScope): MatchCandidate[] {
+  const pool = new Map<string, MatchCandidate>();
+  const changed = new Set<string>();
+  for (const row of [...rules, ...semantic]) {
+    if (!isMatchEligible(row, scope) || changed.has(row.id)) continue;
+    const previous = pool.get(row.id);
+    if (previous !== undefined && previous.signal.publicationVersion !== row.publicationVersion) {
+      pool.delete(row.id); changed.add(row.id); continue;
+    }
+    const distance = "distance" in row && typeof row.distance === "number" ? row.distance : previous?.distance;
+    pool.set(row.id, { signal: row, ...(distance === undefined ? {} : { distance }) });
   }
+  return [...pool.values()];
+}
+async function recheckCandidates(pool: MatchCandidate[], scope: MatchScope): Promise<MatchCandidate[]> {
+  await assertGenerationActive();
+  const current = await recheckPublicSignals(pool.map((entry) => entry.signal));
+  await assertGenerationActive();
+  return pool.flatMap((entry) => {
+    const row = current.find((row) => row.id === entry.signal.id && row.publicationVersion === entry.signal.publicationVersion);
+    return row === undefined || !isMatchEligible(row, scope) ? [] : [{ ...entry, signal: row }];
+  });
+}
 
-  const existingIds = new Set(semanticResult.matches.map((match) => match.id));
-  const matches = [
-    ...semanticResult.matches,
-    ...keywordMatches.filter((match) => !existingIds.has(match.id)),
-  ].slice(0, maxMatchCount);
+async function rankCandidates(pool: MatchCandidate[], input: MatchInput, scope: MatchScope, policy: MatchPolicy): Promise<{
+  matches: SignalMatchSummary[]; execution?: AiExecutionMetadata; inputCharacters: number;
+}> {
+  let active = await recheckCandidates(pool, scope);
+  let execution: AiExecutionMetadata | undefined;
+  let inputCharacters = 0;
+  const score = (entry: MatchCandidate, retrieval: number | undefined,
+    reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed"): SignalMatchSummary => ({
+    ...(entry.distance === undefined ? toMatchSummary(entry.signal, 0) : toSemanticMatchSummary({ ...entry.signal, distance: entry.distance })),
+    score: composeMatchScore(retrieval, scoreSignalMatch(input.fingerprint, entry.signal)),
+    scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred",
+      method: reason === "reranker_complete" ? "reranker" : entry.distance === undefined ? "rules" : "cosine",
+      reason: reason !== "reranker_complete" && entry.distance === undefined && reason !== "reranker_failed" ? "rules_only" : reason },
+  });
+  const fallback = (reason: "reranker_not_configured" | "reranker_failed") => active.map((entry) =>
+    score(entry, entry.distance === undefined ? undefined : cosineRelevance(entry.distance), reason));
+  if (active.length === 0) return { matches: [], inputCharacters };
+  try {
+    const configured = await isRerankerProviderConfigured();
+    await assertGenerationActive();
+    if (!configured) return { matches: fallback("reranker_not_configured"), inputCharacters };
+    active = await recheckCandidates(active, scope);
+    if (active.length === 0) return { matches: [], inputCharacters };
+    const candidates = active.map(({ signal, distance }) => ({ id: signal.id,
+      expandedText: parsePublicationSnapshot(signal.publicationSnapshot)!.content.expandedText,
+      ...(distance === undefined ? {} : { distance }) }));
+    inputCharacters = input.expandedText.length + candidates.reduce((total, candidate) => total + candidate.expandedText.length, 0);
+    if (inputCharacters > policy.maxRerankCharacters) {
+      input.logger?.warn({ action: "signal.reranker.input_budget", inputCharacters, budget: policy.maxRerankCharacters,
+        dispatched: false }, "rerank skipped for the entire oversized batch");
+      return { matches: fallback("reranker_failed"), inputCharacters };
+    }
+    const reranked = await rerankCandidates({ candidates, queryText: input.expandedText }, undefined, { logger: input.logger });
+    await assertGenerationActive();
+    execution = reranked.execution;
+    const byId = new Map(reranked.results.map((result) => [result.id, result.score]));
+    if (reranked.scoreScale !== "zero_to_one" || byId.size !== active.length || reranked.results.length !== active.length ||
+        reranked.results.some((result) => normalizeRerankerScore(result.rawScore, result.rawScale) !== result.score) ||
+        active.some(({ signal }) => { const value = byId.get(signal.id); return value === undefined || !Number.isFinite(value) || value < 0 || value > 1; })) {
+      throw new Error("Incomplete normalized rerank batch.");
+    }
+    const matches = active.map((entry) => score(entry, byId.get(entry.signal.id)!, "reranker_complete"));
+    const previous = active.map(({ signal }) => ({ id: signal.id, score: Number((0.6 * reranked.results.find((item) => item.id === signal.id)!.rawScore + scoreSignalMatch(input.fingerprint, signal)).toFixed(4)) }))
+      .sort((a,b) => b.score-a.score || a.id.localeCompare(b.id));
+    input.logger?.info({ action: "signal.match.scoring", version: matchScoreVersion, comparison: "same-pool-e2-formula-only", execution,
+      previous, current: [...matches].sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).map(({ id, score }) => ({ id, score })),
+      rawScores: reranked.results.map(({ id, rawScore, rawScale, score }) => ({ id, rawScore, rawScale, normalizedScore: score })) }, "same-pool score scale comparison; no quality claim");
+    return { matches, execution, inputCharacters };
+  } catch (error) {
+    throwIfGenerationStopped(error); await assertGenerationActive();
+    if (typeof error === "object" && error !== null && "details" in error) execution = (error.details as { execution?: AiExecutionMetadata } | undefined)?.execution;
+    input.logger?.warn({ action: "signal.reranker.fallback", reason: toSafeErrorReason(error) }, "whole-batch scoring fallback");
+    return { matches: fallback("reranker_failed"), execution, inputCharacters };
+  }
+}
 
-  const current = await recheckPublicSignals(matches.flatMap((match) => match.publicationVersion === undefined ? [] : [{ id: match.id, publicationVersion: match.publicationVersion }]));
-  return { embedding: semanticResult.embedding, matches: matches.filter((match) => current.some((row) => row.id === match.id)) };
+export async function findSameFrequencyMatches(input: MatchInput): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[]; diagnostics: MatchDiagnostics }> {
+  await assertGenerationActive();
+  const startedAt = performance.now();
+  const policy = resolveMatchPolicy(input.policy);
+  const scope: MatchScope = { excludeSignalId: input.excludeSignalId, excludeAuthorIds: input.excludeAuthorIds,
+    corpusIds: input.corpusIds, tags: input.publicQuery ? input.publicTags ?? [] : input.fingerprint.tags,
+    band: input.publicQuery ? input.publicBand : input.fingerprint.primaryBand };
+  const semantic = await semanticCandidates(input, scope, policy);
+  await assertGenerationActive();
+  const rules = await listPublishedSignalMatchCandidates(policy.ruleCandidates, scope.excludeSignalId, scope);
+  await assertGenerationActive();
+  const pool = mergeCandidates(semantic.candidates, rules, scope);
+  const ranked = await rankCandidates(pool, input, scope, policy);
+  await assertGenerationActive();
+  // Recheck the whole pool before selecting the final positions. Withdrawn top
+  // candidates may leave fewer results; weak candidates are never added to fill three.
+  const current = await recheckCandidates(pool, scope);
+  const matches = ranked.matches.filter((match) => match.score > 0 && match.score >= policy.minScore &&
+    current.some((entry) => entry.signal.id === match.id && entry.signal.publicationVersion === match.publicationVersion))
+    .sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).slice(0, maxMatchCount);
+  const diagnostics: MatchDiagnostics = { policyVersion: matchPolicyVersion, semanticIds: semantic.candidates.map((row) => row.id),
+    poolIds: pool.map(({ signal }) => signal.id), rankedIds: [...ranked.matches].sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).map((match) => match.id), acceptedCount: matches.length,
+    minScore: policy.minScore, latencyMs: Math.max(0, performance.now() - startedAt), inputCharacters: ranked.inputCharacters,
+    embeddingExecution: semantic.embedding?.execution, rerankerExecution: ranked.execution };
+  input.logger?.info({ action: "signal.match.selection", policyVersion: matchPolicyVersion, semanticCandidates: policy.semanticCandidates,
+    ruleCandidates: policy.ruleCandidates, minScore: policy.minScore, pooled: pool.length, accepted: matches.length,
+    durationMs: diagnostics.latencyMs, contentPolicy: "other-owned-human-initiated" }, "matching policy applied; calibration pending");
+  return { embedding: semantic.embedding, matches, diagnostics };
 }

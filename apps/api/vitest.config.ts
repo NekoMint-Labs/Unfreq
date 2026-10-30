@@ -27,6 +27,9 @@ export default defineConfig({
       RERANKER_BASE_URL: "",
       RERANKER_PROVIDER: "disabled",
       RERANKER_SCORE_SCALE: "",
+      // Existing scoring/creation fixtures isolate the E2 contract. E3 tests
+      // explicitly exercise the provisional 80 gate, and integration uses it.
+      SIGNAL_MATCH_MIN_SCORE: "0",
       TTS_API_KEY: "",
       TTS_BASE_URL: "",
     },

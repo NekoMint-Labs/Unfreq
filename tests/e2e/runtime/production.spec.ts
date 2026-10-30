@@ -620,3 +620,30 @@ test("OG rejects a version that becomes withdrawn while its PNG is rendering", a
   expect((await context.request.get("/api/og/runtime-public-001?v=1")).status()).toBe(404);
   expect((await context.request.get(`${apiBaseUrl}/api/signals/runtime-public-001`)).status()).toBe(404);
 });
+
+
+test("E3 empty matches show a useful state without fabricated cards", async ({ page }) => {
+  await page.goto(publicPath);
+  const panel = page.getByRole("heading", { name: "同频信号", exact: true }).locator("..");
+  await expect(panel).toContainText("暂无合适同频");
+  await expect(panel.locator("article")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/e3-empty-matches.png", fullPage: true });
+});
+test("E3 labels user-initiated, system AI and demo content distinctly", async ({ page, request }) => {
+  expect((await request.post(`${apiBaseUrl}/__runtime/e3-matches?mode=sources`)).status()).toBe(200);
+  await page.goto(publicPath);
+  const panel = page.getByRole("heading", { name: "同频信号", exact: true }).locator("..");
+  for (const label of ["用户发起", "系统 AI 生成", "演示样本"]) await expect(panel).toContainText(label);
+  await expect(panel).not.toContainText("纯人工");
+  await expect(panel).not.toContainText("E3_PRIVATE_BROWSER_SEED");
+  await panel.getByRole("link").first().click();
+  await expect(page).toHaveURL(/runtime-e3-source-0$/u);
+  await expect(page.getByText(/E3_BROWSER_SOURCE_human/u).first()).toBeVisible();
+});
+test("E3 does not infer a human source from legacy PUBLISHED status", async ({ page, request }) => {
+  expect((await request.post(`${apiBaseUrl}/__runtime/e3-matches?mode=legacy`)).status()).toBe(200);
+  await page.goto(publicPath);
+  const panel = page.getByRole("heading", { name: "同频信号", exact: true }).locator("..");
+  await expect(panel).toContainText("来源未标注");
+  await expect(panel).not.toContainText("用户发起");
+});

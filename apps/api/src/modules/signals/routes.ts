@@ -325,7 +325,7 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
-    const matches = await getSignalMatches(parsedParams.data.id, request.log);
+    const matches = await getSignalMatches(parsedParams.data.id, request.log, request.frequency);
     const response = signalMatchesResponseSchema.parse({ matches });
 
     return sendData(reply, request, response);

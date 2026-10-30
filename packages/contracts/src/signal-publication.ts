@@ -58,6 +58,8 @@ export type SignalMatchScoreProvenance = {
 };
 
 export type PublicSignalMatchSummary = SignalPublicContent & {
+  /** human means user-initiated; the confirmed body may include AI-assisted expansion. */
+  contentSource?: SignalSource;
   scoreProvenance?: SignalMatchScoreProvenance;
   id: string;
   score: number;

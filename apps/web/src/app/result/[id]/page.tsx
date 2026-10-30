@@ -1,3 +1,4 @@
+import { contentSourceLabel } from "../../../components/signals/content-source-label";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
@@ -87,7 +88,7 @@ export default async function SignalResultPage({ params, searchParams }: Props) 
   const origin = `${headerList.get("x-forwarded-proto") ?? "http"}://${headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3000"}`;
   if (signal.visibility === "PRIVATE_OWNER") return <section className="signal-archive-page"><OwnerContent signal={signal} onboarding={onboarding} origin={origin} /></section>;
   return <section className="signal-archive-page">
-    <section className="signal-archive-section"><p className="radio-kicker">PUBLIC SIGNAL</p><PublicContent content={signal} /></section>
+    <section className="signal-archive-section"><p className="radio-kicker">PUBLIC SIGNAL</p><p className="mt-2 text-sm text-[color:var(--radio-muted)]">{contentSourceLabel(signal.source)}</p><PublicContent content={signal} /></section>
     <section className="signal-archive-section"><div className="signal-archive-actions">
       <SignalPlaybackButton signalId={signal.id} text={signal.expandedText} />
       <SignalResonanceButton signalId={signal.id} initialCount={signal.resonanceCount} />

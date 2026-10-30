@@ -126,9 +126,21 @@ const server = createServer(async (request, response) => {
     publicSignal.galaxyPosition = { x: 0.1, y: -0.2, z: 0.3 };
     reportReceipts.clear(); reportSequence = 0;
     publicSignal.expandedText = publicOriginalText;
+    publicSignal.matches = [];
     savedSignals.clear(); resonatedSignals.clear();
     d4Complete = false; d4History = false; d4Signal.seedText = "D4_SYNTHETIC_PENDING_SEED"; d4Signal.parentSignalId = undefined;
-    for (const id of signals.keys()) if (id.startsWith("d1000000-")) signals.delete(id);
+    for (const id of signals.keys()) if (id.startsWith("d1000000-") || id.startsWith("runtime-e3-source-")) signals.delete(id);
+    return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/e3-matches") {
+    const mode = url.searchParams.get("mode");
+    const sources = mode === "sources" ? ["human", "ai_generated", "seed"] : mode === "legacy" ? [undefined] : [];
+    const matches = sources.map((source, index) => {
+      const item = makeSignal(`runtime-e3-source-${index}`, "E3_PRIVATE_BROWSER_SEED", `E3_BROWSER_SOURCE_${source ?? "unknown"}. A synthetic public expression.`, { source: source ?? "human" });
+      signals.set(item.id, item);
+      return { id: item.id, authorFreqCode: item.authorFreqCode, expandedText: item.expandedText, score: 90, resonanceCount: 0, contentSource: source };
+    });
+    signals.get(publicSignal.id).matches = matches;
     return ok(response, { synthetic: true });
   }
   if (request.method === "POST" && url.pathname === "/__runtime/revoke-after-first-public-read") {

@@ -301,6 +301,7 @@ type SignalCreationMaterial = {
 };
 
 async function buildSignalCreationMaterial(params: {
+  excludeAuthorIds: readonly string[];
   logger?: EmbeddingLogger;
   onGenerationStatusChange?: SignalGenerationProgressWriter;
   rawInput: string;
@@ -329,6 +330,7 @@ async function buildSignalCreationMaterial(params: {
   });
   await params.onGenerationStatusChange?.("MATCHING");
   const matchResult = await findSameFrequencyMatchesForCreation({
+    excludeAuthorIds: params.excludeAuthorIds,
     classification: reviewedExpansion.classification,
     expandedText: reviewedExpansion.expansion.expandedText,
     fingerprint,
@@ -345,6 +347,7 @@ async function buildSignalCreationMaterial(params: {
 }
 
 async function generateCombinedSignalCreationMaterial(params: {
+  excludeAuthorIds: readonly string[];
   logger?: EmbeddingLogger;
   onGenerationStatusChange?: SignalGenerationProgressWriter;
   rawInput: string;
@@ -384,6 +387,7 @@ async function generateCombinedSignalCreationMaterial(params: {
   };
   await params.onGenerationStatusChange?.("MATCHING");
   const matchResult = await findSameFrequencyMatchesForCreation({
+    excludeAuthorIds: params.excludeAuthorIds,
     classification: reviewedExpansion.classification,
     expandedText: reviewedExpansion.expansion.expandedText,
     fingerprint,
@@ -400,6 +404,7 @@ async function generateCombinedSignalCreationMaterial(params: {
 }
 
 async function findSameFrequencyMatchesForCreation(params: {
+  excludeAuthorIds: readonly string[];
   classification?: AiSignalSeedClassification;
   expandedText: string;
   fingerprint: SignalFingerprint;
@@ -472,6 +477,7 @@ async function createSignalFromMaterial(params: {
   });
 
   const material = await buildSignalCreationMaterial({
+    excludeAuthorIds: [params.frequency.id],
     logger: params.logger,
     onGenerationStatusChange: params.onGenerationStatusChange,
     rawInput: params.body.seedText,
@@ -577,6 +583,7 @@ export async function generateOwnedSignalOutput(params: OwnedGenerationInput & {
     parentSignalId: params.body.parentSignalId,
   });
   const material = await buildSignalCreationMaterial({
+    excludeAuthorIds: [params.frequency.id],
     logger: params.logger,
     onGenerationStatusChange: params.onGenerationStatusChange,
     rawInput: params.body.seedText,

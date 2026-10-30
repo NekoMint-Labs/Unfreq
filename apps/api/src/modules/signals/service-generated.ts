@@ -74,6 +74,9 @@ async function createGeneratedSignal(params: {
         }
       : reviewedExpansion.expansion;
   const matchResult = await findSameFrequencyMatches({
+    // Historical system/seed generation has no owner. Such unowned records
+    // cannot themselves become candidates under the E3 discovery policy.
+    excludeAuthorIds: [],
     classification: reviewedExpansion?.classification ?? classification,
     expandedText: expansion.expandedText,
     fingerprint,

@@ -8,6 +8,27 @@ const saved = { ...content, id: signal.id, createdAt: signal.createdAt, savedAt:
 const point = { ...content, id: signal.id, createdAt: signal.createdAt, publicationVersion: 1, position: { x: 0, y: 0, z: 0 }, source: "human", isMine: false, matchIds: [], resonanceCount: 0 };
 afterEach(() => vi.unstubAllGlobals());
 describe("public publication contracts", () => {
+  it("accepts modern score/content provenance while retaining legacy matches", () => {
+    const scoreProvenance = { version: "match-score-v1", scale: "zero_to_hundred", method: "reranker", reason: "reranker_complete" };
+    for (const contentSource of [undefined, "human", "ai_generated", "seed"]) {
+      const modern = { ...match, score: 90, contentSource, scoreProvenance };
+      expect(isSignalMatchesResponse({ matches: [modern] })).toBe(true);
+      expect(isSignalResponse({ signal: { ...signal, matches: [modern] } })).toBe(true);
+    }
+    expect(isSignalMatchesResponse({ matches: [match] })).toBe(true);
+  });
+  it("rejects invalid provenance or raw/private provider metadata", () => {
+    const provenance = { version: "match-score-v1", scale: "zero_to_hundred", method: "reranker", reason: "reranker_complete" };
+    for (const patch of [{ contentSource: "guessed-human" }, { score: 101 }, { scoreProvenance: { ...provenance, model: "PRIVATE_MODEL" } },
+      { scoreProvenance: { ...provenance, reason: "unknown" } }, { rawScore: .9 }]) {
+      expect(isSignalMatchesResponse({ matches: [{ ...match, ...patch }] })).toBe(false);
+    }
+  });
+  it("loads a positive modern match through the actual anonymous API client validator", async () => {
+    const modern = { ...match, score: 90, contentSource: "human", scoreProvenance: { version: "match-score-v1", scale: "zero_to_hundred", method: "cosine", reason: "reranker_not_configured" } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { signal: { ...signal, matches: [modern] } }, meta: { requestId: "synthetic" } }))));
+    expect((await getPublicSignal(signal.id))?.matches[0]).toMatchObject(modern);
+  });
   it("validates coverage counts and pins against the same public sample", () => {
     const coverage = { totalEligibleCount: 520, returnedCount: 1, sampleLimit: 80, samplingVersion: "recent-band-v1", filters: {}, focusStatus: "none" };
     const response = { generatedAt: signal.createdAt, points: [point], coverage };

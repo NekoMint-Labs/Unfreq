@@ -94,6 +94,10 @@ const envSchema = z.object({
   RERANKER_MODEL: z.string().min(1).default("local-disabled"),
   RERANKER_PROVIDER: z.string().min(1).default("disabled"),
   RERANKER_SCORE_SCALE: z.enum(["", "zero_to_one", "zero_to_hundred"]).default(""),
+  SIGNAL_MATCH_SEMANTIC_CANDIDATES: z.coerce.number().int().min(1).max(50).default(12),
+  SIGNAL_MATCH_RULE_CANDIDATES: z.coerce.number().int().min(1).max(50).default(24),
+  SIGNAL_MATCH_MIN_SCORE: z.coerce.number().min(0).max(100).default(80),
+  SIGNAL_MATCH_MAX_RERANK_CHARACTERS: z.coerce.number().int().min(1).max(100000).default(12000),
   SESSION_SECRET: z
     .string()
     .min(32)
@@ -241,6 +245,10 @@ export const env = {
   rerankerModel: parsedEnv.data.RERANKER_MODEL,
   rerankerProvider: parsedEnv.data.RERANKER_PROVIDER,
   rerankerScoreScale: parsedEnv.data.RERANKER_SCORE_SCALE,
+  signalMatchSemanticCandidates: parsedEnv.data.SIGNAL_MATCH_SEMANTIC_CANDIDATES,
+  signalMatchRuleCandidates: parsedEnv.data.SIGNAL_MATCH_RULE_CANDIDATES,
+  signalMatchMinScore: parsedEnv.data.SIGNAL_MATCH_MIN_SCORE,
+  signalMatchMaxRerankCharacters: parsedEnv.data.SIGNAL_MATCH_MAX_RERANK_CHARACTERS,
   sessionSecret: parsedEnv.data.SESSION_SECRET,
   webOrigin: parsedEnv.data.WEB_ORIGIN,
 } as const;

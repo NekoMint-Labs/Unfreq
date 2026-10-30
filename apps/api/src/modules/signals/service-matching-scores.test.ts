@@ -36,6 +36,64 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ results: state.scores }), { status: 200 })));
 });
 describe("E2 score contract through transport and matching", () => {
+  it("E3 excludes the query author before sending candidate bodies to rerank", async () => {
+    state.scores = [{ id: rows[0].id, score: 0.9 }, { id: rows[1].id, score: 0.8 }];
+    const result = await findSameFrequencyMatches({ ...input, excludeAuthorIds: [candidate.authorId!] });
+    expect(result.matches).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("E3 returns no matches below the declared acceptance gate", async () => {
+    state.scores = [{ id: rows[0].id, score: 0.02 }, { id: rows[1].id, score: 0.02 }];
+    const result = await findSameFrequencyMatches({ ...input,
+      policy: { semanticCandidates: 12, ruleCandidates: 24, minScore: 50, maxRerankCharacters: 12000 } });
+    expect(result.matches).toEqual([]);
+  });
+  it("E3 recalls more than the final three display positions", async () => {
+    state.scores = [{ id: rows[0].id, score: 0.9 }, { id: rows[1].id, score: 0.8 }];
+    await findSameFrequencyMatches({ ...input,
+      policy: { semanticCandidates: 12, ruleCandidates: 24, minScore: 50, maxRerankCharacters: 12000 } });
+    expect(calls.semantic.mock.calls[0]?.[1]).toBe(12);
+  });
+  it("E3 merges and deduplicates rule-only candidates before a single rerank batch", async () => {
+    const { distance: _distance, ...ruleOnly } = { ...candidate, id: "rule-only" };
+    calls.keyword.mockResolvedValue([rows[0], ruleOnly]);
+    const current = [...rows, ruleOnly];
+    calls.recheck.mockImplementation(async (observed: { id: string }[]) => observed.flatMap((item) => current.filter((row) => row.id === item.id)));
+    state.scores = [{ id: rows[0].id, score: .8 }, { id: rows[1].id, score: .7 }, { id: ruleOnly.id, score: .99 }];
+    const result = await findSameFrequencyMatches({ ...input, policy: { semanticCandidates: 12, ruleCandidates: 24, minScore: 80, maxRerankCharacters: 12000 } });
+    expect(result.matches[0].id).toBe(ruleOnly.id);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(vi.mocked(fetch).mock.calls[0]?.[1]?.body as string).candidates;
+    expect(new Set(sent.map((row: { id: string }) => row.id)).size).toBe(3);
+    expect(sent.find((row: { id: string }) => row.id === ruleOnly.id)).not.toHaveProperty("distance");
+  });
+  it("E3 enforces the 80-point provisional boundary without filling remaining positions", async () => {
+    state.scores = [{ id: rows[0].id, score: 2/3 }, { id: rows[1].id, score: .6666 }];
+    const result = await findSameFrequencyMatches({ ...input, policy: { semanticCandidates: 12, ruleCandidates: 24, minScore: 80, maxRerankCharacters: 12000 } });
+    expect(result.matches.map(({ id, score }) => [id, score])).toEqual([[rows[0].id, 80]]);
+  });
+  it("E3 excludes self, viewer, system content and unowned records before dispatch", async () => {
+    const bad = [
+      { ...candidate, id: "self" }, { ...candidate, id: "viewer", authorId: "viewer-author" },
+      { ...candidate, id: "ai", source: "ai_generated" as const }, { ...candidate, id: "seed", source: "seed" as const },
+      { ...candidate, id: "unowned", authorId: null, frequencyId: null }, { ...candidate, id: "hidden", status: "HIDDEN" as const },
+      { ...candidate, id: "withdrawn", withdrawnAt: new Date() }, { ...candidate, id: "unconfirmed", publicationSnapshot: null },
+    ];
+    const good = { ...candidate, id: "other-human", authorId: "other-author" };
+    calls.semantic.mockResolvedValue([...bad, good]); calls.keyword.mockResolvedValue([...bad, good]);
+    calls.recheck.mockResolvedValue([...bad, good]);
+    state.scores = [{ id: good.id, score: .9 }];
+    const result = await findSameFrequencyMatches({ ...input, excludeAuthorIds: [candidate.authorId!, "viewer-author"] });
+    expect(result.matches.map((match) => match.id)).toEqual([good.id]);
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]?.[1]?.body as string).candidates.map((row: { id: string }) => row.id)).toEqual([good.id]);
+  });
+  it("E3 skips an oversized whole batch without dispatching or weakening the normal score gate", async () => {
+    state.scores = [];
+    const result = await findSameFrequencyMatches({ ...input, policy: { semanticCandidates: 12, ruleCandidates: 24, minScore: 80, maxRerankCharacters: 1 } });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.matches.map((match) => match.score)).toEqual([90, 80]);
+    expect(result.matches[0].scoreProvenance?.reason).toBe("reranker_failed");
+  });
   it("treats a declared 0–1 score as the same relevance as its 0–100 equivalent", async () => {
     state.scores = [{ id: rows[0].id, score: 0.9 }, { id: rows[1].id, score: 0.2 }];
     const result = await findSameFrequencyMatches(input);
@@ -68,6 +126,7 @@ describe("E2 score contract through transport and matching", () => {
       emotionTone: "different", coreNeed: "different", fingerprintJson: { ...fixtureFingerprint, primaryEmotion: "different" } };
     expect(scoreSignalMatch(fixtureFingerprint, different)).toBe(0);
     calls.semantic.mockResolvedValue([different, rows[1]]);
+    calls.recheck.mockImplementation(async (observed: { id: string }[]) => observed.flatMap((item) => [different, rows[1]].filter((row) => row.id === item.id)));
     state.scores = [{ id: rows[0].id, score: 0.9 }, { id: rows[1].id, score: 0.2 }];
     const info = vi.fn();
     const result = await findSameFrequencyMatches({ ...input, logger: { info, warn: vi.fn(), error: vi.fn() } });

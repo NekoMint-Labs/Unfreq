@@ -1,3 +1,4 @@
+import { matchingCases, matchingCaptures, frozenMatchingReport, runFrozenMatchingCase } from "./matching-evaluation.js";
 import { embeddingSpaceKey } from "../../src/modules/ai/embedding-space.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -1360,14 +1361,14 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(legacy.execution_json).toBeNull();
   });
 
-  it("E2 returns bounded public scores and safe provenance through the full HTTP projection", async () => {
+  it("E3 leaves the old E2 rule-only pool empty below the provisional acceptance gate", async () => {
     await withSyntheticWithdrawalRows(async (track) => {
       const signal = await createWithdrawalFixture(track);
       await publish(signal.id);
       const response = await request("GET", `/api/signals/${signal.id}`);
       expect(response.statusCode).toBe(200);
       const matches = response.json().data.signal.matches;
-      expect(matches.length).toBeGreaterThan(0);
+      expect(matches).toEqual([]);
       for (const match of matches) {
         expect(match.score).toBeGreaterThanOrEqual(0); expect(match.score).toBeLessThanOrEqual(100);
         expect(match.scoreProvenance).toEqual({ version: "match-score-v1", scale: "zero_to_hundred", method: "rules", reason: "rules_only" });
@@ -1413,6 +1414,21 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       h.provider.setRerankFixture("percent");
       // Defensive cleanup only of this test's own synthetic provider row.
       await h.sql`delete from provider_configs where id = ${id}`;
+    }
+  });
+
+  it.each(matchingCases)("E3 frozen real-code synthetic evaluation: $id", async (current) => {
+    await runFrozenMatchingCase(h, current, author, reader, admin, request);
+    if (matchingCaptures.every((strategy) => strategy.runs.length === matchingCases.length)) {
+      const report = frozenMatchingReport();
+      const chosen = report.strategies.find((strategy) => strategy.name === "merged-K12-score80")!.summary;
+      expect(chosen).toMatchObject({ poolRecall: 1, ndcgAt3: 1, noMatchRate: .25, falseMatchQueryRate: 0,
+        humanRelevance: null, currencyCost: null, modelQualityValidated: false });
+      const runId = process.env.UNFREQ_INTEGRATION_RUN_ID;
+      if (!/^[a-f0-9]{12}$/u.test(runId ?? "")) throw new Error("Invalid evaluation run ownership.");
+      const directory = new URL("../../../../test-results/", import.meta.url);
+      await mkdir(directory, { recursive: true });
+      await writeFile(new URL(`e3-evaluation-${runId}.json`, directory), JSON.stringify(report, null, 2) + "\n");
     }
   });
 

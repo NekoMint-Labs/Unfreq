@@ -10,7 +10,7 @@ export function preview(signal) {
   return { content: value, digest: createHash("sha256").update(JSON.stringify(value)).digest("hex"), version: signal.publicationVersion ?? 1 };
 }
 export function publicMatch(signal) {
-  return { ...content(signal), id: signal.id, score: signal.score ?? 1, source: "PUBLISHED", resonanceCount: signal.resonanceCount, publicationVersion: signal.publicationVersion ?? 1 };
+  return { ...content(signal), id: signal.id, score: signal.score ?? 1, contentSource: signal.source, source: "PUBLISHED", resonanceCount: signal.resonanceCount, publicationVersion: signal.publicationVersion ?? 1 };
 }
 export function publicView(signal) {
   return { ...content(signal), id: signal.id, createdAt: signal.createdAt, updatedAt: signal.updatedAt,
@@ -18,7 +18,7 @@ export function publicView(signal) {
     status: "PUBLISHED", visibility: "PUBLIC", echoCount: signal.echoCount, resonanceCount: signal.resonanceCount,
     source: signal.source, hasSaved: signal.hasSaved, matches: (signal.matches ?? []).map((match) => ({ expandedText: match.expandedText,
       authorFreqCode: match.authorFreqCode ?? match.frequencyCode, tags: ["意义深空", "忙碌"], primaryBand: "meaning_deep_space",
-      id: match.id, score: match.score, source: "PUBLISHED", resonanceCount: match.resonanceCount, publicationVersion: 1 })) };
+      id: match.id, score: match.score, contentSource: match.contentSource, source: "PUBLISHED", resonanceCount: match.resonanceCount, publicationVersion: 1 })) };
 }
 export function ownerView(signal) {
   const state = signal.withdrawn ? "WITHDRAWN" : signal.status === "PUBLISHED" ? "PUBLIC" : "DRAFT";

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { performance } from "node:perf_hooks";
@@ -32,6 +33,8 @@ export type ProviderRequestEvent = {
 };
 
 export type IntegrationProvider = {
+  setMatchScores: (scores: Record<string, number>) => void;
+  readonly matchDispatches: readonly { kind: "embedding" | "reranker"; ids: string[]; requestBytes: number; textHashes: string[] }[];
   setRerankFixture: (mode: "percent" | "partial") => void;
   readonly rerankCalls: number;
   origin: string;
@@ -67,8 +70,32 @@ export async function createProviderStub(): Promise<IntegrationProvider> {
   let inFlight = 0;
   let rerankMode: "percent" | "partial" = "percent";
   let rerankCalls = 0;
+  let matchScores: Record<string, number> = {};
+  const matchDispatches: Array<{ kind: "embedding" | "reranker"; ids: string[]; requestBytes: number; textHashes: string[] }> = [];
   const server = createServer((request, response) => {
     void (async () => {
+      if (request.method === "POST" && (request.url === "/v1/embeddings" || request.url === "/v1/rerank") && request.headers.authorization === "Bearer E3-STUB-ONLY") {
+        inFlight += 1;
+        try {
+          let raw = "";
+          for await (const chunk of request) { raw += chunk; if (raw.length > 128000) throw new Error("Oversized E3 fixture request."); }
+          const body = JSON.parse(raw) as { model?: string; dimensions?: number; input?: string[]; query?: string; candidates?: Array<{ id: string; expandedText: string }> };
+          const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+          if (request.url === "/v1/embeddings" && body.model === "e3-embedding-fixed" && body.input?.length === 1) {
+            if (!Number.isInteger(body.dimensions) || body.dimensions! < 2 || body.dimensions! > 4096) throw new Error("Invalid E3 fixture dimensions.");
+            matchDispatches.push({ kind: "embedding", ids: [], requestBytes: Buffer.byteLength(raw), textHashes: body.input.map(hash) });
+            response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ model: body.model,
+              data: [{ embedding: [1, ...Array<number>(body.dimensions! - 1).fill(0)] }], usage: { total_tokens: 12 } }));
+          } else if (request.url === "/v1/rerank" && body.model === "e3-rerank-fixed" && Array.isArray(body.candidates) && body.candidates.length <= 100) {
+            matchDispatches.push({ kind: "reranker", ids: body.candidates.map((item) => item.id), requestBytes: Buffer.byteLength(raw),
+              textHashes: [hash(body.query ?? ""), ...body.candidates.map((item) => hash(item.expandedText))] });
+            response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ model: body.model, usage: { total_tokens: 12 },
+              results: body.candidates.map((item) => ({ id: item.id, score: matchScores[item.id] ?? 0 })) }));
+          } else response.writeHead(400).end();
+        } catch { if (!response.headersSent) response.writeHead(400); response.end(); }
+        finally { inFlight -= 1; }
+        return;
+      }
       if (request.method === "POST" && request.url === "/v1/rerank") {
         inFlight += 1;
         try {
@@ -162,6 +189,8 @@ export async function createProviderStub(): Promise<IntegrationProvider> {
     for (const hold of [...holds]) hold.release();
   };
   return {
+    setMatchScores(scores) { matchScores = { ...scores }; },
+    matchDispatches,
     setRerankFixture(mode) { rerankMode = mode; },
     get rerankCalls() { return rerankCalls; },
     origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,

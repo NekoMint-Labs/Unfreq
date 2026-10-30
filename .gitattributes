@@ -1,0 +1,3 @@
+# Frozen evaluation files are hashed as bytes; preserve them across checkouts.
+apps/api/tests/fixtures/e3-matches.v1.json -text
+apps/api/tests/fixtures/e3-matches.v1.sha256 -text whitespace=cr-at-eol

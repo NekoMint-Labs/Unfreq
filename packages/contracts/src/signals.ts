@@ -152,6 +152,7 @@ export type GalaxyResult = {
 };
 
 export type SignalMatchSummary = {
+  contentSource?: SignalSource;
   scoreProvenance?: import("./signal-publication.js").SignalMatchScoreProvenance;
   publicationVersion?: number;
   distance?: number;

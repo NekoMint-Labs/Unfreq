@@ -1,7 +1,6 @@
 export const hallLimit = 30;
 export const galaxyLimit = 80;
 export const galaxyThemeOptionLimit = 12;
-export const matchCandidateLimit = 50;
 export const maxMatchCount = 3;
 export const adminSignalDefaultLimit = 50;
 export const adminSignalMaxLimit = 100;
