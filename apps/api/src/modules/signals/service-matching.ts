@@ -25,14 +25,16 @@ import {
 } from "./service-mappers.js";
 import type {
   SignalFingerprint,
+  SignalFrequencyProfile,
   SignalMatchSummary,
   SignalRecord,
   SignalSemanticMatchRecord,
 } from "./types.js";
 
-export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: SignalRecord): number {
-  const currentProfile = getFingerprintFrequencyProfile(fingerprint);
-  const candidateProfile = getSignalFrequencyProfile(candidate);
+export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: SignalRecord,
+  prepared?: { current: SignalFrequencyProfile; candidate: SignalFrequencyProfile }): number {
+  const currentProfile = prepared?.current ?? getFingerprintFrequencyProfile(fingerprint);
+  const candidateProfile = prepared?.candidate ?? getSignalFrequencyProfile(candidate);
   let score = 0;
 
   if (candidateProfile.primaryBand === currentProfile.primaryBand) {

@@ -1,4 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { buildPublicationPreview, confirmPublicationSnapshot } from "../../src/modules/signals/publication.js";
+import { signalPrimaryBands, signalBandLabels } from "../../src/modules/signals/frequency-taxonomy.js";
 import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
@@ -1075,6 +1078,138 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await h.sql`update signals set author_id = null, frequency_id = null, source = 'seed' where id = ${signal.id}`;
       await expectNotPublic(signal.id);
       expectError(await request("GET", `/api/signals/${signal.id}/publication-preview`, author.cookie), 404, "NOT_FOUND");
+    });
+  });
+
+  it("keeps concurrent reports private, idempotent and traceable through the existing admin queue", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const body = { targetType: "SIGNAL", targetId: signal.id, reason: "涉及隐私", note: "SYNTHETIC_PRIVATE_REPORT_NOTE" };
+      expectError(await request("POST", "/api/reports", undefined, body), 401, "UNAUTHORIZED");
+      const submitted = await Promise.all(Array.from({ length: 5 }, () => request("POST", "/api/reports", reader.cookie, body)));
+      for (const response of submitted) {
+        expect(response.statusCode).toBe(201);
+        expect(response.headers["cache-control"]).toContain("no-store");
+        expect(Object.keys(response.json().data.report).sort()).toEqual(["createdAt", "id", "status", "targetId", "targetType"]);
+        expect(response.body).not.toContain(body.note);
+        expect(response.body).not.toContain(reader.frequencyCode);
+      }
+      const receipt = submitted[0].json().data.report as { id: string };
+      expect(new Set(submitted.map((response) => response.json().data.report.id)).size).toBe(1);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${signal.id} and reporter_id = ${reader.id}`;
+      expect(count.n).toBe(1);
+      const queue = await request("GET", "/api/admin/reports?status=PENDING", admin.cookie);
+      expect(queue.statusCode).toBe(200);
+      expect(queue.json().data.reports).toEqual(expect.arrayContaining([expect.objectContaining({ id: receipt.id, note: body.note, reporterFreqCode: reader.frequencyCode })]));
+      expectError(await request("GET", "/api/admin/reports", author.cookie), 403, "FORBIDDEN");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, author.cookie)).json().data).toEqual({});
+      expectError(await request("GET", `/api/reports/signal/${signal.id}`), 401, "UNAUTHORIZED");
+      const resolved = await request("PATCH", `/api/admin/reports/${receipt.id}`, admin.cookie, { status: "RESOLVED", resolution: "SYNTHETIC_INTERNAL_REVIEW_NOTE" });
+      expect(resolved.statusCode).toBe(200);
+      const ownStatus = await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie);
+      expect(ownStatus.json()).toMatchObject({ data: { report: { id: receipt.id, status: "RESOLVED", targetId: signal.id } } });
+      expect(ownStatus.body).not.toContain("SYNTHETIC_INTERNAL_REVIEW_NOTE");
+      const publicResult = await request("GET", `/api/signals/${signal.id}`);
+      expect(publicResult.statusCode).toBe(200);
+      expect(publicResult.body).not.toContain(body.note);
+      expect(publicResult.body).not.toContain(receipt.id);
+      expect((await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 })).statusCode).toBe(200);
+      expectError(await request("POST", "/api/reports", reader.cookie, body), 404, "NOT_FOUND");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie)).json().data.report.status).toBe("RESOLVED");
+      await expectNotPublic(signal.id);
+    });
+  });
+
+  it("rejects reports of private, unconfirmed, unfinished and moderated targets without creating records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"] as const) {
+        const signal = await createWithdrawalFixture(track, status);
+        expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: signal.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+        expect((await h.sql`select id from reports where target_id = ${signal.id}`).length).toBe(0);
+      }
+      const unfinished = await createWithdrawalFixture(track);
+      await publish(unfinished.id);
+      await h.sql`update signals set generation_status = 'WRITING' where id = ${unfinished.id}`;
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: unfinished.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: randomUUID(), reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "USER", targetId: author.id, reason: "垃圾信息" }), 400, "VALIDATION_ERROR");
+    });
+  });
+
+  it.each([81, 520])("finds recent/own/focused public signals with %i rows inside bounded, stable Galaxy samples", async (size) => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const rows = Array.from({ length: size }, (_, index) => {
+        const owner = index % 2 === 0 ? author : reader;
+        const band = signalPrimaryBands[index % signalPrimaryBands.length];
+        const body = `D1_PUBLIC_${index} ` + fixtureExpansion.expandedText;
+        const fingerprint = { ...fixtureFingerprint, primaryBand: band, tags: [signalBandLabels[band]] };
+        const preview = buildPublicationPreview({ authorId: owner.id, authorFreqCode: owner.frequencyCode,
+          expandedText: body, generationStatus: "COMPLETED", primaryBand: band, fingerprintJson: fingerprint }, 0);
+        const id = randomUUID(); track(id);
+        return { id, author_id: owner.id, frequency_id: owner.id, raw_input: "D1_SYNTHETIC_PRIVATE_SEED",
+          seed_text: "D1_SYNTHETIC_PRIVATE_SEED", expanded_text: body,
+          fingerprint_json: JSON.stringify(fingerprint), program_json: "{}", galaxy_position: '{"x":0,"y":0,"z":0}',
+          publication_snapshot: JSON.stringify(confirmPublicationSnapshot(preview, new Date("2026-10-30T00:00:00Z"))),
+          publication_version: 1, status: "PUBLISHED", generation_status: "COMPLETED", primary_band: band,
+          created_at: new Date(Date.UTC(2030, 0, 1, 0, 0, index)).toISOString() };
+      });
+      const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+      await h.sql`insert into signals ${h.sql(rows, ...columns)}`;
+      const excluded = rows.slice(0, 6).map((row, index) => {
+        const id = randomUUID(); track(id);
+        return { ...row, id, expanded_text: "D1_PRIVATE_ONLY", status: index === 0 ? "DRAFT" : index === 1 ? "HIDDEN" : index === 2 ? "REVIEWING" : "PUBLISHED",
+          publication_snapshot: index === 3 ? null : index === 4 ? row.publication_snapshot.replace(/"digest":"[a-f0-9]+"/u, '"digest":"' + "0".repeat(64) + '"') : row.publication_snapshot };
+      });
+      await h.sql`insert into signals ${h.sql(excluded, ...columns)}`;
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${excluded[5].id}`;
+      const timings: number[] = [];
+      const beforeHeap = process.memoryUsage().heapUsed;
+      let response: LightMyRequestResponse | undefined;
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        const start = performance.now();
+        response = await request("GET", "/api/signals/galaxy", author.cookie);
+        timings.push(performance.now() - start);
+        expect(response.statusCode).toBe(200);
+      }
+      await mkdir("../../test-results/d1", { recursive: true });
+      await writeFile(`../../test-results/d1/galaxy-${process.env.UNFREQ_INTEGRATION_RUN_ID}-${size}.json`, JSON.stringify({
+        size, timingsMs: timings, heapDeltaBytes: process.memoryUsage().heapUsed - beforeHeap,
+        responseBytes: Buffer.byteLength(response!.body), pointCount: response!.json().data.points.length,
+      }, null, 2));
+      const result = response!.json().data;
+      const latestOwn = rows.filter((row) => row.author_id === author.id).at(-1)!;
+      expect(result.points.map((point: { id: string }) => point.id)).toContain(latestOwn.id);
+      expect(result.coverage).toMatchObject({ totalEligibleCount: size + 1, returnedCount: 80, sampleLimit: 80,
+        samplingVersion: "recent-band-v1", latestOwnSignalId: latestOwn.id });
+      expect(response!.body).not.toContain("D1_PRIVATE_ONLY");
+      expect(response!.body).not.toContain("D1_SYNTHETIC_PRIVATE_SEED");
+      const repeated = (await request("GET", "/api/signals/galaxy", author.cookie)).json().data;
+      expect(repeated.points.map((point: { id: string }) => point.id)).toEqual(result.points.map((point: { id: string }) => point.id));
+      expect(new Set(result.points.map((point: { primaryBand?: string }) => point.primaryBand)).size).toBe(7);
+      const focus = (await request("GET", `/api/signals/galaxy?focus=${rows[0].id}`, author.cookie)).json().data;
+      expect(focus.points.map((point: { id: string }) => point.id)).toContain(rows[0].id);
+      expect(focus.coverage).toMatchObject({ focusSignalId: rows[0].id, focusStatus: "available" });
+      expect((await request("GET", `/api/signals/galaxy?focus=${rows[0].id.toUpperCase()}`, author.cookie)).json().data.coverage.focusSignalId).toBe(rows[0].id);
+      const band = rows[0].primary_band;
+      const filtered = (await request("GET", `/api/signals/galaxy?band=${band}&focus=${rows[1].id}`, author.cookie)).json().data;
+      expect(filtered.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
+      expect(filtered.coverage).toMatchObject({ filters: { band }, focusStatus: "unavailable" });
+      expect(filtered.coverage.totalEligibleCount).toBe(rows.filter((row) => row.primary_band === band).length + (fixtureFingerprint.primaryBand === band ? 1 : 0));
+      const legacy = (await request("GET", `/api/signals/galaxy?theme=${encodeURIComponent(signalBandLabels[band])}`, author.cookie)).json().data;
+      expect(legacy.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
+      const anonymous = (await request("GET", "/api/signals/galaxy")).json().data;
+      expect(anonymous.coverage).not.toHaveProperty("latestOwnSignalId");
+      expect(anonymous.points.every((point: { isMine: boolean }) => !point.isMine)).toBe(true);
+      for (const id of [excluded[0].id, excluded[5].id, randomUUID()]) {
+        const denied = await request("GET", `/api/signals/galaxy?focus=${id}`, author.cookie);
+        expect(denied.json().data.coverage.focusStatus).toBe("unavailable");
+        expect(denied.body).not.toContain(id);
+      }
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${rows[0].id}`;
+      const withdrawn = (await request("GET", `/api/signals/galaxy?focus=${rows[0].id}`, author.cookie)).json().data;
+      expect(withdrawn.points.map((point: { id: string }) => point.id)).not.toContain(rows[0].id);
+      expect(withdrawn.coverage.totalEligibleCount).toBe(size);
     });
   });
 

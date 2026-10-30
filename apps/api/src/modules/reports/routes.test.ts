@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../app.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import type { ReportRecord } from "./types.js";
+import { findOwnedReportRecord } from "./repository.js";
 
 vi.mock("../auth/service.js", () => {
   const frequency: AuthenticatedFrequency = {
@@ -55,6 +56,7 @@ vi.mock("./repository.js", () => {
       },
     ),
     listReportRecords: vi.fn(),
+    findOwnedReportRecord: vi.fn(async () => undefined),
     updateReportRecord: vi.fn(),
   };
 });
@@ -111,9 +113,7 @@ describe("report routes", () => {
     expect(response.json()).toMatchObject({
       data: {
         report: {
-          note: "这段信号暴露了具体姓名。",
-          reason: "泄露隐私",
-          reporterFreqCode: "FM-27.51",
+          id: "00000000-0000-4000-8000-000000000101",
           status: "PENDING",
           targetType: "SIGNAL",
         },
@@ -122,6 +122,10 @@ describe("report routes", () => {
         requestId: expect.any(String),
       },
     });
+    expect(response.headers["cache-control"]).toContain("no-store");
+    for (const key of ["note", "reason", "reporterFreqCode", "reporterId", "resolution"]) {
+      expect(response.json().data.report).not.toHaveProperty(key);
+    }
   });
 
   it("rejects invalid target ids", async () => {
@@ -172,5 +176,21 @@ describe("report routes", () => {
         code: "VALIDATION_ERROR",
       },
     });
+  });
+
+  it("requires a session for private report status", async () => {
+    app = await buildApp();
+    const response = await app.inject({ method: "GET", url: "/api/reports/signal/00000000-0000-4000-8000-000000000201" });
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["cache-control"]).toContain("no-store");
+  });
+  it("looks up status only under the signed-in reporter identity", async () => {
+    app = await buildApp();
+    const response = await app.inject({ method: "GET", headers: { authorization: "Bearer active-token" },
+      url: "/api/reports/signal/00000000-0000-4000-8000-000000000201" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({});
+    expect(findOwnedReportRecord).toHaveBeenCalledWith({ reporterId: "00000000-0000-4000-8000-000000000001",
+      signalId: "00000000-0000-4000-8000-000000000201" });
   });
 });

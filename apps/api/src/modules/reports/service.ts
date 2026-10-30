@@ -1,7 +1,8 @@
 import { AppError } from "../../shared/errors.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import type { CreateReportBody, ReportStatus } from "./schemas.js";
-import { createReportRecord, listReportRecords, updateReportRecord } from "./repository.js";
+import { createReportRecord, findOwnedReportRecord, listReportRecords, updateReportRecord } from "./repository.js";
+import type { ReportReceipt } from "@unfreq/contracts";
 import type { ReportDetail, ReportRecord } from "./types.js";
 
 function toReportDetail(report: ReportRecord): ReportDetail {
@@ -22,9 +23,12 @@ function toReportDetail(report: ReportRecord): ReportDetail {
 export async function createReport(
   frequency: AuthenticatedFrequency,
   body: CreateReportBody,
-): Promise<ReportDetail> {
+): Promise<ReportReceipt> {
   if (frequency.status !== "ACTIVE") {
     throw new AppError("FORBIDDEN", "This frequency cannot send reports now.");
+  }
+  if (body.targetType !== "SIGNAL") {
+    throw new AppError("VALIDATION_ERROR", "Only public signals can be reported here.");
   }
 
   const report = await createReportRecord({
@@ -32,7 +36,18 @@ export async function createReport(
     reporterId: frequency.id,
   });
 
-  return toReportDetail(report);
+  return toReportReceipt(report);
+}
+
+function toReportReceipt(report: ReportRecord): ReportReceipt {
+  return { id: report.id, targetId: report.targetId, targetType: "SIGNAL", status: report.status,
+    createdAt: report.createdAt.toISOString(),
+    ...(report.resolvedAt === null ? {} : { resolvedAt: report.resolvedAt.toISOString() }) };
+}
+
+export async function getOwnSignalReport(frequency: AuthenticatedFrequency, signalId: string): Promise<ReportReceipt | undefined> {
+  const report = await findOwnedReportRecord({ reporterId: frequency.id, signalId });
+  return report === undefined ? undefined : toReportReceipt(report);
 }
 
 export async function listReports(status?: ReportStatus): Promise<ReportDetail[]> {

@@ -8,6 +8,17 @@ const saved = { ...content, id: signal.id, createdAt: signal.createdAt, savedAt:
 const point = { ...content, id: signal.id, createdAt: signal.createdAt, publicationVersion: 1, position: { x: 0, y: 0, z: 0 }, source: "human", isMine: false, matchIds: [], resonanceCount: 0 };
 afterEach(() => vi.unstubAllGlobals());
 describe("public publication contracts", () => {
+  it("validates coverage counts and pins against the same public sample", () => {
+    const coverage = { totalEligibleCount: 520, returnedCount: 1, sampleLimit: 80, samplingVersion: "recent-band-v1", filters: {}, focusStatus: "none" };
+    const response = { generatedAt: signal.createdAt, points: [point], coverage };
+    expect(isGalaxyResponse(response)).toBe(true);
+    for (const change of [{ returnedCount: 2 }, { totalEligibleCount: 0 }, { sampleLimit: 81 }, { samplingVersion: "random" }, { latestOwnSignalId: point.id }, { focusStatus: "available" }, { focusSignalId: "private" }]) {
+      expect(isGalaxyResponse({ ...response, coverage: { ...coverage, ...change } })).toBe(false);
+    }
+    expect(isGalaxyResponse({ ...response, points: [{ ...point, isMine: true }], coverage: { ...coverage, latestOwnSignalId: point.id } })).toBe(true);
+    expect(isGalaxyResponse({ ...response, coverage: { ...coverage, focusStatus: "available", focusSignalId: point.id } })).toBe(true);
+    expect(isGalaxyResponse({ ...response, coverage: { ...coverage, seedText: "private" } })).toBe(false);
+  });
   it("accepts each whitelist projection", () => {
     expect(isSignalResponse({ signal })).toBe(true);
     expect(isSignalHallResponse({ signals: [signal] })).toBe(true);

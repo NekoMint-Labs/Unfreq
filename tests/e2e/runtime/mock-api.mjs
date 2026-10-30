@@ -102,6 +102,8 @@ function summary(signal) {
 }
 
 let revokeAfterPublicReads;
+const reportReceipts = new Map();
+let reportSequence = 0;
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
@@ -111,11 +113,49 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/__runtime/reset") {
     privateSignal.status = "DRAFT"; privateSignal.publicationVersion = 0; privateSignal.withdrawn = false;
     publicSignal.withdrawn = false; revokeAfterPublicReads = undefined;
+    publicSignal.galaxyPosition = { x: 0.1, y: -0.2, z: 0.3 };
+    reportReceipts.clear(); reportSequence = 0;
+    for (const id of signals.keys()) if (id.startsWith("d1000000-")) signals.delete(id);
     return ok(response, { synthetic: true });
   }
   if (request.method === "POST" && url.pathname === "/__runtime/revoke-after-first-public-read") {
     revokeAfterPublicReads = 1;
     return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/resolve-reports") {
+    for (const receipt of reportReceipts.values()) { receipt.status = "RESOLVED"; receipt.resolvedAt = now; }
+    return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/center-public-point") {
+    // Synthetic inverse-layout coordinates put this point at scene origin.
+    // Its real WebGL hit area then stays at canvas center during rotation.
+    publicSignal.galaxyPosition = { x: -1.5781108127302552, y: 0.09866504459490696, z: -0.18001785278681656 };
+    return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/large-galaxy") {
+    for (let index = 0; index < 520; index += 1) {
+      const id = `d1000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      signals.set(id, makeSignal(id, "D1_PRIVATE_BROWSER_SEED", `D1_BROWSER_${index}. A synthetic public expression.`, {
+        createdAt: new Date(Date.UTC(2030, 0, 1, 0, 0, index)).toISOString(),
+      }));
+    }
+    return ok(response, { synthetic: true });
+  }
+  const reportStatusMatch = /^\/api\/reports\/signal\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && reportStatusMatch) {
+    if (!current) return fail(response, 401, "UNAUTHORIZED");
+    return ok(response, { report: reportReceipts.get(`${current.id}:${reportStatusMatch[1]}`) });
+  }
+  if (request.method === "POST" && url.pathname === "/api/reports") {
+    if (!current) return fail(response, 401, "UNAUTHORIZED");
+    const body = await readBody(request);
+    const target = signals.get(body.targetId);
+    if (!target || target.status !== "PUBLISHED" || target.withdrawn) return fail(response, 404, "NOT_FOUND");
+    const key = `${current.id}:${target.id}`;
+    if (reportReceipts.get(key)?.status !== "PENDING") reportReceipts.set(key, {
+      id: `runtime-report-${++reportSequence}`, targetId: target.id, targetType: "SIGNAL", status: "PENDING", createdAt: now,
+    });
+    return ok(response, { report: reportReceipts.get(key) });
   }
   if (request.method === "POST" && url.pathname === "/api/auth/frequency/login") {
     let body;
@@ -142,13 +182,19 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === "/api/signals/galaxy") {
     const band = url.searchParams.get("band");
-    const points = [...signals.values()]
+    const eligible = [...signals.values()]
       .filter((signal) => signal.status === "PUBLISHED" && !signal.withdrawn && (band === null || signal.frequencyProfile.primaryBand === band))
       .map((signal) => galaxyPoint(signal, current?.id === signal.frequencyId));
+    const latestOwn = eligible.filter((point) => point.isMine).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
+    const focus = eligible.find((point) => point.id === url.searchParams.get("focus"));
+    const points = [...new Map([...(focus ? [focus] : []), ...(latestOwn ? [latestOwn] : []), ...eligible].map((point) => [point.id, point])).values()].slice(0, 80);
     return ok(response, { generatedAt: now, points, bandOptions: [
       { label: "意义深空", value: "meaning_deep_space" },
       { label: "关系星云", value: "relationship_nebula" },
-    ], themeOptions: [] });
+    ], themeOptions: [], coverage: { totalEligibleCount: eligible.length, returnedCount: points.length, sampleLimit: 80,
+      samplingVersion: "recent-band-v1", filters: band ? { band } : {},
+      ...(latestOwn ? { latestOwnSignalId: latestOwn.id } : {}), ...(focus ? { focusSignalId: focus.id } : {}),
+      focusStatus: url.searchParams.has("focus") ? focus ? "available" : "unavailable" : "none" } });
   }
   const match = /^\/api\/signals\/([^/]+)(?:\/(publish|withdraw|publication-preview|audio))?$/.exec(url.pathname);
   if (match !== null) {

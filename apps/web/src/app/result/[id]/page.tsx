@@ -8,9 +8,11 @@ import { SignalFingerprintPanel } from "@/components/signals/SignalFingerprintPa
 import { SignalPlaybackButton } from "@/components/signals/SignalPlaybackButton";
 import { SignalResonanceButton } from "@/components/signals/SignalResonanceButton";
 import { SignalSaveButton } from "@/components/signals/SignalSaveButton";
+import { SignalReportButton } from "@/components/signals/SignalReportButton";
 import { MatchedSignalPanel } from "@/components/signals/MatchedSignalPanel";
 import { ShareSignalCardPreview } from "@/components/signals/ShareSignalCardPreview";
 import { getPublicSignal, getSignal, isSignalGenerationDetail } from "@/lib/signal-data";
+import { galaxyHref } from "@/lib/galaxy-navigation";
 import type { OwnerSignalDetail, SignalPublicContent } from "@unfreq/contracts";
 
 export const dynamic = "force-dynamic";
@@ -59,9 +61,9 @@ function OwnerContent({ signal, onboarding, origin }: { signal: OwnerSignalDetai
       <div className="mt-5"><SignalPlaybackButton signalId={signal.id} text={publication.publishedContent.expandedText} /><SignalResonanceButton signalId={signal.id} initialCount={signal.resonanceCount} /><SignalSaveButton signalId={signal.id} initialSaved={signal.hasSaved} /></div>
     </section> : null}
     {publication.state === "PUBLIC" ? <>
-      {onboarding ? <section className="tour-panel-result" role="status"><h2>读回声里的自己</h2><Link href="/galaxy?onboarding=galaxy">进入星图</Link></section> : null}
+      {onboarding ? <section className="tour-panel-result" role="status"><h2>读回声里的自己</h2><Link href={galaxyHref({ focus: signal.id, onboarding: "galaxy" })}>进入星图</Link></section> : null}
       <MatchedSignalPanel matches={signal.matches} />
-      <section className="signal-archive-section signal-action-section"><Link className="signal-next-primary" href={onboarding ? "/galaxy?onboarding=galaxy" : "/galaxy"}>进入星图</Link></section>
+      <section className="signal-archive-section signal-action-section"><Link className="signal-next-primary" href={galaxyHref({ focus: signal.id, onboarding: onboarding ? "galaxy" : undefined })}>进入星图</Link></section>
       <ShareSignalCardPreview card={{ signalId: signal.id, frequencyCode: publication.publishedContent?.authorFreqCode ?? "Unfreq", expandedText: publication.publishedContent?.expandedText ?? "", imageUrl: `${origin}/api/og/${signal.id}?v=${publication.version}` }} shareUrl={`${origin}/result/${signal.id}`} />
     </> : null}
     <details className="signal-archive-section"><summary>查看完整分析（私密）</summary><SignalFingerprintPanel fingerprint={signal.fingerprint} /></details>
@@ -89,9 +91,10 @@ export default async function SignalResultPage({ params, searchParams }: Props) 
       <SignalPlaybackButton signalId={signal.id} text={signal.expandedText} />
       <SignalResonanceButton signalId={signal.id} initialCount={signal.resonanceCount} />
       <SignalSaveButton signalId={signal.id} initialSaved={signal.hasSaved} />
+      <SignalReportButton signalId={signal.id} />
     </div></section>
     <MatchedSignalPanel matches={signal.matches} />
     <ShareSignalCardPreview card={{ signalId: signal.id, frequencyCode: signal.authorFreqCode ?? "Unfreq", expandedText: signal.expandedText, imageUrl: `${origin}/api/og/${signal.id}?v=${signal.publicationVersion}` }} shareUrl={`${origin}/result/${signal.id}`} />
-    <section className="signal-archive-section"><Link className="signal-next-primary" href="/galaxy">进入星图</Link></section>
+    <section className="signal-archive-section"><Link className="signal-next-primary" href={galaxyHref({ focus: signal.id })}>进入星图</Link></section>
   </section>;
 }

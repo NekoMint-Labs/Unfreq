@@ -9,7 +9,7 @@ import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSi
 import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
 import { findSameFrequencyMatches, scoreSignalMatch } from "./service-matching.js";
 import { buildStableGalaxyPosition, isFiniteGalaxyPosition, sumResonanceCount, toMySignalSummary,
-  toSignalGenerationDetail, toSignalDetail } from "./service-mappers.js";
+  toSignalGenerationDetail, toSignalDetail, getFingerprintFrequencyProfile, getSignalFrequencyProfile } from "./service-mappers.js";
 import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
 import { isPublicSignal, publicationProjection } from "./publication-policy.js";
 import { previewSignalPublicationForOwner } from "./service-publication-confirmation.js";
@@ -30,21 +30,37 @@ export async function getSignalHall(): Promise<PublicSignalDetail[]> {
 
 export async function getSignalGalaxy(frequency: AuthenticatedFrequency | undefined,
   query: SignalGalaxyQuery = {}, logger?: EmbeddingLogger): Promise<GalaxyResult> {
-  const [rows, themeOptions] = await Promise.all([listPublishedGalaxySignals({ band: query.band, limit: galaxyLimit, theme: query.theme }), listPublishedGalaxyThemes(galaxyThemeOptionLimit)]);
-  const current = await recheckPublicSignals(rows);
+  const [sample, themeOptions] = await Promise.all([listPublishedGalaxySignals({ band: query.band, limit: galaxyLimit, theme: query.theme,
+    focus: query.focus, frequencyId: frequency?.id }), listPublishedGalaxyThemes(galaxyThemeOptionLimit)]);
+  const currentRows = await recheckPublicSignals(sample.signals);
+  const byId = new Map(currentRows.map((row) => [row.id, row]));
+  const current = sample.signals.flatMap((row) => { const valid = byId.get(row.id); return valid === undefined ? [] : [valid]; });
   const visibleSignalIds = new Set(current.map((signal) => signal.id));
+  // Reuse only within this synchronous snapshot projection. No shared cache or
+  // new scoring weights: each profile used to be rebuilt for every edge.
+  const fingerprintProfiles = new Map(current.map((signal) => [signal.id, getFingerprintFrequencyProfile(signal.fingerprintJson)]));
+  const candidateProfiles = new Map(current.map((signal) => [signal.id, getSignalFrequencyProfile(signal)]));
   const points = current.flatMap((signal) => {
     const position = buildStableGalaxyPosition(signal);
     if (!isFiniteGalaxyPosition(signal.galaxyPosition)) queueSignalGalaxyPositionWrite({ logger, position, signal });
     const matchIds = current.filter((item) => item.id !== signal.id)
-      .map((item) => ({ id: item.id, score: scoreSignalMatch(signal.fingerprintJson, item) }))
+      .map((item) => ({ id: item.id, score: scoreSignalMatch(signal.fingerprintJson, item,
+        { current: fingerprintProfiles.get(signal.id)!, candidate: candidateProfiles.get(item.id)! }) }))
       .filter((item) => item.score > 0).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
       .slice(0, maxMatchCount).map((item) => item.id);
     const point = projectPublicGalaxy({ ...publicationProjection(signal), position, visibleSignalIds,
-      isMine: frequency !== undefined && (signal.authorId === frequency.id || signal.frequencyId === frequency.id), matchIds });
+      isMine: frequency !== undefined && (signal.authorId ?? signal.frequencyId) === frequency.id, matchIds });
     return point === undefined ? [] : [point];
   });
-  return { generatedAt: new Date().toISOString(), points,
+  const latestOwn = points.find((point) => point.id === sample.latestOwnSignalId && point.isMine);
+  const focused = points.find((point) => point.id === query.focus);
+  return { generatedAt: new Date().toISOString(), points, coverage: {
+    totalEligibleCount: sample.totalEligibleCount, returnedCount: points.length, sampleLimit: 80, samplingVersion: "recent-band-v1",
+    filters: query.band === undefined ? (query.theme === undefined ? {} : { theme: query.theme }) : { band: query.band },
+    ...(latestOwn === undefined ? {} : { latestOwnSignalId: latestOwn.id }),
+    ...(focused === undefined ? {} : { focusSignalId: focused.id }),
+    focusStatus: query.focus === undefined ? "none" : focused === undefined ? "unavailable" : "available",
+  },
     bandOptions: signalPrimaryBands.map((value) => ({ label: signalBandLabels[value], value })),
     themeOptions };
 }

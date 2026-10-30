@@ -10,14 +10,17 @@ function explicitProfile() {
 }
 
 describe("abuse policy configuration", () => {
-  it("requires all 23 named rules, including both email site rules", () => {
-    expect(ruleNames).toHaveLength(23);
+  it("requires all 26 named rules, including report reads and submissions", () => {
+    expect(ruleNames).toHaveLength(26);
+    expect(ruleNames).toContain("reportRequestUser");
+    expect(ruleNames).toContain("reportRequestIp");
+    expect(ruleNames).toContain("reportReadUser");
     expect(ruleNames).toContain("emailRequestSite");
     expect(ruleNames).toContain("emailVerifySite");
     const policy = parseAbusePolicy({ mode: "production", json: JSON.stringify(explicitProfile()) });
     expect(policy.enabled).toBe(true);
     expect(policy.configured).toBe(true);
-    expect(Object.keys(policy.budgets)).toHaveLength(23);
+    expect(Object.keys(policy.budgets)).toHaveLength(26);
   });
 
   it("provides only a clearly synthetic, disabled test profile without JSON", () => {

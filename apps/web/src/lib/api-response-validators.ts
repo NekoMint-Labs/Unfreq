@@ -8,6 +8,7 @@ import type {
   CreateSignalResponse,
   EchoSummaryResponse,
   GalaxyResponse,
+  GalaxyCoverage,
   MeResponse,
   MySignalsResponse,
   PublishSignalResponse,
@@ -353,6 +354,18 @@ export const isGalaxyResponse = (value: unknown): value is GalaxyResponse => {
     isString(value.generatedAt) &&
     Array.isArray(value.points) &&
     value.points.every(isGalaxyPoint) &&
+    isOptional(value.coverage, (coverage): coverage is GalaxyCoverage => {
+      if (!isRecord(coverage) || !isRecord(coverage.filters) || !Array.isArray(value.points)) return false;
+      return exactKeys(coverage, ["totalEligibleCount", "returnedCount", "sampleLimit", "samplingVersion", "filters", "focusStatus"], ["latestOwnSignalId", "focusSignalId"]) &&
+        exactKeys(coverage.filters, [], ["band", "theme"]) &&
+        isOptional(coverage.filters.band, (band) => isEnumValue(band, signalPrimaryBands)) && isOptional(coverage.filters.theme, isString) &&
+        isNonNegativeInteger(coverage.totalEligibleCount) && Number.isSafeInteger(coverage.totalEligibleCount) && isNonNegativeInteger(coverage.returnedCount) &&
+        coverage.returnedCount === value.points.length && coverage.totalEligibleCount >= coverage.returnedCount &&
+        coverage.sampleLimit === 80 && coverage.returnedCount <= 80 && coverage.samplingVersion === "recent-band-v1" &&
+        isEnumValue(coverage.focusStatus, ["none", "available", "unavailable"]) &&
+        (coverage.latestOwnSignalId === undefined || value.points.some((point) => isRecord(point) && point.id === coverage.latestOwnSignalId && point.isMine === true)) &&
+        (coverage.focusStatus === "available" ? isString(coverage.focusSignalId) && value.points.some((point) => isRecord(point) && point.id === coverage.focusSignalId) : coverage.focusSignalId === undefined);
+    }) &&
     isOptional(value.themeOptions, isStringArray)
   );
 };

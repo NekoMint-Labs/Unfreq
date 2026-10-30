@@ -30,9 +30,14 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 ## 开发
 
 - [开发指南](./development.md)
-- [数据公开与生命周期设计（规则已确认，待实施）](./data-lifecycle.md)
+- [总实施规范进度与下一步](./implementation/progress.md)
+- [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)
+- [C1 发布确认、撤回与公开读取验收](./implementation/c1-publication-20261030.md)
+- [C2 普通频率举报闭环](./implementation/c2-reporting-20261030.md)
+- [D1 星图覆盖与定位验收](./implementation/d1-galaxy-coverage-20261030.md)
+- [D2 星图视觉语义校正验收](./implementation/d2-galaxy-semantics-20261030.md)
 - [B1 生成任务配置与切换说明（本地已验收）](./implementation/b1-generation-operations.md)
-- [B1/B2 生成可靠性验收记录（B2 局部通过，C1 待实施）](./implementation/b1-b2-generation-reliability.md)
+- [B1/B2 生成可靠性历史验收记录](./implementation/b1-b2-generation-reliability.md)
 
 ## 其他
 

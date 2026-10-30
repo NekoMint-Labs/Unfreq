@@ -31,6 +31,8 @@ docker compose up --build -d
 
 策略包含注册 IP/全站、密码请求和失败 IP/FM+IP、邮箱请求与校验 IP/全站、生成用户请求/用户日/全站日、音频读取/请求/新增 IP/新增全站日、诊断 IP/全站，以及 chat、embedding、reranker 调用次数和 TTS UTF-16 字符单位。`limit=0` 表示拒绝；窗口按 Redis 时钟对齐，日额度应填写 `windowMs=86400000`。`pendingPerUser` 约束该作者已接收和运行中的生成任务，`ttsConcurrency` 约束共享有效音频租约，`ttsTaskTimeoutMs` 约束整次音频任务。调用额度包含每次重试及备用 Provider，属于费用上界控制，不能直接当作供应商账单金额。
 
+C2 新增三个必填预算：`reportRequestUser`、`reportRequestIp`、`reportReadUser`。升级前按示例结构补齐全部 API 副本的策略；缺字段拒绝启动，不静默采用生产阈值。回退到旧 API 时同步恢复旧策略结构。举报接口只接受当前已确认公开的 SIGNAL，旧 USER 举报保留在后台处理；创建响应已收窄为私密状态回执。
+
 `ABUSE_HMAC_SECRET` 可留空以使用 `SESSION_SECRET`，也可配置至少 32 字符的独立密钥。Redis 不可用时，受保护入口和远端 Provider 派发返回安全失败。开发环境未填写完整策略时，可使用本地生成 fallback，但不能派发远端 Provider。
 
 生产邮箱验证码登录默认关闭，且禁止 `local-log` 与验证码响应回显。当前尚未实现生产邮件发送，部署时保持 `AUTH_LOGIN_DELIVERY_MODE=disabled`、`AUTH_LOGIN_CODE_RESPONSE=disabled`，使用 FM 代号和密码注册登录。

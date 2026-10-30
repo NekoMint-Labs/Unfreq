@@ -110,8 +110,14 @@ export async function getSignalHall(): Promise<PublicSignalDetail[]> {
 export async function getSignalGalaxy(
   cookieHeader?: string,
   band?: SignalPrimaryBand,
+  focus?: string,
+  theme?: string,
 ): Promise<GalaxyResponse> {
-  const query = band === undefined ? "" : `?band=${encodeURIComponent(band)}`;
+  const params = new URLSearchParams();
+  if (band !== undefined) params.set("band", band);
+  else if (theme !== undefined) params.set("theme", theme);
+  if (focus !== undefined) params.set("focus", focus);
+  const query = params.size === 0 ? "" : `?${params}`;
 
   return apiClient.get<GalaxyResponse>(`/api/signals/galaxy${query}`, {
     cache: "no-store",

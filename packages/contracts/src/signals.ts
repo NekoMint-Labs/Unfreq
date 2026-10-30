@@ -118,7 +118,19 @@ export type SignalGalaxyPosition = {
 
 export type GalaxySignalPoint = PublicGalaxySignalPoint;
 
+export type GalaxyCoverage = {
+  totalEligibleCount: number;
+  returnedCount: number;
+  sampleLimit: 80;
+  samplingVersion: "recent-band-v1";
+  filters: { band?: SignalPrimaryBand; theme?: string };
+  latestOwnSignalId?: string;
+  focusSignalId?: string;
+  focusStatus: "none" | "available" | "unavailable";
+};
+
 export type GalaxyResponse = {
+  coverage?: GalaxyCoverage;
   bandOptions?: Array<{
     label: string;
     value: SignalPrimaryBand;
@@ -129,6 +141,7 @@ export type GalaxyResponse = {
 };
 
 export type GalaxyResult = {
+  coverage: GalaxyCoverage;
   bandOptions: Array<{
     label: string;
     value: SignalPrimaryBand;

@@ -20,6 +20,7 @@ export const signalIdParamsSchema = z.object({
 });
 
 export const signalGalaxyQuerySchema = z.object({
+  focus: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   band: z.enum(signalPrimaryBands).optional(),
   theme: z.string().trim().min(1).max(48).optional(),
 });
@@ -230,6 +231,13 @@ export const signalHallResponseSchema = z.object({
 });
 
 export const signalGalaxyResponseSchema = z.object({
+  coverage: z.object({
+    totalEligibleCount: z.number().int().nonnegative(), returnedCount: z.number().int().min(0).max(80),
+    sampleLimit: z.literal(80), samplingVersion: z.literal("recent-band-v1"),
+    filters: z.object({ band: z.enum(signalPrimaryBands).optional(), theme: z.string().optional() }).strict(),
+    latestOwnSignalId: z.uuid().optional(), focusSignalId: z.uuid().optional(),
+    focusStatus: z.enum(["none", "available", "unavailable"]),
+  }).strict(),
   bandOptions: z.array(z.object({
     label: z.string().min(1),
     value: z.enum(signalPrimaryBands),

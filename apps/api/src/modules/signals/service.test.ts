@@ -35,6 +35,8 @@ import {
 } from "./service.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import { generateReviewedSignalExpansion } from "./service-creation.js";
+import { scoreSignalMatch } from "./service-matching.js";
+import { getFingerprintFrequencyProfile, getSignalFrequencyProfile } from "./service-mappers.js";
 
 const signalStore = vi.hoisted(() => {
   return {
@@ -1546,6 +1548,7 @@ describe("signal service AI generation", () => {
       title: "我的星点",
     });
     mySignal.frequencyId = "00000000-0000-4000-8000-000000000111";
+    mySignal.authorId = null;
     mySignal.authorFreqCode = "FM 27.51";
     mySignal.galaxyPosition = null;
     const matchedSignal = buildCandidate({
@@ -1555,7 +1558,7 @@ describe("signal service AI generation", () => {
       tags: ["夜晚"],
       title: "同频星点",
     });
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([mySignal, matchedSignal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [mySignal, matchedSignal], totalEligibleCount: 2, latestOwnSignalId: mySignal.id });
 
     const galaxy = await getSignalGalaxy({
       createdAt: "2026-05-10T00:00:00.000Z",
@@ -1590,12 +1593,22 @@ describe("signal service AI generation", () => {
       title: "带历史匹配的星点",
     });
     signal.matchSignalId = "00000000-0000-4000-8000-000000000999";
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([signal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [signal], totalEligibleCount: 1 });
 
     const galaxy = await getSignalGalaxy(undefined);
 
     expect(galaxy.points).toHaveLength(1);
     expect(galaxy.points[0]?.matchIds).toEqual([]);
+  });
+
+  it("keeps prepared graph pair scores identical to the existing scorer", () => {
+    const left = buildCandidate({ id: "00000000-0000-4000-8000-000000000751", title: "合成左信号", primaryEmotion: "平静", signalType: "life-fragment", tags: ["窗边"] });
+    const right = buildCandidate({ id: "00000000-0000-4000-8000-000000000752", title: "合成右信号", primaryEmotion: "孤独", signalType: "life-fragment", tags: ["夜晚"] });
+    for (const band of ["self_mirror", "relationship_nebula", "meaning_deep_space"] as const) {
+      right.primaryBand = band;
+      expect(scoreSignalMatch(left.fingerprintJson, right, { current: getFingerprintFrequencyProfile(left.fingerprintJson), candidate: getSignalFrequencyProfile(right) }))
+        .toBe(scoreSignalMatch(left.fingerprintJson, right));
+    }
   });
 
   it("marks current frequency galaxy signals by author id during auth migration", async () => {
@@ -1608,7 +1621,7 @@ describe("signal service AI generation", () => {
     });
     mySignal.authorId = "00000000-0000-4000-8000-000000000111";
     mySignal.frequencyId = null;
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([mySignal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [mySignal], totalEligibleCount: 1, latestOwnSignalId: mySignal.id });
 
     const galaxy = await getSignalGalaxy({
       createdAt: "2026-05-10T00:00:00.000Z",
@@ -1622,5 +1635,15 @@ describe("signal service AI generation", () => {
       id: "00000000-0000-4000-8000-000000000711",
       isMine: true,
     });
+  });
+
+  it("does not label a different author's signal as mine through a stale frequency mirror", async () => {
+    const row = buildCandidate({ id: "00000000-0000-4000-8000-000000000741", title: "公开合成信号", primaryEmotion: "平静", signalType: "life-fragment", tags: [] });
+    row.authorId = "00000000-0000-4000-8000-000000000222";
+    row.frequencyId = "00000000-0000-4000-8000-000000000111";
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [row], totalEligibleCount: 1, latestOwnSignalId: row.id });
+    const result = await getSignalGalaxy({ createdAt: "2026-05-10T00:00:00Z", id: row.frequencyId, freqCode: "FM 27.51", status: "ACTIVE", role: "USER" });
+    expect(result.points[0].isMine).toBe(false);
+    expect(result.coverage.latestOwnSignalId).toBeUndefined();
   });
 });

@@ -374,16 +374,17 @@ vi.mock("./repository.js", () => {
         signalStores.rows.filter(isPublicCompletedSignal),
       );
     }),
-    listPublishedGalaxySignals: vi.fn((params?: { band?: string; theme?: string }) => {
-      return Promise.resolve(
-        signalStores.rows.filter((row) => {
+    listPublishedGalaxySignals: vi.fn((params?: { band?: string; theme?: string; frequencyId?: string }) => {
+      const rows = signalStores.rows.filter((row) => {
           return (
             isPublicCompletedSignal(row) &&
             (params?.band === undefined || row.primaryBand === params.band) &&
             (params?.theme === undefined || row.fingerprintJson.theme === params.theme)
           );
-        }),
-      );
+        });
+      const latest = rows.filter((row) => (row.authorId ?? row.frequencyId) === params?.frequencyId)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))[0];
+      return Promise.resolve({ signals: rows, totalEligibleCount: rows.length, latestOwnSignalId: latest?.id });
     }),
     listPublishedGalaxyThemes: vi.fn(() => {
       return Promise.resolve(

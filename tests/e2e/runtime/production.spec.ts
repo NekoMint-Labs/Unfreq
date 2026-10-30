@@ -123,6 +123,90 @@ test("public result provides a PNG OG card and a working copy-link action", asyn
   expect((await context.request.get("/api/og/runtime-missing-001")).status()).toBe(404);
 });
 
+test("reporting supports keyboard submission, private status lookup and mobile focus restoration", async ({ page, context }, testInfo) => {
+  await signIn(context, "FM 21.04");
+  await page.goto(publicPath);
+  const trigger = page.getByRole("button", { name: "举报", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "举报这条信号" });
+  await expect(dialog).toBeVisible();
+  const reason = dialog.getByLabel("举报原因");
+  await expect(reason).toBeEnabled();
+  await dialog.getByRole("button", { name: "关闭举报", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog.getByRole("button", { name: "提交举报", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "关闭举报", exact: true })).toBeFocused();
+  await reason.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(reason).toHaveValue("垃圾信息或广告");
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("textbox")).toBeFocused();
+  await page.keyboard.type("SYNTHETIC_REVIEW_NOTE");
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "提交举报", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog.getByText("举报状态：待审核", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("c2-report-desktop.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await page.reload();
+  await trigger.click();
+  await expect(dialog.getByText("举报状态：待审核", { exact: true })).toBeVisible();
+  await context.request.post(`${apiBaseUrl}/__runtime/resolve-reports`);
+  await dialog.getByRole("button", { name: "刷新处理状态", exact: true }).click();
+  await expect(dialog.getByText("举报状态：已处理", { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("c2-report-mobile.png") });
+  await dialog.getByRole("button", { name: "关闭举报", exact: true }).click();
+  await expect(trigger).toBeFocused();
+});
+
+test("reporting provides safe login and rejected-submission feedback", async ({ page, context }) => {
+  await page.goto(publicPath);
+  await page.getByRole("button", { name: "举报", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "举报这条信号" });
+  await expect(dialog.getByRole("link", { name: "接入频率", exact: true })).toHaveAttribute("href", "/login?returnTo=%2Fresult%2Fruntime-public-001");
+  await dialog.getByRole("button", { name: "关闭举报", exact: true }).click();
+  await signIn(context, "FM 21.04");
+  await page.reload();
+  await page.route("**/api/reports", async (route) => route.fulfill({ status: 429, contentType: "application/json", body: JSON.stringify({ error: { code: "RATE_LIMITED", message: "synthetic" }, meta: { requestId: "test" } }) }));
+  await page.getByRole("button", { name: "举报", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "提交举报", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "提交举报", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("操作过于频繁，请稍后再试。");
+  await expect(dialog.getByRole("button", { name: "提交举报", exact: true })).toBeEnabled();
+});
+
+test("Galaxy reading exposes reporting without dismissing the selected signal", async ({ page, context }, testInfo) => {
+  await context.request.post(`${apiBaseUrl}/__runtime/center-public-point`);
+  await signIn(context, "FM 21.04");
+  await page.goto("/galaxy");
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  // The synthetic signal is at scene origin; exercise actual canvas raycasting.
+  await expect.poll(async () => {
+    const bounds = await canvas.boundingBox();
+    if (bounds) await canvas.click({ position: { x: bounds.width / 2, y: bounds.height / 2 } });
+    return page.getByRole("button", { name: "举报", exact: true }).isVisible();
+  }).toBe(true);
+  const report = page.getByRole("button", { name: "举报", exact: true });
+  await report.click();
+  const dialog = page.getByRole("dialog", { name: "举报这条信号" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "提交举报", exact: true })).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath("c2-galaxy-report.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(report).toBeVisible();
+  await expect(report).toBeFocused();
+  await expect(page.getByRole("button", { name: "关闭信号详情", exact: true })).toBeVisible();
+});
+
 test("390px production Galaxy renders WebGL and navigates its frequency filter", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/galaxy");
@@ -137,8 +221,81 @@ test("390px production Galaxy renders WebGL and navigates its frequency filter",
   })).toBe(true);
   await page.getByRole("navigation", { name: "星图主频段筛选" }).getByRole("link", { name: "关系星云", exact: true }).click();
   await expect(page).toHaveURL(/\/galaxy\?band=relationship_nebula$/);
-  await expect(page.getByText(/SIGNALS 001/)).toBeVisible();
+  await expect(page.getByText(/符合筛选 1 · 返回样本 1 · 绘制 1/)).toBeVisible();
   await expect(page.locator("canvas").first()).toBeVisible();
+});
+
+test("D1 keeps latest own and focused signals reachable within mobile and API sample budgets", async ({ page, context }, testInfo) => {
+  await context.request.post(`${apiBaseUrl}/__runtime/large-galaxy`);
+  await signIn(context);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/galaxy");
+  await expect(page.getByText(/符合筛选 522 · 返回样本 80 · 绘制 72/)).toBeVisible();
+  await expect(page.locator("canvas").first()).toBeVisible();
+  const mobileBounds = await page.locator("canvas").first().boundingBox();
+  expect(mobileBounds?.x).toBe(0);
+  expect(mobileBounds?.width).toBe(390);
+  await page.getByRole("button", { name: "找到我的信号", exact: true }).click();
+  await expect(page.getByText("D1_BROWSER_519. A synthetic public expression.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭信号详情", exact: true }).click();
+  await page.getByRole("button", { name: "查看样本列表", exact: true }).click();
+  const list = page.getByRole("complementary", { name: "星图样本列表" });
+  await expect(list.getByRole("listitem")).toHaveCount(80);
+  await page.screenshot({ path: testInfo.outputPath("d1-mobile-list.png") });
+  const target = list.getByRole("listitem").filter({ hasText: "D1_BROWSER_0." });
+  await target.getByRole("link", { name: "在星图定位", exact: true }).click();
+  await expect(page).toHaveURL(/focus=d1000000-0000-4000-8000-000000000000/);
+  await expect(page.getByText("D1_BROWSER_0. A synthetic public expression.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭信号详情", exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByText(/返回样本 80 · 绘制 80/)).toBeVisible();
+  const canvas = page.locator("canvas").first();
+  await expect.poll(() => canvas.evaluate((element) => {
+    const surface = element as HTMLCanvasElement;
+    const gl = surface.getContext("webgl2") ?? surface.getContext("webgl");
+    const viewport = gl?.getParameter(gl.VIEWPORT) as Int32Array | undefined;
+    return surface.width > 0 && (viewport?.[2] ?? 0) > 0;
+  })).toBe(true);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await page.screenshot({ path: testInfo.outputPath("d1-desktop-coverage.png") });
+  await page.goto("/galaxy?band=relationship_nebula&focus=d1000000-0000-4000-8000-000000000519");
+  await expect(page.getByRole("status")).toHaveText("指定信号当前不在可公开显示的筛选结果中。");
+  await expect(page.getByRole("button", { name: "找到我的信号", exact: true })).toBeDisabled();
+  expect(await page.locator("body").innerText()).not.toContain("D1_BROWSER_519");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
+});
+
+test("D2 explains artistic positions, rule associations and decorative appearance", async ({ page, context }, testInfo) => {
+  await page.goto("/galaxy");
+  const legend = page.locator(".galaxy-legend");
+  const summary = legend.locator("summary");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(legend).toHaveAttribute("open", "");
+  await expect(legend.getByText(/位置是艺术化排布/)).toBeVisible();
+  await expect(legend.getByText(/不代表真实人际关系/)).toBeVisible();
+  await expect(legend.getByText(/不是相似度或排名/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("d2-legend-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(summary).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("d2-legend-mobile.png") });
+  await summary.click();
+  await expect(legend).not.toHaveAttribute("open", "");
+  await context.request.post(`${apiBaseUrl}/__runtime/center-public-point`);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/galaxy");
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await expect.poll(async () => {
+    const bounds = await canvas.boundingBox();
+    if (bounds) await canvas.click({ position: { x: bounds.width / 2, y: bounds.height / 2 } });
+    return page.getByText("关联说明", { exact: true }).isVisible();
+  }).toBe(true);
+  await page.getByText("关联说明", { exact: true }).click();
+  await expect(page.getByText("当前返回样本未列出与本条相关的规则候选。", { exact: true })).toBeVisible();
+  await expect(page.getByText(/候选数不等于画面连线数/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("d2-association-note.png") });
 });
 
 

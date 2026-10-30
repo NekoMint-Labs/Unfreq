@@ -35,6 +35,33 @@ async function audioReady(h: AbuseHarness, id: string) {
 }
 
 describe("real multi-process abuse controls", () => {
+  it("shares report admission and receipt-read budgets across PIDs and deduplicates pending submissions", async () => {
+    await withAbuseHarness("reports", async (h) => {
+      const [a, b] = await pair(h);
+      const author = await register(h, a);
+      const reporter = await register(h, b);
+      const id = await published(h, a, author.cookie);
+      const submit = (child: AbuseProcess, cookie = reporter.cookie, remote?: "127.0.0.2") => h.inject(child, {
+        method: "POST", url: "/api/reports", cookie, payload: { targetType: "SIGNAL", targetId: id, reason: "涉及隐私", note: "SYNTHETIC_REVIEW_ONLY" }, ...(remote ? { remote } : {}),
+      });
+      const responses = await Promise.all([submit(a), submit(b)]);
+      expect(responses.map((response) => response.statusCode)).toEqual([201, 201]);
+      const receipts = responses.map((response) => (response.body as { data: { report: { id: string } } }).data.report.id);
+      expect(new Set(receipts).size).toBe(1);
+      limited(await submit(b));
+      limited(await submit(a, reporter.cookie, "127.0.0.2"));
+      expect((await submit(a, author.cookie)).statusCode).toBe(201);
+      limited(await submit(b, author.cookie));
+      const read = (child: AbuseProcess, cookie = reporter.cookie) => h.inject(child, { method: "GET", url: `/api/reports/signal/${id}`, cookie });
+      expect((await read(a)).statusCode).toBe(200);
+      expect((await read(b)).statusCode).toBe(200);
+      limited(await read(a));
+      expect((await read(b, author.cookie)).statusCode).toBe(200);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${id} and reporter_id = ${reporter.frequency.id}`;
+      expect(count.n).toBe(1);
+    });
+  }, twoBootBudget);
+
   it("shares registration N+1 across PIDs and ignores forged forwarding by default", async () => {
     await withAbuseHarness("register", async (h) => {
       const [a, b] = await pair(h);

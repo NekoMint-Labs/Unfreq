@@ -35,6 +35,7 @@ tags:
 - `buildApp()` registers only current product routes: auth, frequencies, `/api/me`, frontend diagnostics, reports, signals, monthly recaps, theme radio, images, admin.
 - Retired modules must not be reintroduced as default registrations: `/api/channels/*`, `/api/voices/*`, `/api/bottles/*`, `/api/translate/*`, `/api/radio-report/*`, product `/api/ai/*`. Requests to them return 404 by route absence, not by a compatibility response.
 - `ReportTargetType` and `AdminAiReviewTargetType` are `USER | SIGNAL` only; retired types (`VOICE`, `BOTTLE`, `BOTTLE_ECHO`, old `ECHO`) are rejected with `400 VALIDATION_ERROR`.
+- Current public report creation accepts `SIGNAL` only and checks confirmed public eligibility under a target-row lock. Legacy `USER` reports remain readable/actionable in admin; there is no public account report surface. Pending submissions are idempotent per reporter/target. `GET /api/reports/signal/:id` returns only the session reporter's latest status receipt, never review text or reporter identity. Report submission/read budgets are shared through Redis.
 - Historical tables/enums may remain unreachable; admin overview/moderation must compute metrics from signals, frequencies, reports, AI reviews, and admin actions.
 
 ## PLAT-004 Frontend diagnostics

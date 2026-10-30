@@ -32,10 +32,13 @@ tags:
 
 ## ENG-003 Galaxy
 
-- `GET /api/signals/galaxy?band=<signal_primary_band>` returns `{ points, bandOptions, generatedAt, themeOptions }` and filters to public points by the fixed primary band. `bandOptions` always contains the fixed seven primary bands.
+- `GET /api/signals/galaxy?band=<signal_primary_band>&focus=<signal_uuid>` returns `{ points, bandOptions, generatedAt, themeOptions, coverage }` and filters to confirmed, completed, non-withdrawn public points by the fixed primary band. `bandOptions` always contains the fixed seven primary bands. `focus` is optional, canonicalized and subject to the same visibility/filter conditions.
+- The API samples at most 80 points using versioned `recent-band-v1`: eligible focus and latest own first, then recent expressions plus deterministic band diversity. `coverage` distinguishes validated total count from returned samples, echoes the effective filter, and includes only visible focus/latest-own IDs. Mobile renders at most 72 points and preserves selected/latest-own points; the optional list contains the same returned sample, never a larger private dataset.
 - Coordinates must be finite numbers; the frontend may normalize them for camera framing but must not compute embedding or semantic layout. The galaxy route must not call AI/embedding/reranker providers just to draw links.
 - `matchIds` reference published ids already present in the same response; clients ignore missing ids rather than fetching or computing matches locally.
-- The API may return an empty `points` array; the frontend must render a truthful empty state. `theme` remains a compatibility display field equal to `frequencyProfile.displayText`; new clients read `frequencyProfile`. `themeOptions` is for older clients only and must not drive new UI.
+- Positions are artistic, and distance does not measure semantic similarity. The visible legend distinguishes selectable public expressions from decorative background stars. Links represent rule candidates within the current sample, subject to rendering budgets and visual selection; they do not represent personal relationships. Band/own colors and mixed resonance/depth/decorative brightness or size must not imply a similarity score or ranking.
+- The reading panel explains rule candidates using only IDs already in the returned sample. It deduplicates incoming and outgoing records and distinguishes candidate count from drawn link count; zero records remain an explicit zero, without invented reasons or percentages.
+- The API may return an empty `points` array; the frontend must render a truthful empty state. Legacy `theme` queries map known display labels to confirmed primary bands; new clients use the public `primaryBand` and confirmed tags, never private `frequencyProfile`. `themeOptions` is for older clients only and must not drive new UI.
 - `/galaxy` is a full-bleed 3D view.
 
 ## ENG-004 Random tuning

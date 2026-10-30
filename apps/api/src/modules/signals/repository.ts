@@ -1,6 +1,7 @@
 import { signalBandLabels } from "./frequency-taxonomy.js";
 import { publicSignalFilters, isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
+import { GalaxySampler } from "./galaxy-sampling.js";
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { env } from "../../config/env.js";
@@ -323,7 +324,9 @@ export async function listPublishedGalaxySignals(params: {
   band?: SignalPrimaryBand;
   limit: number;
   theme?: string;
-}): Promise<SignalRecord[]> {
+  focus?: string;
+  frequencyId?: string;
+}): Promise<{ signals: SignalRecord[]; totalEligibleCount: number; latestOwnSignalId?: string }> {
   const filters = getPublicCompletedSignalFilters();
 
   if (params.band !== undefined) {
@@ -347,15 +350,38 @@ export async function listPublishedGalaxySignals(params: {
     }
   }
 
-  const rows = await db
-    .select(signalSelection)
-    .from(signals)
-    .leftJoin(users, eq(signals.authorId, users.id))
-    .where(and(...filters))
-    .orderBy(asc(signals.createdAt))
-    .limit(params.limit);
-
-  return rows.map(toSignalRecord);
+  // Counting includes runtime consent/digest validation. Scan only confirmed
+  // snapshot + identity metadata in bounded batches; never load all private
+  // inputs, programs, fingerprints or vectors merely to count/sample a map.
+  return db.transaction(async (tx) => {
+    const sampler = new GalaxySampler(params.focus);
+    let afterId: string | undefined;
+    while (true) {
+      const batch = await tx.select({ id: signals.id, createdAt: signals.createdAt,
+        publicationVersion: signals.publicationVersion, snapshot: signals.publicationSnapshot,
+        authorId: signals.authorId, frequencyId: signals.frequencyId }).from(signals)
+        .where(and(...filters, ...(afterId === undefined ? [] : [gt(signals.id, afterId)])))
+        .orderBy(asc(signals.id)).limit(128);
+      for (const row of batch) {
+        const snapshot = parsePublicationSnapshot(row.snapshot);
+        if (snapshot === undefined) continue;
+        sampler.add({ id: row.id, createdAt: row.createdAt, publicationVersion: row.publicationVersion,
+          primaryBand: snapshot.content.primaryBand,
+          isMine: params.frequencyId !== undefined && (row.authorId ?? row.frequencyId) === params.frequencyId });
+      }
+      if (batch.length < 128) break;
+      afterId = batch[batch.length - 1].id;
+    }
+    const selected = sampler.select().slice(0, params.limit);
+    const rows = selected.length === 0 ? [] : await tx.select(signalSelection).from(signals)
+      .leftJoin(users, eq(signals.authorId, users.id)).where(and(inArray(signals.id, selected.map((item) => item.id)), ...filters));
+    const byId = new Map(rows.map((row) => [row.id, toSignalRecord(row)]));
+    return { signals: selected.flatMap((item) => {
+      const row = byId.get(item.id);
+      return row === undefined || row.publicationVersion !== item.publicationVersion ? [] : [row];
+    }), totalEligibleCount: sampler.totalEligibleCount,
+    ...(sampler.latestOwn === undefined ? {} : { latestOwnSignalId: sampler.latestOwn.id }) };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
 export async function listPublishedGalaxyThemes(limit: number): Promise<string[]> {

@@ -170,6 +170,7 @@ export function getGalaxyRenderPoints(
   points: GalaxySignalPoint[],
   profile: GalaxyPerformanceProfile,
   selectedId?: string,
+  latestOwnSignalId?: string,
 ): GalaxySignalPoint[] {
   if (!profile.isMobile || points.length <= profile.maxRenderedPoints) {
     return points;
@@ -181,7 +182,9 @@ export function getGalaxyRenderPoints(
         index,
         point,
         priority:
-          point.id === selectedId
+          point.id === latestOwnSignalId
+            ? getMobileRenderPriority(point) + 4_000
+            : point.id === selectedId
             ? getMobileRenderPriority(point) + 2_000
             : getMobileRenderPriority(point),
       }))

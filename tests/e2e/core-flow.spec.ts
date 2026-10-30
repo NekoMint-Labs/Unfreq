@@ -43,7 +43,7 @@ test("galaxy route renders a nonblank webgl canvas directly", async ({ page }) =
   await page.goto("/galaxy");
 
   await expect(page.getByRole("heading", { name: "共振星图" })).toBeVisible();
-  await expect(page.getByText(/SIGNALS 002/)).toBeVisible();
+  await expect(page.getByText(/返回样本 2 · 绘制 2/)).toBeVisible();
   await expectGalaxyCanvasReady(page);
 });
 
@@ -52,7 +52,7 @@ test("galaxy route renders a nonblank webgl canvas on mobile", async ({ page }) 
   await page.goto("/galaxy");
 
   await expect(page.getByRole("heading", { name: "共振星图" })).toBeVisible();
-  await expect(page.getByText(/SIGNALS 002/)).toBeVisible();
+  await expect(page.getByText(/返回样本 2 · 绘制 2/)).toBeVisible();
   await expectGalaxyCanvasReady(page);
 });
 
@@ -92,7 +92,7 @@ test("first visit can emit a seed and reach the galaxy", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/galaxy/);
   await expect(page.getByRole("heading", { name: "共振星图" })).toBeVisible();
-  await expect(page.getByText(/SIGNALS 002/)).toBeVisible();
+  await expect(page.getByText(/返回样本 2 · 绘制 2/)).toBeVisible();
 
   await expectGalaxyCanvasReady(page);
 });
@@ -114,7 +114,7 @@ test("generated signal can return to my frequency through the galaxy onboarding 
     .getByRole("link", { name: "进入星图" })
     .click();
 
-  await expect(page).toHaveURL(/\/galaxy\?onboarding=galaxy/);
+  await expect(page).toHaveURL((url) => url.pathname === "/galaxy" && url.searchParams.get("onboarding") === "galaxy" && url.searchParams.get("focus") === "signal-core-001");
   await expect(page.getByText("走进信号星图")).toBeVisible();
   await page.getByRole("link", { name: "回到我的频率" }).click();
 

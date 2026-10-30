@@ -4,7 +4,8 @@ import { Canvas } from "@react-three/fiber";
 import Link from "next/link";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GalaxySignalPoint, SignalPrimaryBand } from "@unfreq/contracts";
+import type { GalaxyCoverage, GalaxySignalPoint, SignalPrimaryBand } from "@unfreq/contracts";
+import { galaxyHref } from "@/lib/galaxy-navigation";
 import { GalaxyScene } from "./GalaxyScene";
 import { GalaxySignalSheet } from "./GalaxySignalSheet";
 import { GalaxyViewportSync } from "./GalaxyViewportSync";
@@ -20,6 +21,7 @@ import {
   type ScenePosition,
 } from "./galaxy-layout";
 import { detailFadeExitMs, fallbackBandLabels } from "./galaxy-scene-constants";
+import { galaxyLegendItems } from "./galaxy-semantics";
 
 type GalaxyCanvasProps = {
   bandOptions?: Array<{
@@ -31,6 +33,8 @@ type GalaxyCanvasProps = {
   onboardingStep?: "galaxy";
   points: GalaxySignalPoint[];
   selectedBand?: SignalPrimaryBand;
+  selectedTheme?: string;
+  coverage?: GalaxyCoverage;
 };
 
 export function GalaxyCanvas({
@@ -40,13 +44,16 @@ export function GalaxyCanvas({
   onboardingStep,
   points,
   selectedBand,
+  selectedTheme,
+  coverage,
 }: GalaxyCanvasProps) {
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const closeTimeoutRef = useRef<number | undefined>(undefined);
   const [canvasSize, setCanvasSize] = useState<GalaxyCanvasSize | undefined>();
-  const [detailPoint, setDetailPoint] = useState<GalaxySignalPoint | undefined>();
-  const [isDetailVisible, setIsDetailVisible] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailPoint, setDetailPoint] = useState<GalaxySignalPoint | undefined>(() => points.find((point) => point.id === coverage?.focusSignalId));
+  const [isDetailVisible, setIsDetailVisible] = useState(coverage?.focusSignalId !== undefined);
+  const [selectedId, setSelectedId] = useState<string | null>(coverage?.focusSignalId ?? null);
+  const [listVisible, setListVisible] = useState(false);
   const { selectedId: activeSelectedId, selectedPoint } = getActiveGalaxySelection(
     points,
     selectedId,
@@ -65,7 +72,8 @@ export function GalaxyCanvas({
       : bandOptions.find((option) => option.value === selectedBand)?.label ??
         fallbackBandLabels[selectedBand];
   const performanceProfile = getGalaxyPerformanceProfile(points, isMobileHitArea);
-  const renderPoints = getGalaxyRenderPoints(points, performanceProfile, activeSelectedId);
+  const renderPoints = getGalaxyRenderPoints(points, performanceProfile, activeSelectedId, coverage?.latestOwnSignalId);
+  const latestOwn = points.find((point) => point.id === coverage?.latestOwnSignalId && point.isMine);
 
   const clearCloseTimeout = useCallback(() => {
     if (closeTimeoutRef.current === undefined) {
@@ -184,6 +192,8 @@ export function GalaxyCanvas({
                 ? `${selectedBandLabel} 暂时没有可公开展示的信号。可以换一个频段，或回到全部星图。`
                 : "当前没有可公开展示的信号。先写下一句种子，或先回到我的频率。"}
           </p>
+          {coverage?.focusStatus === "unavailable" ? <p role="status" className="mt-3 text-sm">指定信号当前不在可公开显示的筛选结果中。</p> : null}
+          {coverage !== undefined && coverage.totalEligibleCount > 0 ? <p className="mt-3 text-sm">符合筛选 {coverage.totalEligibleCount} · 当前可读样本 0，请刷新后重试。</p> : null}
           {selectedBandLabel !== undefined ? (
             <p className="mt-3 font-mono text-xs tracking-[0.16em] text-[color:var(--text-tertiary)]">
               FILTER · {selectedBandLabel}
@@ -194,7 +204,7 @@ export function GalaxyCanvas({
               <p className="radio-kicker">FIRST TUNE · 03</p>
               <h2>星图还在等待更多亮点</h2>
               <p>
-                当前星海里还没有足够多的公开信号。可以先完成这次调频，之后信号变多时，再回来读它们之间的距离。
+                当前没有可公开展示的样本。可以先完成这次调频，之后再回来阅读公开表达。
               </p>
               <Link className="radio-button-primary" href="/me?onboarding=complete">
                 回到我的频率
@@ -233,7 +243,7 @@ export function GalaxyCanvas({
           共振星图
         </h1>
         <p className="mt-1 font-mono text-xs text-[color:var(--text-secondary)]">
-          SIGNALS {points.length.toString().padStart(3, "0")} ·{" "}
+          {coverage === undefined ? "" : `符合筛选 ${coverage.totalEligibleCount} · `}返回样本 {points.length} · 绘制 {renderPoints.length} ·{" "}
           {new Date(generatedAt).toLocaleTimeString("zh-CN", {
             hour: "2-digit",
             minute: "2-digit",
@@ -250,6 +260,18 @@ export function GalaxyCanvas({
         <p className="galaxy-select-cue">
           点击亮点 · 打开阅读层
         </p>
+        <div className="galaxy-coverage-actions">
+          <button className="radio-tag min-h-11" disabled={latestOwn === undefined} onClick={() => { if (latestOwn !== undefined) showPointDetail(latestOwn); }} type="button">找到我的信号</button>
+          <button aria-expanded={listVisible} aria-controls="galaxy-sample-list" className="radio-tag min-h-11" onClick={() => setListVisible((value) => !value)} type="button">{listVisible ? "收起样本列表" : "查看样本列表"}</button>
+        </div>
+        {coverage?.focusStatus === "unavailable" ? <p className="mt-2 text-xs" role="status">指定信号当前不在可公开显示的筛选结果中。</p> : null}
+        <p className="mt-2 text-xs text-[color:var(--text-secondary)]">星图按固定预算取样；“我的信号”定位当前筛选内最新公开的一条。</p>
+        <details className="galaxy-legend">
+          <summary>星图图例</summary>
+          <dl aria-label="星图视觉说明" tabIndex={0}>{galaxyLegendItems.map((item) => <div key={item.label}>
+            <dt>{item.label}</dt><dd>{item.text}</dd>
+          </div>)}</dl>
+        </details>
       </div>
 
       {bandOptions.length > 0 ? (
@@ -265,7 +287,7 @@ export function GalaxyCanvas({
           {bandOptions.map((band) => (
             <Link
               className={`radio-tag ${band.value === selectedBand ? "radio-tag-active" : ""}`}
-              href={`/galaxy?band=${encodeURIComponent(band.value)}`}
+              href={galaxyHref({ band: band.value, focus: coverage?.focusSignalId })}
               key={band.value}
             >
               {band.label}
@@ -274,12 +296,24 @@ export function GalaxyCanvas({
         </nav>
       ) : null}
 
+      {listVisible ? <aside aria-label="星图样本列表" aria-hidden={isFocusReading} inert={isFocusReading} className="galaxy-sample-list" id="galaxy-sample-list">
+        <div className="flex items-center justify-between gap-3"><h2 className="text-base font-semibold">本次返回样本（{points.length}）</h2><button aria-label="关闭样本列表" className="radio-button-text min-h-11 min-w-11" onClick={() => setListVisible(false)} type="button">×</button></div>
+        <p className="mt-2 text-xs text-[color:var(--text-secondary)]">列表包含未在移动星图绘制的样本。选择后可阅读，也可用固定链接定位。</p>
+        <ul>{points.map((point) => <li key={point.id}>
+          <button className="galaxy-sample-read" onClick={() => showPointDetail(point)} type="button">
+            <span>{point.authorFreqCode ?? "Unfreq"}{point.isMine ? " · 我的信号" : ""}</span>
+            <span className="block mt-2 text-sm">{point.expandedText.slice(0, 120)}{point.expandedText.length > 120 ? "…" : ""}</span>
+          </button>
+          <Link className="radio-button-text min-h-11 inline-flex items-center" href={galaxyHref({ band: selectedBand, theme: selectedTheme, focus: point.id })}>在星图定位</Link>
+        </li>)}</ul>
+      </aside> : null}
+
       {onboardingStep === "galaxy" ? (
         <div className="tour-panel tour-panel-galaxy" role="status">
           <p className="radio-kicker">FIRST TUNE · 03</p>
           <h1>走进信号星图</h1>
           <p>
-            这里没有排行榜，只有距离。点一个亮点，读一段陌生频率留下的信号。看完后回到我的频率，让这次发射归档。
+            星点位置是艺术化排布，远近不表示语义相似度。点开一条公开表达阅读，看完后回到我的频率。
           </p>
           <Link className="radio-button-primary" href="/me?onboarding=complete">
             回到我的频率
@@ -330,6 +364,7 @@ export function GalaxyCanvas({
               key={detailPoint.id}
               onClose={hidePointDetail}
               point={detailPoint}
+              sample={points}
             />,
             document.body,
           )

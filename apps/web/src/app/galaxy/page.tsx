@@ -11,6 +11,7 @@ type GalaxyPageProps = {
     band?: string;
     onboarding?: string;
     theme?: string;
+    focus?: string;
   }>;
 };
 
@@ -44,11 +45,14 @@ export default async function GalaxyPage({ searchParams }: GalaxyPageProps) {
   const cookieHeader = cookieStore.toString();
   const onboardingStep = parseGalaxyOnboardingStep(params.onboarding);
   const selectedBand = getSelectedBand(params.band);
+  const focus = typeof params.focus === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(params.focus) ? params.focus : undefined;
+  const selectedTheme = selectedBand === undefined && typeof params.theme === "string" && params.theme.trim().length <= 48
+    ? params.theme.trim() || undefined : undefined;
   let galaxy: Awaited<ReturnType<typeof getSignalGalaxy>>;
   let isUnavailable = false;
 
   try {
-    galaxy = await getSignalGalaxy(cookieHeader, selectedBand);
+    galaxy = await getSignalGalaxy(cookieHeader, selectedBand, focus, selectedTheme);
   } catch (caughtError) {
     if (!isApiUnavailableError(caughtError)) {
       throw caughtError;
@@ -68,12 +72,14 @@ export default async function GalaxyPage({ searchParams }: GalaxyPageProps) {
   return (
     <GalaxyCanvas
       generatedAt={galaxy.generatedAt}
+      coverage={galaxy.coverage}
       isUnavailable={isUnavailable}
-      key={`${selectedBand ?? "all"}:${onboardingStep ?? "idle"}`}
+      key={`${selectedBand ?? selectedTheme ?? "all"}:${focus ?? "none"}:${onboardingStep ?? "idle"}`}
       bandOptions={galaxy.bandOptions ?? []}
       onboardingStep={onboardingStep}
       points={galaxy.points}
       selectedBand={selectedBand}
+      selectedTheme={selectedTheme}
     />
   );
 }

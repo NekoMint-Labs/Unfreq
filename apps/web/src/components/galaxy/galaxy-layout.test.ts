@@ -125,6 +125,17 @@ describe("galaxy layout helpers", () => {
     expect(renderIds.has("signal-89")).toBe(true);
   });
 
+  it("keeps the latest own public signal even when more than 72 own points have higher visual priority", () => {
+    const points = Array.from({ length: 80 }, (_, index) => createPoint({
+      id: `mine-${index}`, isMine: true, resonanceCount: index === 79 ? 0 : 24,
+    }));
+    const profile = getGalaxyPerformanceProfile(points, true);
+    const rendered = getGalaxyRenderPoints(points, profile, "mine-78", "mine-79");
+    expect(rendered).toHaveLength(72);
+    expect(rendered.map((point) => point.id)).toContain("mine-79");
+    expect(rendered.map((point) => point.id)).toContain("mine-78");
+  });
+
   it("limits mobile link density by match count and total link budget", () => {
     const points = Array.from({ length: 20 }, (_, index) =>
       createPoint({
