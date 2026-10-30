@@ -1,9 +1,9 @@
 import Link from "next/link";
-import type { SignalDetail } from "@unfreq/contracts";
+import type { PublicSignalDetail } from "@unfreq/contracts";
 import { SignalCard } from "@/components/signals/SignalCard";
 
 type SignalHallProps = {
-  signals: SignalDetail[];
+  signals: PublicSignalDetail[];
 };
 
 export function SignalHall({ signals }: SignalHallProps) {

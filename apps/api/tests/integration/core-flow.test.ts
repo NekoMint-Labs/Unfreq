@@ -119,7 +119,7 @@ async function waitForPreview(id: string): Promise<Signal> {
   const response = await request("GET", `/api/signals/${id}`, author.cookie);
   expect(response.statusCode).toBe(200);
   const signal = response.json<Envelope<{ signal: Signal }>>().data.signal;
-  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PREVIEW_OWNER" });
+  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PRIVATE_OWNER" });
   expect(signal.expandedText?.length).toBeGreaterThanOrEqual(80);
   return signal;
 }
@@ -202,8 +202,14 @@ async function expectPublicationRejection(
   expect(await publicationRowHash(id)).toBe(before);
 }
 
+async function publicationPayload(id: string) {
+  const response = await request("GET", `/api/signals/${id}/publication-preview`, author.cookie);
+  if (response.statusCode !== 200) return { expectedVersion: 0, digest: "0".repeat(64) };
+  const preview = response.json().data.preview as { version: number; digest: string };
+  return { expectedVersion: preview.version, digest: preview.digest };
+}
 async function publish(id: string) {
-  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie);
+  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id));
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED" } } });
 }
@@ -219,14 +225,9 @@ async function expectNotPublic(id: string, reviewing = false) {
     const detail = await request("GET", `/api/signals/${id}`, cookie);
     if (reviewing) {
       expect(detail.statusCode).toBe(200);
-      const signal = detail.json<Envelope<{ signal: Signal }>>().data.signal;
-      expect(signal).toMatchObject({ id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED" });
-      expect(Object.keys(signal).sort()).toEqual([
-        "createdAt", "id", "status", "updatedAt", "visibility",
-      ]);
-    } else {
-      expectError(detail, 404, "NOT_FOUND");
-    }
+      expect(Object.keys(detail.json().data.signal).sort()).toEqual(["createdAt", "id", "status", "updatedAt", "visibility"]);
+      expect(detail.json().data.signal.visibility).toBe("REVIEW_RESTRICTED");
+    } else expectError(detail, 404, "NOT_FOUND");
   }
 
   for (const suffix of ["matches", "echoes", "audio", "audio/main", "audio/left", "audio/right"]) {
@@ -459,7 +460,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const pending = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(pending.statusCode).toBe(200);
       expect(pending.json()).toMatchObject({ data: { signal: { id, visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       await expectNotPublic(id);
     } finally {
       hold.release();
@@ -468,12 +469,12 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const id = pendingId;
     await waitForPreview(id);
     await expectNotPublic(id);
-    expectError(await request("POST", `/api/signals/${id}/publish`), 401, "UNAUTHORIZED");
-    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie), 404, "NOT_FOUND");
+    expectError(await request("POST", `/api/signals/${id}/publish`, undefined, await publicationPayload(id)), 401, "UNAUTHORIZED");
+    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie, await publicationPayload(id)), 404, "NOT_FOUND");
     await publish(id);
     const publicDetail = await request("GET", `/api/signals/${id}`);
     expect(publicDetail.statusCode).toBe(200);
-    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", seedText: fixtureSeed } } });
+    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", visibility: "PUBLIC" } } });
     const [stored] = await h.sql<{ generation_status: string; status: string }[]>`
       select generation_status, status from signals where id = ${id}
     `;
@@ -497,7 +498,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expectError(await request("GET", `/api/signals/${id}`, author.cookie), 404, "NOT_FOUND");
       }
       if (status === "REVIEWING") {
-        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       }
     },
   );
@@ -535,7 +536,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const own = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(own.statusCode).toBe(200);
       expect(own.json()).toMatchObject({ data: { signal: { id, generationStatus: "EXPANDING", visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
     } finally {
       await h.sql`update signals set generation_status = 'COMPLETED', status = 'DRAFT' where id = ${id}`;
     }
@@ -584,9 +585,9 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const storageKey = `${id}.mp3`;
     const syntheticAudio = Buffer.from("ID3 synthetic integration audio fixture");
     await writeSignalAudio(storageKey, syntheticAudio);
-    const audioUrl = `/api/signals/${id}/audio/main`;
+    const audioUrl = `/api/signals/${id}/audio/main?v=1`;
     await h.sql`
-      update signals set audio_status = 'READY', audio_storage_key = ${storageKey},
+      update signals set audio_status = 'READY', audio_publication_version = publication_version, audio_storage_key = ${storageKey},
         audio_storage_key_left = ${storageKey}, audio_storage_key_right = ${storageKey},
         audio_url = ${audioUrl}, audio_url_left = ${audioUrl}, audio_url_right = ${audioUrl}
       where id = ${id}
@@ -595,6 +596,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(audio.statusCode).toBe(200);
     expect(audio.headers["content-type"]).toBe("audio/mpeg");
     expect(audio.rawPayload).toEqual(syntheticAudio);
+    expect(audio.headers["cache-control"]).toContain("no-store");
+    expectError(await request("GET", `/api/signals/${id}/audio/main?v=2`), 404, "NOT_FOUND");
     await moderate(id, "HIDDEN");
     await expectNotPublic(id);
     const [retainedSave] = await h.sql<{ count: number }[]>`
@@ -762,21 +765,21 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
     ]);
     await withSyntheticWithdrawalRows(async (track) => {
-      // PUBLISHED is only the existing audio CAS precondition in these synthetic
-      // fixtures. No confirmation snapshot, media file or Provider is created.
+      // Explicit author confirmation is required before these synthetic audio CAS fixtures are public.
       const withdrawn = await createWithdrawalFixture(track, "PUBLISHED");
       const control = await createWithdrawalFixture(track, "PUBLISHED");
+      await publish(withdrawn.id); await publish(control.id);
       const oldToken = randomUUID();
       const controlToken = randomUUID();
-      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${oldToken} where id = ${withdrawn.id}`;
-      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${controlToken} where id = ${control.id}`;
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${oldToken} where id = ${withdrawn.id}`;
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${controlToken} where id = ${control.id}`;
       const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
       await withCleanup(async () => {
         const oldSignal = await audio.readPublished(withdrawn.id);
         const controlSignal = await audio.readPublished(control.id);
         if (oldSignal === undefined || controlSignal === undefined) throw new Error("C1 audio fixtures were not readable by their existing CAS precondition.");
-        expect(await withdrawOwnedSignal({ id: withdrawn.id, actorId: author.id, expectedVersion: 0 }))
-          .toEqual({ outcome: "WITHDRAWN", id: withdrawn.id, publicationVersion: 1 });
+        expect(await withdrawOwnedSignal({ id: withdrawn.id, actorId: author.id, expectedVersion: 1 }))
+          .toEqual({ outcome: "WITHDRAWN", id: withdrawn.id, publicationVersion: 2 });
         const oldKey = `${withdrawn.id}-${oldToken}.mp3`;
         const oldUrl = `/api/signals/${withdrawn.id}/audio/main`;
         expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
@@ -785,7 +788,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
             publication_version, publication_snapshot from signals where id = ${withdrawn.id}
         `;
         expect(obsolete).toEqual({ audio_status: "FAILED", audio_error: "AUDIO_SUPERSEDED", audio_attempt_id: null,
-          audio_storage_key: null, audio_url: null, publication_version: 1, publication_snapshot: null });
+          audio_storage_key: null, audio_url: null, publication_version: 2, publication_snapshot: oldSignal.publicationSnapshot });
         const controlKey = `${control.id}-${controlToken}.mp3`;
         const controlUrl = `/api/signals/${control.id}/audio/main`;
         expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey, controlUrl)).toBe(true);
@@ -794,8 +797,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
             publication_version, withdrawn_at, publication_snapshot from signals where id = ${control.id}
         `;
         expect(ready).toEqual({ audio_status: "READY", audio_error: null, audio_attempt_id: controlToken,
-          audio_storage_key: controlKey, audio_url: controlUrl, publication_version: 0,
-          withdrawn_at: null, publication_snapshot: null });
+          audio_storage_key: controlKey, audio_url: controlUrl, publication_version: 1,
+          withdrawn_at: null, publication_snapshot: controlSignal.publicationSnapshot });
       }, () => audio.close({ timeoutSeconds: 0 }));
     });
   });
@@ -970,7 +973,9 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
     ]);
     await withSyntheticWithdrawalRows(async (track) => {
-      const stale = await createWithdrawalFixture(track, "PUBLISHED");
+      const stale = await createWithdrawalFixture(track);
+      await publish(stale.id);
+      await h.sql`update signals set expanded_text = expanded_text || ' 修订后的合成正文。' where id = ${stale.id}`;
       const control = await createWithdrawalFixture(track);
       const stalePreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: stale.id, actorId: author.id }));
       const controlPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: control.id, actorId: author.id }));
@@ -983,7 +988,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const oldUrl = `/api/signals/${stale.id}/audio/main`;
       await h.sql`
         update signals set audio_status = 'PENDING', audio_error = 'AUDIO_UNAVAILABLE',
-          audio_attempt_id = ${oldToken}, audio_publication_version = 0,
+          audio_attempt_id = ${oldToken}, audio_publication_version = 1,
           audio_storage_key = ${oldKey}, audio_storage_key_left = ${oldKey}, audio_storage_key_right = ${oldKey},
           audio_url = ${oldUrl}, audio_url_left = ${oldUrl}, audio_url_right = ${oldUrl} where id = ${stale.id}
       `;
@@ -995,7 +1000,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         if (oldSignal === undefined || controlSignal === undefined) throw new Error("Synthetic audio confirmation fixtures were unavailable.");
         expect(await repo.confirmOwnedSignalPublication({ id: stale.id, actorId: author.id,
           expectedVersion: stalePreview.version, digest: stalePreview.digest }))
-          .toMatchObject({ outcome: "PUBLISHED", id: stale.id, publicationVersion: 1 });
+          .toMatchObject({ outcome: "PUBLISHED", id: stale.id, publicationVersion: 2 });
         const [reset] = await h.sql`
           select audio_status, audio_error, audio_attempt_id, audio_publication_version,
             audio_storage_key, audio_storage_key_left, audio_storage_key_right,
@@ -1003,7 +1008,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         `;
         expect(reset).toEqual({ audio_status: "NOT_REQUESTED", audio_error: null, audio_attempt_id: null,
           audio_publication_version: null, audio_storage_key: oldKey, audio_storage_key_left: oldKey,
-          audio_storage_key_right: oldKey, audio_url: oldUrl, audio_url_left: oldUrl, audio_url_right: oldUrl });
+          audio_storage_key_right: oldKey, audio_url: null, audio_url_left: null, audio_url_right: null });
         expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
         const beforeNoop = await publicationRowHash(control.id);
         expect(await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
@@ -1018,6 +1023,74 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
-  // These SQL foundations do not exercise publication/withdrawal HTTP routes
-  // or claim that legacy public filters already honor snapshots or withdrawal.
+  it("requires explicit confirmation and fences the full withdraw / republish HTTP lifecycle", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      const id = signal.id;
+      const privateMarker = "PRIVATE-C1-SEED-7f49";
+      await h.sql`update signals set raw_input = ${privateMarker}, seed_text = ${privateMarker} where id = ${id}`;
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 400, "VALIDATION_ERROR");
+      const firstConfirmation = await publicationPayload(id);
+      await publish(id);
+      const publicDetail = await request("GET", `/api/signals/${id}`);
+      expect(publicDetail.statusCode).toBe(200);
+      const publicSignal = publicDetail.json().data.signal;
+      expect(publicSignal).toMatchObject({ visibility: "PUBLIC", expandedText: fixtureExpansion.expandedText, publicationVersion: 1 });
+      for (const key of ["rawInput", "seedText", "fingerprint", "frequencyProfile", "program", "frequencyId", "guestKey", "parentSignalId", "matchSignalId"]) expect(publicSignal).not.toHaveProperty(key);
+      expect(publicDetail.headers["cache-control"]).toContain("no-store");
+      expect(publicDetail.body).not.toContain(privateMarker);
+      expect((await request("POST", `/api/signals/${id}/save`, reader.cookie)).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/resonance`, reader.cookie, {})).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/echoes`, reader.cookie, { content: "合成的共振回应。" })).statusCode).toBe(201);
+      for (const url of ["/api/signals/hall", "/api/signals/galaxy", "/api/me/saves", `/api/signals/${publicControlId}/matches`]) {
+        const response = await request("GET", url, reader.cookie);
+        expect(response.statusCode).toBe(200);
+        expect(response.body).not.toContain(privateMarker);
+        expect(response.headers["cache-control"]).toContain("no-store");
+      }
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, reader.cookie, { expectedVersion: 1 }), 404, "NOT_FOUND");
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 }), 409, "CONFLICT");
+      const withdrawn = await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 });
+      expect(withdrawn.json()).toMatchObject({ data: { withdrawal: { id, withdrawn: true, publicationVersion: 2 } } });
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 })).json().data).toEqual(withdrawn.json().data);
+      await expectNotPublic(id);
+      const own = await request("GET", `/api/signals/${id}`, author.cookie);
+      expect(own.json()).toMatchObject({ data: { signal: { seedText: privateMarker, visibility: "PRIVATE_OWNER", publication: { state: "WITHDRAWN", version: 2, canPublish: true } } } });
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, firstConfirmation), 409, "CONFLICT");
+      await publish(id);
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 }), 409, "CONFLICT");
+      const restored = await request("GET", `/api/signals/${id}`, reader.cookie);
+      expect(restored.json()).toMatchObject({ data: { signal: { publicationVersion: 3, hasSaved: true, resonanceCount: 1, echoCount: 1 } } });
+      expect((await request("GET", `/api/signals/${id}/echoes`)).json().data.echoes).toHaveLength(1);
+      await moderate(id, "REVIEWING");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
+      await expectNotPublic(id, true);
+    });
+  });
+
+  it("keeps legacy and unowned system samples non-public without author confirmation", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track, "PUBLISHED");
+      await expectNotPublic(signal.id);
+      await h.sql`update signals set author_id = null, frequency_id = null, source = 'seed' where id = ${signal.id}`;
+      await expectNotPublic(signal.id);
+      expectError(await request("GET", `/api/signals/${signal.id}/publication-preview`, author.cookie), 404, "NOT_FOUND");
+    });
+  });
+
+  it("prevents in-flight generation from completing or publishing after owner withdrawal", async () => {
+    const hold = h.provider.holdNextRequest();
+    let id: string | undefined;
+    try {
+      id = await createPending();
+      await hold.received;
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 })).statusCode).toBe(200);
+      hold.release();
+      await waitForActualGenerationIdle();
+      const [row] = await h.sql`select generation_status, withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(row).toMatchObject({ generation_status: "FAILED", publication_version: 1 });
+      expect(row.withdrawn_at).not.toBeNull();
+      await expectNotPublic(id);
+    } finally { hold.release(); await waitForActualGenerationIdle(); }
+  });
 });

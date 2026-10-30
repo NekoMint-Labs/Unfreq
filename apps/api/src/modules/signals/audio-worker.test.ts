@@ -20,13 +20,14 @@ vi.mock("../../config/env.js", () => ({ env: {
   signalGenerationShutdownGraceMs: 100,
 } }));
 vi.mock("./audio-repository.js", () => ({ createSignalAudioRepository: vi.fn() }));
-vi.mock("./repository.js", () => ({ findPublishedSignalById: vi.fn(), markSignalAudioFailed: vi.fn() }));
+vi.mock("./repository.js", () => ({ recheckPublicSignals: vi.fn(async (rows) => rows), findPublishedSignalById: vi.fn(), markSignalAudioFailed: vi.fn() }));
 vi.mock("../ai/tts.js", () => ({ isTtsProviderConfigured: vi.fn(), synthesize: vi.fn() }));
 
 const id = "00000000-0000-4000-8000-000000000101";
 const attemptId = "00000000-0000-4000-8000-000000000201";
 function signal(audioStatus: SignalRecord["audioStatus"] = "NOT_REQUESTED"): SignalRecord {
   return {
+    publicationVersion: 1, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: 1,
     id, authorFreqCode: "FM-10.01", authorId: id, frequencyId: id,
     audioStatus, audioError: null, audioStorageKey: null, audioStorageKeyLeft: null, audioStorageKeyRight: null,
     audioUrl: null, audioUrlLeft: null, audioUrlRight: null,
@@ -118,7 +119,7 @@ describe("app-owned audio execution", () => {
     expect(h.guard.acquireConcurrency).toHaveBeenCalledWith("tts", 1, expect.any(Number), 240);
     expect(() => createSignalAudioWorker({ ...h.options, shutdownBudgetMs: 2_147_483_647 })).toThrow("Invalid audio shutdown/lease drain budget.");
     expect(h.reservation.commit).toHaveBeenCalledOnce(); expect(h.reservation.refund).not.toHaveBeenCalled();
-    expect(h.repository.ready).toHaveBeenCalledWith(h.attempt, `${id}-${attemptId}-main.mp3`, `/api/signals/${id}/audio/main`);
+    expect(h.repository.ready).toHaveBeenCalledWith(h.attempt, `${id}-${attemptId}-main.mp3`, `/api/signals/${id}/audio/main?v=1`);
     expect(h.lease.release).toHaveBeenCalledOnce();
   });
 

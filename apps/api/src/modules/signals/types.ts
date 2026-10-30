@@ -49,6 +49,10 @@ export type {
 } from "@unfreq/contracts/signals";
 
 export type SignalRecord = {
+  publicationVersion: number;
+  publicationSnapshot: unknown;
+  withdrawnAt: Date | null;
+  audioPublicationVersion: number | null;
   authorFreqCode: string | null;
   authorId: string | null;
   audioError: string | null;

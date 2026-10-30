@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GalaxySignalPoint, SignalPrimaryBand, SignalSubFeeling } from "@unfreq/contracts";
+import type { GalaxySignalPoint, SignalPrimaryBand } from "@unfreq/contracts";
 import {
   buildGalaxyLineBucketLayouts,
   getActiveGalaxySelection,
@@ -18,22 +18,14 @@ function createPoint(
   return {
     createdAt: "2026-05-22T00:00:00.000Z",
     expandedText: "星图测试信号",
-    frequencyCode: "FM 78.23",
-    frequencyProfile: {
-      coreNeed: "被理解",
-      displayText: "测试频段",
-      emotionTone: "安静",
-      innerConflict: "想说又停下",
-      primaryBand: "self_mirror" satisfies SignalPrimaryBand,
-      resonanceKeywords: ["测试"],
-      subFeeling: "self_doubt" satisfies SignalSubFeeling,
-    },
+    authorFreqCode: "FM 78.23",
+    primaryBand: "self_mirror" satisfies SignalPrimaryBand,
+    tags: ["测试"], publicationVersion: 1,
     isMine: false,
     matchIds: [],
     position: { x: 0, y: 0, z: 0 },
     resonanceCount: 0,
     source: "human",
-    theme: "测试",
     ...overrides,
     id: overrides.id,
   };

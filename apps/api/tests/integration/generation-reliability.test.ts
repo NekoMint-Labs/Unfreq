@@ -161,7 +161,7 @@ describe("durable pending generation and late-write invariants", () => {
       await h.waitRow(id, (row) => terminal(row.generation_status), "old-generation-finished-after-moderation", 5_000);
       await h.waitIdle();
       const after = await h.row(id);
-      const publish = await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie });
+      const publish = await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie, payload: { expectedVersion: 0, digest: "0".repeat(64) } });
       h.record("publish-after-late-completion", { id, status: after.status, responseCode: publish.statusCode });
       expect({ status: after.status, generation: after.generation_status, error: after.generation_error,
         owner: after.generation_lease_owner, publishCode: publish.statusCode })

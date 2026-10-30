@@ -37,14 +37,14 @@ function GalaxySignalDetailContent({
       <div className="galaxy-detail-heading">
         <p className="radio-kicker">SELECTED SIGNAL</p>
         <p className="mt-3 font-mono text-sm tracking-[0.24em] text-white/70">
-          {point.frequencyCode}
+          {point.authorFreqCode ?? "Unfreq"}
         </p>
       </div>
 
       <div className="galaxy-sheet-tags">
         <span>{point.resonanceCount} RESONANCE</span>
         <span aria-hidden="true">·</span>
-        <span>{point.frequencyProfile.displayText}</span>
+        <span>{point.tags.join(" / ")}</span>
         {point.isMine ? (
           <>
             <span aria-hidden="true">·</span>

@@ -24,7 +24,11 @@ async function create(h: AbuseHarness, child: AbuseProcess, cookie: string) {
 }
 async function published(h: AbuseHarness, child: AbuseProcess, cookie: string) {
   const response = await create(h, child, cookie); expect(response.statusCode).toBe(201); const id = data(response).signal!.id;
-  await finish(h, id); expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie })).statusCode).toBe(200); return id;
+  await finish(h, id);
+  const previewResponse = await h.inject(child, { method: "GET", url: `/api/signals/${id}/publication-preview`, cookie });
+  expect(previewResponse.statusCode).toBe(200);
+  const preview = (previewResponse.body as { data: { preview: { version: number; digest: string } } }).data.preview;
+  expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie, payload: { expectedVersion: preview.version, digest: preview.digest } })).statusCode).toBe(200); return id;
 }
 async function audioReady(h: AbuseHarness, id: string) {
   await h.wait(async () => (await h.sql`select audio_status from signals where id = ${id}`)[0]?.audio_status === "READY", "audio-ready", 5_000);
@@ -241,4 +245,29 @@ describe("real multi-process abuse controls", () => {
       expect(h.provider.counts.tts).toBe(1); expect(await h.redis.ping()).toBe("PONG");
     });
   }, twoBootBudget);
+  it("rejects late TTS after withdrawal and starts a fresh version only after new confirmation", async () => {
+    await withAbuseHarness("audio", async (h) => {
+      const [a, b] = await pair(h); const author = await register(h, a);
+      const id = await published(h, a, author.cookie);
+      h.provider.holdTts();
+      expect((await h.inject(a, { method: "POST", url: `/api/signals/${id}/audio` })).statusCode).toBe(200);
+      await h.wait(() => h.provider.activeWs === 1, "tts-held-before-withdrawal");
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/withdraw`, cookie: author.cookie, payload: { expectedVersion: 1 } })).statusCode).toBe(200);
+      h.provider.release();
+      await h.wait(async () => h.provider.activeWs === 0 && await h.leaseCount() === 0, "old-audio-job-drained");
+      const [withdrawn] = await h.sql`select audio_status, audio_attempt_id, publication_version from signals where id = ${id}`;
+      expect(withdrawn).toEqual({ audio_status: "FAILED", audio_attempt_id: null, publication_version: 2 });
+      expect((await h.inject(a, { method: "GET", url: `/api/signals/${id}/audio/main` })).statusCode).toBe(404);
+      const preview = (await h.inject(b, { method: "GET", url: `/api/signals/${id}/publication-preview`, cookie: author.cookie })).body as { data: { preview: { version: number; digest: string } } };
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie, payload: { expectedVersion: preview.data.preview.version, digest: preview.data.preview.digest } })).statusCode).toBe(200);
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/audio` })).statusCode).toBe(200);
+      await audioReady(h, id);
+      const detail = (await h.inject(b, { method: "GET", url: `/api/signals/${id}/audio` })).body as { data: { audio: { audioUrl: string } } };
+      expect(detail.data.audio.audioUrl).toBe(`/api/signals/${id}/audio/main?v=3`);
+      expect((await h.inject(a, { method: "GET", url: `/api/signals/${id}/audio/main?v=1` })).statusCode).toBe(404);
+      expect(h.provider.counts.tts).toBe(2);
+      expect((await h.sql`select audio_publication_version from signals where id = ${id}`)[0].audio_publication_version).toBe(3);
+    });
+  }, twoBootBudget);
+
 });

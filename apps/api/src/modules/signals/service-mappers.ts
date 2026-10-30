@@ -1,3 +1,5 @@
+import { isPublicSignal } from "./publication-policy.js";
+import { parsePublicationSnapshot } from "./publication.js";
 import {
   normalizeSignalFrequencyProfile,
   type SignalFrequencyProfile,
@@ -220,7 +222,9 @@ export function withSaveState(detail: SignalDetail, hasSaved?: boolean): SignalD
 }
 
 export function toMySignalSummary(signal: SignalRecord): MySignalSummary {
-  return {
+  const publicationState = signal.status === "HIDDEN" ? "HIDDEN" : signal.status === "REVIEWING" ? "REVIEWING" :
+    signal.withdrawnAt !== null ? "WITHDRAWN" : isPublicSignal(signal) ? "PUBLIC" : signal.status === "DRAFT" ? "DRAFT" : "UNCONFIRMED";
+  return { publicationState,
     createdAt: signal.createdAt.toISOString(),
     expandedText: signal.expandedText,
     frequencyProfile: getSignalFrequencyProfile(signal),
@@ -249,6 +253,7 @@ export function sumResonanceCount(signals: MySignalSummary[]): number {
 }
 
 export function toSignalAudioDetail(signal: SignalRecord): SignalAudioDetail {
+  if (signal.audioPublicationVersion !== signal.publicationVersion) return { signalId: signal.id, audioStatus: "NOT_REQUESTED" };
   return {
     audioError: signal.audioError ?? undefined,
     audioStatus: signal.audioStatus,
@@ -272,10 +277,11 @@ export function toMatchSummary(signal: SignalRecord, score: number): SignalMatch
   const fingerprint = getSignalResponseFingerprint(signal);
 
   return {
-    expandedText: signal.expandedText,
+    expandedText: parsePublicationSnapshot(signal.publicationSnapshot)?.content.expandedText ?? "",
     frequencyProfile,
     frequencyCode: signal.authorFreqCode ?? fingerprint.frequency,
     id: signal.id,
+    publicationVersion: signal.publicationVersion,
     primaryEmotion: fingerprint.primaryEmotion,
     resonanceCount: signal.resonanceCount,
     score,

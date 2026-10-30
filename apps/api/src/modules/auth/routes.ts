@@ -260,6 +260,7 @@ export async function authRoutes(app: FastifyInstance) {
 }
 
 export async function meRoutes(app: FastifyInstance) {
+  app.addHook("onRequest", async (_request, reply) => { reply.header("cache-control", "private, no-store, max-age=0"); });
   app.get("/me", async (request, reply) => {
     const frequency = request.requireFrequency();
 

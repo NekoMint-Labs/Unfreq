@@ -39,7 +39,7 @@ export async function previewSignalPublicationForOwner(
   return result.preview;
 }
 
-/** Internal command result. Existing HTTP/owner DTOs are not switched by this foundation. */
+/** Explicit author command; callers refresh the owner DTO only after this commit. */
 export async function confirmSignalPublicationForOwner(
   id: string,
   frequency: AuthenticatedFrequency | undefined,

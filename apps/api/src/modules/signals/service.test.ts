@@ -1,3 +1,4 @@
+import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
 import {
@@ -37,6 +38,7 @@ import { generateReviewedSignalExpansion } from "./service-creation.js";
 
 const signalStore = vi.hoisted(() => {
   return {
+    allCandidates: new Map<string, SignalRecord>(),
     createdInputs: [] as CreateSignalInput[],
     matchCandidates: [] as SignalRecord[],
   };
@@ -205,6 +207,7 @@ vi.mock("./repository.js", () => {
 
       const now = new Date("2026-05-10T12:00:00.000Z");
       const record: SignalRecord = {
+        publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
         authorFreqCode: input.authorId === undefined ? null : "FM-27.51",
         authorId: input.authorId ?? null,
         audioError: null,
@@ -265,9 +268,13 @@ vi.mock("./repository.js", () => {
     listPublishedSemanticSignalMatchCandidates: vi.fn(() => {
       return Promise.resolve([]);
     }),
+    recheckPublicSignals: vi.fn(async (expected: SignalRecord[]) => {
+      if (expected.every((row) => row.expandedText !== undefined)) return expected;
+      return [...signalStore.allCandidates.values()].filter((row) => expected.some((item) => item.id === row.id && item.publicationVersion === row.publicationVersion));
+    }),
     listPublishedSignals: vi.fn(),
     listPublishedGalaxySignals: vi.fn(),
-    listPublishedGalaxyThemes: vi.fn(() => Promise.resolve(["孤独", "希望"])),
+    listPublishedGalaxyThemes: vi.fn(() => Promise.resolve(["关系星云"])),
     listSignalsForAuthor: vi.fn(() => Promise.resolve([])),
     markSignalAudioFailed: vi.fn(),
     markSignalAudioPending: vi.fn(),
@@ -302,7 +309,8 @@ function buildCandidate(params: {
       ? "nostalgia"
       : "need_to_be_understood";
 
-  return {
+  const candidate = confirmUnitPublication({
+    publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
     authorFreqCode: "FM-10.01",
     authorId: "00000000-0000-4000-8000-000000000101",
     audioError: null,
@@ -353,10 +361,13 @@ function buildCandidate(params: {
     subFeeling,
     isKept: false,
     updatedAt: now,
-  };
+  } satisfies SignalRecord);
+  signalStore.allCandidates.set(candidate.id, candidate);
+  return candidate;
 }
 
 beforeEach(() => {
+  signalStore.allCandidates.clear();
   signalStore.createdInputs = [];
   signalStore.matchCandidates = [];
   vi.mocked(analyzeSignalIntentWithFallback).mockReset();
@@ -432,11 +443,7 @@ describe("signal service AI generation", () => {
         frequency: "SIG-TEST",
         riskLevel: "LOW",
       },
-      matches: expect.arrayContaining([
-        expect.objectContaining({
-          source: "SEEDED",
-        }),
-      ]),
+      matches: [],
       program: {
         hostIntro: "来自 SIG-TEST 的一条生活信号。",
         programTitle: "今晚想把这段匿名信号留在这里，等一个同频的人。",
@@ -925,16 +932,12 @@ describe("signal service AI generation", () => {
     );
   });
 
-  it("uses seeded matches when no published match exists", async () => {
+  it("does not invent public seeded matches when no confirmed match exists", async () => {
     const signal = await createPublishedSignal(testFrequency, {
       seedText: "今晚有点孤独，也有点想等一个回声。",
     });
 
-    expect(signal.matches[0]).toMatchObject({
-      id: "seed-life-fragment-001",
-      source: "SEEDED",
-    });
-    expect(signalStore.createdInputs[0]?.matchSignalId).toBeUndefined();
+    expect(signal.matches).toEqual([]);
   });
 
   it("builds minimal program metadata when no match exists", async () => {
@@ -1564,12 +1567,12 @@ describe("signal service AI generation", () => {
 
     expect(galaxy.points).toHaveLength(2);
     expect(galaxy.points[0]).toMatchObject({
-      frequencyCode: "FM 27.51",
+      authorFreqCode: "FM-10.01",
       id: "00000000-0000-4000-8000-000000000701",
       isMine: true,
       matchIds: ["00000000-0000-4000-8000-000000000702"],
     });
-    expect(galaxy.themeOptions).toEqual(["孤独", "希望"]);
+    expect(galaxy.themeOptions).toEqual(["关系星云"]);
     expect(listPublishedGalaxyThemes).toHaveBeenCalledWith(12);
     expect(Number.isFinite(galaxy.points[0]?.position.x)).toBe(true);
     expect(writeSignalGalaxyPositionIfMissing).toHaveBeenCalledWith({

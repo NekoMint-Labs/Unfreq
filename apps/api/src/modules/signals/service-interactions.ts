@@ -1,3 +1,4 @@
+import { parsePublicationSnapshot } from "./publication.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import type { EmbeddingLogger } from "../ai/embedding.js";
@@ -12,7 +13,7 @@ import {
   deleteSignalResonance,
   deleteSignalSave,
   findPublishedSignalById,
-  listPublishedSignalEchoes,
+  listPublishedSignalEchoes, recheckPublicSignals,
   SignalNotFoundForInteraction,
 } from "./repository.js";
 import {
@@ -27,7 +28,6 @@ import {
 } from "./service-constants.js";
 import { toSafeErrorReason } from "./service-errors.js";
 import {
-  getSignalFrequencyProfile,
   toShortText,
   toSignalEchoDetail,
 } from "./service-mappers.js";
@@ -76,7 +76,8 @@ export async function getSignalEchoes(signalId: string): Promise<SignalEchoDetai
 
   const echoes = await listPublishedSignalEchoes(signalId);
 
-  return echoes.map(toSignalEchoDetail);
+  if ((await recheckPublicSignals([signal])).length === 0) throw new AppError("NOT_FOUND", "Signal not found.");
+  return echoes.map((echo) => { const { guestKey: _guestKey, ...publicEcho } = toSignalEchoDetail(echo); return publicEcho; });
 }
 
 export async function addSignalEcho(
@@ -258,8 +259,8 @@ function buildPersonaEcho(params: {
   persona: SignalPersona;
   signal: SignalRecord;
 }): string {
-  const profile = getSignalFrequencyProfile(params.signal);
-  const base = `我是${params.persona.fmName}，听见你靠近${profile.displayText}。${profile.coreNeed}这部分让我停了一下，我也有过类似的时刻。`;
+  const tags = parsePublicationSnapshot(params.signal.publicationSnapshot)?.content.tags ?? [];
+  const base = `我是${params.persona.fmName}，这段${tags.join("、")}的表达让我停了一下。`;
 
   return toShortText(base, 50);
 }

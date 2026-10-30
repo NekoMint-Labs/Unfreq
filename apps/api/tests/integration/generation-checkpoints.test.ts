@@ -177,7 +177,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       await h.waitControl(child, (state) => state.completions.some((value) => value.signalId === id && value.attemptId === point.attemptId && value.outcome === "OBSOLETE"),
         "real-captured-completion-cas-rejected-after-aba");
       expect((await h.row(id)).expanded_text).toBe(before.expanded_text);
-      expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie })).statusCode).toBe(409);
+      expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie, payload: { expectedVersion: 0, digest: "0".repeat(64) } })).statusCode).toBe(409);
       expect((await h.inject(child, { method: "GET", url: `/api/signals/${id}` })).statusCode).toBe(404);
       expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
     });

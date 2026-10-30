@@ -25,6 +25,7 @@ const createdAt = new Date("2026-10-29T00:00:00.000Z");
 
 function signalFixture(): SignalRecord {
   return {
+    publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
     authorFreqCode: "FM 11.11",
     authorId: "00000000-0000-4000-8000-000000000001",
     audioError: "PRIVATE_AUDIO_ERROR",

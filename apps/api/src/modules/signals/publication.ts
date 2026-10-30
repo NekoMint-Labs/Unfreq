@@ -157,7 +157,7 @@ const countSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const sourceSchema = z.enum(["human", "seed", "ai_generated"]);
 const idSchema = z.uuid();
 const positionSchema = z.strictObject({ x: z.number(), y: z.number(), z: z.number() });
-const publicMatchSchema = z.strictObject({
+export const publicMatchSchema = z.strictObject({
   expandedText: nonblankTextSchema,
   authorFreqCode: frequencyCodeSchema.optional(),
   tags: z.array(tagSchema).max(3).refine((tags) => new Set(tags).size === tags.length),

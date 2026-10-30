@@ -67,7 +67,7 @@ test("draft content stays private across SSR, metadata and OG until its author p
   await expect(page.getByText(privateSeed, { exact: true })).toBeVisible();
   await expect(page.getByText("SHARE SIGNAL", { exact: true })).toHaveCount(0);
   await expect(page.locator('meta[property="og:image"]')).toHaveCount(0);
-  await expect(page).toHaveTitle("信号待发布 | Unfreq");
+  await expect(page).toHaveTitle("私密或未公开信号 | Unfreq");
   // Even an author's browser cookie must not make a public OG card of a draft.
   expect((await context.request.get("/api/og/runtime-private-001")).status()).toBe(404);
 
@@ -100,11 +100,11 @@ test("public result provides a PNG OG card and a working copy-link action", asyn
   await page.goto(publicPath);
   await expect(page.getByText("PUBLIC-RUNTIME-SIGNAL.", { exact: false }).first()).toBeVisible();
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
-    "content", `${baseURL}/api/og/runtime-public-001`,
+    "content", `${baseURL}/api/og/runtime-public-001?v=1`,
   );
   const cardLink = page.getByRole("link", { name: "打开卡片", exact: true });
-  await expect(cardLink).toHaveAttribute("href", `${baseURL}/api/og/runtime-public-001`);
-  const imageResponse = await context.request.get("/api/og/runtime-public-001");
+  await expect(cardLink).toHaveAttribute("href", `${baseURL}/api/og/runtime-public-001?v=1`);
+  const imageResponse = await context.request.get("/api/og/runtime-public-001?v=1");
   expect(imageResponse.status()).toBe(200);
   expect(imageResponse.headers()["content-type"]).toContain("image/png");
   const image = await imageResponse.body();
@@ -114,7 +114,7 @@ test("public result provides a PNG OG card and a working copy-link action", asyn
   const popupPromise = page.waitForEvent("popup");
   await cardLink.click();
   const cardPage = await popupPromise;
-  await expect(cardPage).toHaveURL(`${baseURL}/api/og/runtime-public-001`);
+  await expect(cardPage).toHaveURL(`${baseURL}/api/og/runtime-public-001?v=1`);
   await expect(cardPage.locator("img")).toBeVisible();
   await cardPage.close();
   await page.getByRole("button", { name: "复制链接", exact: true }).click();
@@ -139,4 +139,74 @@ test("390px production Galaxy renders WebGL and navigates its frequency filter",
   await expect(page).toHaveURL(/\/galaxy\?band=relationship_nebula$/);
   await expect(page.getByText(/SIGNALS 001/)).toBeVisible();
   await expect(page.locator("canvas").first()).toBeVisible();
+});
+
+
+test("author withdrawal removes sharing and requires a fresh visible preview to republish", async ({ page, context, browser, baseURL }, testInfo) => {
+  await signIn(context);
+  await page.goto(privatePath);
+  const preview = page.getByRole("region", { name: "发布预览" });
+  await expect(preview.getByText(privateExpansion, { exact: false })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("c1-preview-desktop.png"), fullPage: true, animations: "disabled" });
+  const firstPublish = page.waitForRequest((request) => request.url().endsWith("/runtime-private-001/publish") && request.method() === "POST");
+  await page.getByRole("button", { name: "确认发布", exact: true }).click();
+  expect((await firstPublish).postDataJSON()).toMatchObject({ expectedVersion: 0, digest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  await expect(page.getByRole("heading", { name: "已公开", exact: true })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "撤回公开", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "已撤回公开", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: testInfo.outputPath("c1-withdrawn-mobile.png"), fullPage: true, animations: "disabled" });
+  await expect(page.getByText(privateSeed, { exact: true })).toBeVisible();
+  await expect(page.getByText("SHARE SIGNAL", { exact: true })).toHaveCount(0);
+  await expect(page.locator('meta[property="og:image"]')).toHaveCount(0);
+  expect((await context.request.get("/api/og/runtime-private-001")).status()).toBe(404);
+  const anonymous = await browser.newContext({ baseURL });
+  try {
+    await expectDraftUnavailable(anonymous);
+    await expect(page.getByRole("heading", { name: "重新发布预览", exact: true })).toBeVisible();
+    const republish = page.waitForRequest((request) => request.url().endsWith("/runtime-private-001/publish") && request.method() === "POST");
+    await page.getByRole("button", { name: "确认重新发布", exact: true }).click();
+    expect((await republish).postDataJSON()).toMatchObject({ expectedVersion: 2, digest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    await expect(page.getByRole("heading", { name: "已公开", exact: true })).toBeVisible();
+    const restored = await anonymous.request.get(privatePath);
+    const html = await restored.text();
+    expect(html).toContain(privateExpansion);
+    expect(html).not.toContain(privateSeed);
+    expect((await anonymous.request.get("/api/og/runtime-private-001?v=1")).status()).toBe(404);
+    const og = await anonymous.request.get("/api/og/runtime-private-001?v=3");
+    expect(og.status()).toBe(200); expect(og.headers()["cache-control"]).toContain("no-store");
+  } finally { await anonymous.close(); }
+});
+
+
+test("an already open public page does not read cached text aloud after withdrawal", async ({ context, browser, baseURL }) => {
+  await signIn(context);
+  const previewResponse = await context.request.get(`${apiBaseUrl}/api/signals/runtime-private-001/publication-preview`);
+  const preview = (await previewResponse.json()).data.preview as { version: number; digest: string };
+  expect((await context.request.post(`${apiBaseUrl}/api/signals/runtime-private-001/publish`, { data: { expectedVersion: preview.version, digest: preview.digest } })).status()).toBe(200);
+  const anonymous = await browser.newContext({ baseURL });
+  try {
+    await anonymous.addInitScript(() => {
+      const state = window as typeof window & { syntheticSpeechCount: number };
+      state.syntheticSpeechCount = 0;
+      Object.defineProperty(window.speechSynthesis, "speak", { value: () => { state.syntheticSpeechCount += 1; } });
+    });
+    const visitor = await anonymous.newPage();
+    await visitor.goto(privatePath);
+    await expect(visitor.getByText(privateExpansion, { exact: false }).first()).toBeVisible();
+    expect((await context.request.post(`${apiBaseUrl}/api/signals/runtime-private-001/withdraw`, { data: { expectedVersion: 1 } })).status()).toBe(200);
+    await visitor.getByRole("button", { name: "播放", exact: true }).click();
+    await expect(visitor.getByText("这条信号暂不可播放。", { exact: true })).toBeVisible();
+    expect(await visitor.evaluate(() => (window as typeof window & { syntheticSpeechCount: number }).syntheticSpeechCount)).toBe(0);
+  } finally { await anonymous.close(); }
+});
+
+
+test("OG rejects a version that becomes withdrawn while its PNG is rendering", async ({ context }) => {
+  const armed = await context.request.post(`${apiBaseUrl}/__runtime/revoke-after-first-public-read`);
+  expect(armed.status()).toBe(200);
+  expect((await context.request.get("/api/og/runtime-public-001?v=1")).status()).toBe(404);
+  expect((await context.request.get(`${apiBaseUrl}/api/signals/runtime-public-001`)).status()).toBe(404);
 });

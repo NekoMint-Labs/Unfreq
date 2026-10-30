@@ -22,7 +22,7 @@ API URLs to match. The config always starts its own mock and production server;
 it does not reuse an already running service. Do not run a Next dev server or
 another build against `apps/web/.next` while this suite is active.
 
-The four cases check native FM login, an HttpOnly synthetic cookie surviving SSR
+The seven cases check native FM login, an HttpOnly synthetic cookie surviving SSR
 and reload, author/anonymous/non-author draft visibility, metadata and draft OG
 exclusion, author publication, anonymous public reading, PNG signature and
 1200x630 dimensions, share-link copying, and 390px Galaxy WebGL/filter navigation.
@@ -31,7 +31,7 @@ its permission implementation is not evidence about real backend authorization.
 Galaxy checks here do not establish keyboard accessibility, point-selection
 usability, frame rate or physical-device performance.
 
-Each case resets only the mock's process-local draft state through a test-only
+Each case resets only the mock's process-local publication state through a test-only
 loopback endpoint, so publication does not make cases or retries depend on order.
 For denied HTML pages, the assertion accepts Next's documented streaming status
 200 or non-streaming 404, and requires visible not-found UI, `noindex`, no OG
@@ -41,3 +41,7 @@ The first case uses the actual login form and its native validation. A baseline
 form error should be reported or repaired directly, not bypassed in the test.
 All accounts, cookies and content in this directory are synthetic fixtures, and
 publishing changes only the mock server's process-local state.
+
+The C1 cases also cover withdrawal and fresh author confirmation before
+republication, versioned OG URLs, revocation while a PNG is rendering, and an
+already open public page refusing local speech after the API denies access.

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { SavedSignalSummary } from "@unfreq/contracts";
+import type { PublicSavedSignalSummary } from "@unfreq/contracts";
 import { toExpandedSummary } from "./my-frequency-utils";
 
 export function SavedSignalList({
@@ -7,7 +7,7 @@ export function SavedSignalList({
   signals,
 }: {
   isUnavailable?: boolean;
-  signals: SavedSignalSummary[];
+  signals: PublicSavedSignalSummary[];
 }) {
   if (isUnavailable) {
     return (
@@ -54,7 +54,7 @@ export function SavedSignalList({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap gap-2">
                 <span className="radio-tag">{signal.authorFreqCode ?? "FM --.--"}</span>
-                <span className="radio-tag">{signal.frequencyProfile.displayText}</span>
+                <span className="radio-tag">{signal.tags.join(" / ")}</span>
               </div>
               <span className="font-mono text-xs text-[color:var(--text-secondary)]">
                 {signal.resonanceCount} RES

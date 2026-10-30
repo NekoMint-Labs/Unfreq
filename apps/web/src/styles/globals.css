@@ -2330,3 +2330,17 @@ button.signal-archive-text-link:disabled {
       0 0 42px rgba(255, 255, 255, 0.22);
   }
 }
+
+.signal-publication-preview {
+  max-width: 840px;
+  padding: clamp(20px, 4vw, 40px);
+  border: 1px solid var(--radio-border);
+  border-radius: 16px;
+}
+.signal-publication-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-serif);
+  font-size: clamp(20px, 2.5vw, 28px);
+  line-height: 1.9;
+}
