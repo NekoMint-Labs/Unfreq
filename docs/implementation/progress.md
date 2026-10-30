@@ -25,6 +25,6 @@
 
 下一项按原规范顺序为 E3：候选召回、空匹配和本人/AI 来源处理。D1–D4、E1–E2 分别已有本地记录；后续仍以每项回归测试和实际行为为准，发现已经解决的部分只补证据，不重复重写。未授权合并、生产操作或收费调用。
 
-仓库同步：C2/D1/D2 的 `e3c6c1c` 与 D3 的 `27447c6` 已推送并核对。D4 独立代码提交为 `eddca9c`，已推送至 [D4 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/d4-polling-history)。E1 独立代码提交为 `2292eaa`，已推送至 [E1 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e1-provider-lineage)，并核对远程引用与本地提交一致。E2 待本轮提交、推送及核对后补记。历史实施记录中的“未推送”描述对应各项首次验收时点。尚未合并或部署；分支推送不会自动触发只在 main 推送/PR 上运行的 CI，本表成绩来自本地执行。
+仓库同步：C2/D1/D2 的 `e3c6c1c` 与 D3 的 `27447c6` 已推送并核对。D4 独立代码提交为 `eddca9c`，已推送至 [D4 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/d4-polling-history)。E1 独立代码提交为 `2292eaa`，已推送至 [E1 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e1-provider-lineage)。E2 独立代码提交为 `bfc6e98`，已推送至 [E2 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e2-rerank-scores)，并核对远程引用与本地提交一致；随后追加同步记录。历史实施记录中的“未推送”描述对应各项首次验收时点。尚未合并或部署；分支推送不会自动触发只在 main 推送/PR 上运行的 CI，本表成绩来自本地执行。
 
 先前观察到的月度回顾生成样本缺少 COMPLETED 约束，已在 D4 补齐并通过隔离验证。既有月报仍是本人私密历史快照，没有随当前撤回/删除状态自动重写；这与当前历史统计排除逻辑删除是不同口径。保留期、硬删除和历史副本处置仍遵守 A3 的待决边界。

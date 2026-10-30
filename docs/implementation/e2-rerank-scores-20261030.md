@@ -70,7 +70,7 @@ publicScore = 100 × (0.6 × retrieval01 + 0.4 × rule01)
 
 提交前复核，全部 59 个运行时源文件输入仍与该轮 SHA-256 一致。源码指纹记录于 `test-results/e2-source-20261030.json`；测试日志和运行时产物被 Git 忽略。所有外部响应均来自本地 stub/mock，本轮没有真实模型质量、人评、收费调用或新的浏览器操作验收。
 
-仓库同步待本轮提交、推送及远程引用核对后记录。
+E2 代码提交为 `bfc6e98c91162e6f3db54c951d3e77bc7f374ac6`，已推送至 [E2 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e2-rerank-scores)，并以远程引用核对到同一提交。随后追加本次同步记录；未创建 PR、合并或部署。feature 分支推送未自动触发仅针对 main/PR/手动入口的远程 CI，本记录中的测试均为本地执行。
 
 ## 回退与后续
 
