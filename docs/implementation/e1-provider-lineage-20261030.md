@@ -73,6 +73,6 @@ npm --workspace @unfreq/api run embeddings:backfill -- --limit=100 --apply
 
 最后独立执行的 `npm run api:integration` 为 6 个文件、87/87 通过，runDirectory `run-5bM9Pf`，runId `bb501b117c5c`，exitCode 0、interrupted false、cleaned true。日志 `test-results/e1-integration-final.log`；manifest、JSON 报告和不可变运行时指纹在 `test-results/integration/run-5bM9Pf/`。新增数据库用例验证：新旧空间及 3/4 维混存只召回同空间；错误维度元数据不引发 cosine 异常；旧正文可读且旧向量不覆盖；未确认正文和私密草稿不进入回填；回填写入受正文及公开版本栅栏约束；审计血缘落库和旧审计 NULL 兼容。0025 快照比对也确认只有该可空 jsonb 列新增。
 
-所有 Provider 测试使用本地 stub/mock，未调用真实模型、执行真实回填或核算真实账单。本轮没有修改评分权重，也没有完成后续 E2/E3 的评分和真实模型评测。源码指纹计划保存于 `test-results/e1-source-20261030.json`；本地日志及运行产物被 Git 忽略，不上传含运行细节的测试目录。
+所有 Provider 测试使用本地 stub/mock，未调用真实模型、执行真实回填或核算真实账单。本轮没有修改评分权重，也没有完成后续 E2/E3 的评分和真实模型评测。源码指纹保存于 `test-results/e1-source-20261030.json`；本地日志及运行产物被 Git 忽略，不上传含运行细节的测试目录。提交前再次校验，全部 56 个集成运行时输入仍与通过测试时的 SHA-256 一致。
 
-仓库同步待本轮提交、推送及远程引用核对后记录。
+E1 代码提交为 `2292eaa59365cb0f50abdf5fb671a5e2b00dad34`，已推送至 [E1 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e1-provider-lineage)，并以远程引用核对到相同提交。随后追加本次同步记录；未创建 PR、合并或部署。当前 CI 只在 main 推送、PR 或手动触发时执行，本记录不把 feature 分支推送当成远程 CI 通过。
