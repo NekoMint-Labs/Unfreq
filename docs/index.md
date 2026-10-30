@@ -37,6 +37,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [D1 星图覆盖与定位验收](./implementation/d1-galaxy-coverage-20261030.md)
 - [D2 星图视觉语义校正验收](./implementation/d2-galaxy-semantics-20261030.md)
 - [D3 星图键盘阅读、焦点与减少动画](./implementation/d3-galaxy-accessibility-20261030.md)
+- [D4 轮询、续写与历史统计](./implementation/d4-polling-history-20261030.md)
 - [B1 生成任务配置与切换说明（本地已验收）](./implementation/b1-generation-operations.md)
 - [B1/B2 生成可靠性历史验收记录](./implementation/b1-b2-generation-reliability.md)
 

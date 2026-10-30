@@ -278,6 +278,7 @@ vi.mock("./repository.js", () => {
     listPublishedGalaxySignals: vi.fn(),
     listPublishedGalaxyThemes: vi.fn(() => Promise.resolve(["关系星云"])),
     listSignalsForAuthor: vi.fn(() => Promise.resolve([])),
+    readMySignalHistory: vi.fn(() => Promise.resolve({ signals: [], totalSignalCount: 0, totalResonanceCount: 0, page: { limit: 80, hasMore: false } })),
     markSignalAudioFailed: vi.fn(),
     markSignalAudioPending: vi.fn(),
     markSignalAudioReady: vi.fn(),

@@ -30,4 +30,11 @@ describe("auth return path helpers", () => {
       "/me?onboarding=registered",
     );
   });
+  it("keeps only controlled routes and non-content query parameters", () => {
+    expect(sanitizeAuthReturnPath("/?continue=1&seed=PRIVATE&parentSignalId=PRIVATE")).toBe("/?continue=1");
+    expect(sanitizeAuthReturnPath("/me?returnTo=https://evil.example&seed=PRIVATE")).toBe("/me");
+    for (const path of ["/login?returnTo=/me", "/unknown/path", "/%2f%2fevil.example", "/%5cevil.example", "/me\u0000", "/" + "a".repeat(2049)]) {
+      expect(sanitizeAuthReturnPath(path)).toBeUndefined();
+    }
+  });
 });

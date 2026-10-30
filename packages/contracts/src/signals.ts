@@ -323,6 +323,9 @@ export type MySignalSummary = {
 export type MySignalsResult = {
   signals: MySignalSummary[];
   totalResonanceCount: number;
+  totalSignalCount?: number;
+  topSignal?: MySignalSummary;
+  page?: { limit: number; hasMore: boolean; nextCursor?: string };
 };
 
 export type MySignalsResponse = MySignalsResult;

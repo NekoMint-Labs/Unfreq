@@ -77,3 +77,12 @@ image. It also tests live preference changes. Text contrast checks use computed
 foreground colors against a conservative dark-background bound, not a full WCAG
 audit. The production suite now has sixteen cases. Physical screen-reader and
 mobile-device acceptance remains separate.
+
+D4 adds six cases for slow serial polling, transient-error recovery and reload,
+bounded failure/pause/resume without another creation, login continuation and draft
+clearing, external return-target rejection, and private-history totals/pagination.
+The D4 group blocks service workers so request interception reaches every fetch;
+the other groups retain their existing settings. These controlled network cases
+do not establish offline/PWA behavior. SQL totals, microsecond boundaries, deletion,
+withdrawal and owner isolation are verified separately in managed API integration.
+The full production suite now has twenty-two cases.

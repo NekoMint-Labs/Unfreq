@@ -411,6 +411,13 @@ vi.mock("./repository.js", () => {
           .slice(0, params.limit),
       );
     }),
+    readMySignalHistory: vi.fn((params: { authorId: string; limit: number }) => {
+      const rows = signalStores.rows.filter((row) => row.authorId === params.authorId && row.generationStatus === "COMPLETED" && row.status !== "DELETED");
+      return Promise.resolve({ signals: rows.slice(0, params.limit), totalSignalCount: rows.length,
+        totalResonanceCount: rows.reduce((sum, row) => sum + row.resonanceCount, 0),
+        topSignal: [...rows].filter((row) => row.resonanceCount > 0).sort((a, b) => b.resonanceCount - a.resonanceCount)[0],
+        page: { limit: params.limit, hasMore: rows.length > params.limit, ...(rows.length > params.limit ? { nextCursor: "synthetic-cursor" } : {}) } });
+    }),
     findRandomPublishedSignal: vi.fn((params?: { excludeFrequencyId?: string }) => {
       return Promise.resolve(
         signalStores.rows.find((row) => {

@@ -1213,6 +1213,67 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
+  it("D4 counts all completed private history and paginates equal microsecond timestamps without skips", async () => {
+    const owner = await register();
+    const rows = Array.from({ length: 85 }, (_, index) => ({
+      id: randomUUID(), author_id: owner.id, frequency_id: owner.id,
+      raw_input: "D4_PRIVATE_HISTORY", seed_text: `D4_PRIVATE_HISTORY_${index}`,
+      expanded_text: fixtureExpansion.expandedText, fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+      status: "DRAFT", generation_status: "COMPLETED", resonance_count: index === 0 ? 500 : 1,
+      created_at: index === 0 ? "2020-01-01T00:00:00.000001Z" : "2029-01-01T00:00:00.123456Z",
+    }));
+    const excluded = ["DELETED", "PUBLISHED", "DRAFT"].map((status, index) => ({
+      ...rows[1], id: randomUUID(), status, generation_status: index === 0 ? "COMPLETED" : index === 1 ? "WRITING" : "FAILED", resonance_count: 9000,
+    }));
+    const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+    await h.sql`insert into signals ${h.sql([...rows, ...excluded], ...columns)}`;
+    const firstResponse = await request("GET", "/api/me/signals", owner.cookie);
+    expect(firstResponse.statusCode).toBe(200);
+    const first = firstResponse.json().data;
+    expect(first).toMatchObject({ totalSignalCount: 85, totalResonanceCount: 584, topSignal: { id: rows[0].id, resonanceCount: 500 }, page: { hasMore: true, limit: 80 } });
+    expect(first.signals).toHaveLength(80);
+    expect(first.signals.map((row: { id: string }) => row.id)).not.toContain(rows[0].id);
+    const second = (await request("GET", `/api/me/signals?cursor=${encodeURIComponent(first.page.nextCursor)}`, owner.cookie)).json().data;
+    expect(second.signals).toHaveLength(5);
+    expect(second.page.hasMore).toBe(false);
+    expect(new Set([...first.signals, ...second.signals].map((row: { id: string }) => row.id))).toEqual(new Set(rows.map((row) => row.id)));
+    const small = (await request("GET", "/api/me/signals?limit=7", owner.cookie)).json().data;
+    expect(small.signals).toHaveLength(7);
+    expect(small.totalResonanceCount).toBe(584);
+    const echo = (await request("GET", "/api/me/echo-summary", owner.cookie)).json().data.summary;
+    expect(echo).toMatchObject({ totalResonanceCount: 584, topSignal: { id: rows[0].id } });
+    expect((await request("POST", `/api/signals/${rows[0].id}/withdraw`, owner.cookie, { expectedVersion: 0 })).statusCode).toBe(200);
+    expect((await request("GET", "/api/me/signals", owner.cookie)).json().data.totalResonanceCount).toBe(584);
+    await h.sql`update signals set status = 'DELETED' where id = ${rows[0].id}`;
+    const after = (await request("GET", "/api/me/signals", owner.cookie)).json().data;
+    expect(after).toMatchObject({ totalSignalCount: 84, totalResonanceCount: 84 });
+    expect(after.topSignal.id).not.toBe(rows[0].id);
+    const nextAfterDelete = (await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, owner.cookie)).json().data;
+    expect(nextAfterDelete.signals).toHaveLength(4);
+    const boundaryId = first.signals.at(-1).id;
+    await h.sql`update signals set status = 'DELETED' where id = ${boundaryId}`;
+    const afterBoundaryDelete = (await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, owner.cookie)).json().data;
+    expect(afterBoundaryDelete.signals).toHaveLength(4);
+    expect(afterBoundaryDelete).toMatchObject({ totalSignalCount: 83, totalResonanceCount: 83 });
+    expect((await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, reader.cookie)).body).not.toContain("D4_PRIVATE_HISTORY");
+    expectError(await request("GET", "/api/me/signals"), 401, "UNAUTHORIZED");
+    for (const query of ["cursor=invalid", "limit=0", "limit=81", "limit=1.5", "limit=7&unknown=1"]) expectError(await request("GET", `/api/me/signals?${query}`, owner.cookie), 400, "VALIDATION_ERROR");
+  });
+
+  it("D4 excludes unfinished signals from private monthly recap inputs", async () => {
+    const owner = await register();
+    const rows = ["COMPLETED", "WRITING", "FAILED"].map((generation_status) => ({
+      id: randomUUID(), author_id: owner.id, frequency_id: owner.id, raw_input: "D4_RECAP_SYNTHETIC", seed_text: "D4_RECAP_SYNTHETIC",
+      expanded_text: fixtureExpansion.expandedText, fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+      status: "PUBLISHED", generation_status, created_at: "2029-02-01T00:00:00Z",
+    }));
+    const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+    await h.sql`insert into signals ${h.sql(rows, ...columns)}`;
+    const { listMonthlyRecapSignals } = await import("../../src/modules/monthly-recaps/repository.js");
+    const result = await listMonthlyRecapSignals({ frequencyId: owner.id, startAt: new Date("2029-02-01"), endAt: new Date("2029-03-01") });
+    expect(result.map((row) => row.id)).toEqual([rows[0].id]);
+  });
+
   it("prevents in-flight generation from completing or publishing after owner withdrawal", async () => {
     const hold = h.provider.holdNextRequest();
     let id: string | undefined;

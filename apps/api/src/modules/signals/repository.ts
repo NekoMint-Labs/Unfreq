@@ -2,6 +2,7 @@ import { signalBandLabels } from "./frequency-taxonomy.js";
 import { publicSignalFilters, isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
 import { GalaxySampler } from "./galaxy-sampling.js";
+import { encodeHistoryCursor, type HistoryCursor } from "./history-cursor.js";
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { env } from "../../config/env.js";
@@ -998,6 +999,30 @@ export async function listSignalsForAuthor(params: {
   return rows.map(toSignalRecord);
 }
 
+export async function readMySignalHistory(params: { authorId: string; limit: number; cursor?: HistoryCursor }) {
+  const owned = and(eq(signals.authorId, params.authorId), eq(signals.generationStatus, "COMPLETED"), ne(signals.status, "DELETED"));
+  return db.transaction(async (tx) => {
+    const [totals] = await tx.select({ totalSignalCount: count(),
+      totalResonanceCount: sql<number>`coalesce(sum(${signals.resonanceCount}), 0)`.mapWith(Number) }).from(signals).where(owned);
+    const [top] = await tx.select(signalSelection).from(signals).leftJoin(users, eq(signals.authorId, users.id))
+      .where(and(owned, gt(signals.resonanceCount, 0)))
+      .orderBy(desc(signals.resonanceCount), desc(signals.createdAt), desc(signals.id)).limit(1);
+    const after = params.cursor === undefined ? undefined : sql<boolean>`(${signals.createdAt} < ${params.cursor.createdAt}::timestamptz or
+      (${signals.createdAt} = ${params.cursor.createdAt}::timestamptz and ${signals.id} < ${params.cursor.id}::uuid))`;
+    // Preserve PostgreSQL microseconds in the cursor; JavaScript Date truncates them.
+    const rows = await tx.select({ ...signalSelection,
+      cursorTime: sql<string>`to_char(${signals.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` })
+      .from(signals).leftJoin(users, eq(signals.authorId, users.id)).where(and(owned, after))
+      .orderBy(desc(signals.createdAt), desc(signals.id)).limit(params.limit + 1);
+    const selected = rows.slice(0, params.limit);
+    const hasMore = rows.length > params.limit;
+    const last = selected.at(-1);
+    return { signals: selected.map(toSignalRecord), totalSignalCount: totals?.totalSignalCount ?? 0,
+      totalResonanceCount: totals?.totalResonanceCount ?? 0, topSignal: top === undefined ? undefined : toSignalRecord(top),
+      page: { limit: params.limit, hasMore, ...(hasMore && last ? { nextCursor: encodeHistoryCursor({ createdAt: last.cursorTime, id: last.id }) } : {}) } };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+}
+
 export async function getFrequencyLastSeenAt(frequencyId: string): Promise<Date | null> {
   const [frequency] = await db
     .select({
@@ -1041,11 +1066,12 @@ export async function summarizeSignalResonancesSince(params: {
       and(
         eq(signals.authorId, params.authorId),
         ne(signals.status, "DELETED"),
+        eq(signals.generationStatus, "COMPLETED"),
         gt(signalResonances.createdAt, params.since),
       ),
     )
     .groupBy(signalResonances.signalId)
-    .orderBy(desc(sql<number>`count(${signalResonances.id})`));
+    .orderBy(desc(sql<number>`count(${signalResonances.id})`), desc(signalResonances.signalId));
 
   const newResonanceCount = rows.reduce((total, row) => {
     return total + row.resonanceCount;

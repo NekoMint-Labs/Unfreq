@@ -62,6 +62,13 @@ const signals = new Map([privateSignal, publicSignal, relationshipSignal].map((s
 const publicOriginalText = publicSignal.expandedText;
 const savedSignals = new Set();
 const resonatedSignals = new Set();
+const d4Id = "d4000000-0000-4000-8000-000000000001";
+const d4Parent = "d4000000-0000-4000-8000-000000000002";
+const d4Signal = makeSignal(d4Id, "D4_SYNTHETIC_PENDING_SEED", "D4_SYNTHETIC_COMPLETE", { status: "DRAFT" });
+let d4Complete = false;
+let d4History = false;
+function d4Generation() { return { id: d4Id, createdAt: now, updatedAt: now, seedText: d4Signal.seedText, parentSignalId: d4Signal.parentSignalId,
+  status: "DRAFT", visibility: "GENERATION_OWNER", generationStatus: "EXPANDING" }; }
 
 function identity(request) {
   const value = (request.headers.cookie ?? "").split(";")
@@ -120,6 +127,7 @@ const server = createServer(async (request, response) => {
     reportReceipts.clear(); reportSequence = 0;
     publicSignal.expandedText = publicOriginalText;
     savedSignals.clear(); resonatedSignals.clear();
+    d4Complete = false; d4History = false; d4Signal.seedText = "D4_SYNTHETIC_PENDING_SEED"; d4Signal.parentSignalId = undefined;
     for (const id of signals.keys()) if (id.startsWith("d1000000-")) signals.delete(id);
     return ok(response, { synthetic: true });
   }
@@ -149,6 +157,21 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/__runtime/long-galaxy-expression") {
     publicSignal.expandedText = `${"这是一段用于验证移动阅读的合成表达，需要完整显示并可以向下滚动。".repeat(60)} ${"x".repeat(180)} D3_LONG_END`;
     return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/d4-complete") { d4Complete = true; return ok(response, { synthetic: true }); }
+  if (request.method === "POST" && url.pathname === "/__runtime/d4-history") { d4History = true; return ok(response, { synthetic: true }); }
+  if (request.method === "POST" && url.pathname === "/api/signals") {
+    if (!current) return fail(response, 401, "UNAUTHORIZED");
+    const body = await readBody(request); d4Signal.seedText = body.seedText; d4Signal.parentSignalId = body.parentSignalId;
+    return ok(response, { signal: d4Generation() });
+  }
+  if (request.method === "GET" && url.pathname === `/api/signals/${d4Id}`) {
+    if (current?.id !== owner.id) return fail(response, 404, "NOT_FOUND");
+    return ok(response, { signal: d4Complete ? ownerView(d4Signal) : d4Generation() });
+  }
+  if (request.method === "GET" && url.pathname === `/api/signals/${d4Parent}`) {
+    if (current?.id !== owner.id) return fail(response, 404, "NOT_FOUND");
+    return ok(response, { signal: ownerView(makeSignal(d4Parent, "D4_PARENT_SEED", "D4_PARENT_BODY", { status: "DRAFT", followUpQuestion: "D4_FOLLOW_UP_PRIVATE" })) });
   }
   const interaction = /^\/api\/signals\/([^/]+)\/(save|resonance)$/.exec(url.pathname);
   if (interaction && request.method === "POST") {
@@ -191,7 +214,14 @@ const server = createServer(async (request, response) => {
   if (url.pathname.startsWith("/api/me/")) {
     if (current === undefined) return fail(response, 401, "UNAUTHORIZED");
     if (request.method === "GET" && url.pathname === "/api/me/signals") {
-      return ok(response, { signals: [...signals.values()].filter((signal) => signal.frequencyId === current.id).map(summary), totalResonanceCount: 0 });
+      if (d4History) {
+        const all = Array.from({ length: 85 }, (_, index) => summary(makeSignal(`d4000000-0000-4000-8000-${String(1000 + index).padStart(12, "0")}`,
+          `D4_HISTORY_${84 - index}`, "D4_HISTORY_BODY", { status: "DRAFT", resonanceCount: index === 84 ? 500 : 1 })));
+        const offset = url.searchParams.has("cursor") ? 80 : 0;
+        return ok(response, { signals: all.slice(offset, offset + 80), totalSignalCount: 85, totalResonanceCount: 584, topSignal: all[84],
+          page: { limit: 80, hasMore: offset === 0, ...(offset === 0 ? { nextCursor: "ZDQtaGlzdG9yeS1uZXh0" } : {}) } });
+      }
+      return ok(response, { signals: [...signals.values()].filter((signal) => signal.frequencyId === current.id).slice(0, 80).map(summary), totalResonanceCount: 0 });
     }
     if (request.method === "GET" && url.pathname === "/api/me/saves") return ok(response, { signals: [] });
     if (request.method === "GET" && url.pathname === "/api/me/recaps/latest") return ok(response, {});

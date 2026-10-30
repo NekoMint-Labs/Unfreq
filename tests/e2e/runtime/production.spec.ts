@@ -444,6 +444,114 @@ test("D3 reduced motion freezes the canvas and mobile long text stays readable a
   await page.screenshot({ path: testInfo.outputPath("d3-reader-desktop-long.png") });
 });
 
+test.describe("D4 request lifecycle and private history", () => {
+test.use({ serviceWorkers: "block" });
+
+test("D4 serializes slow polling and clears a recovered error before completion", async ({ page, context }) => {
+  await signIn(context);
+  const id = "d4000000-0000-4000-8000-000000000001";
+  let calls = 0; let active = 0; let maximum = 0;
+  await page.route(`${apiBaseUrl}/api/signals/${id}`, async (route) => {
+    calls += 1; active += 1; maximum = Math.max(maximum, active);
+    try {
+      if (calls === 1) { await route.fulfill({ status: 503, json: { error: { code: "UNAVAILABLE", message: "synthetic temporary failure" }, meta: { requestId: "d4" } } }); return; }
+      await new Promise((resolve) => setTimeout(resolve, 2_700));
+      await route.continue();
+    } finally { active -= 1; }
+  });
+  await page.goto(`/signal/${id}/transmitting`);
+  const pollingError = page.locator(".signal-transmitting-core").getByRole("alert");
+  await expect(pollingError).toContainText("信号状态暂时没有返回");
+  await expect.poll(() => calls).toBeGreaterThanOrEqual(2);
+  await page.waitForTimeout(3_300);
+  expect(maximum).toBe(1);
+  await expect(pollingError).toHaveCount(0);
+  await page.reload();
+  await expect(page).toHaveURL(new RegExp(`/signal/${id}/transmitting$`));
+  await context.request.post(`${apiBaseUrl}/__runtime/d4-complete`);
+  await expect(page).toHaveURL(new RegExp(`/result/${id}$`), { timeout: 15_000 });
+  await expect(page.getByRole("region", { name: "发布预览" }).getByText("D4_SYNTHETIC_COMPLETE", { exact: true })).toBeVisible();
+});
+
+test("D4 login preserves continuation without putting private seed into returnTo", async ({ page }) => {
+  const parent = "d4000000-0000-4000-8000-000000000002";
+  const seed = "D4_PRIVATE_CONTINUATION 一句只用于续写测试的表达";
+  await page.goto(`/?parentSignalId=${parent}&seed=${encodeURIComponent(seed)}`);
+  await page.getByRole("link", { name: "创建或登录 FM" }).click();
+  expect(page.url()).not.toContain("D4_PRIVATE_CONTINUATION");
+  expect(page.url()).not.toContain(parent);
+  await page.getByLabel("FM", { exact: true }).fill("FM 78.23");
+  await page.getByLabel("密码", { exact: true }).fill("runtime-password");
+  await page.getByLabel("密码", { exact: true }).press("Enter");
+  await expect(page.getByRole("textbox", { name: "写下种子" })).toHaveValue(seed);
+  const edited = `${seed}，继续保留编辑。`;
+  await page.getByRole("textbox", { name: "写下种子" }).fill(edited);
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "写下种子" })).toHaveValue(edited);
+  const creation = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/signals"));
+  await page.getByRole("button", { name: "发 射", exact: true }).click();
+  expect((await creation).postDataJSON()).toEqual({ seedText: edited, parentSignalId: parent });
+});
+
+test("D4 owner continuation avoids content URLs and can clear its tab draft", async ({ page, context }) => {
+  await signIn(context);
+  await page.goto("/result/d4000000-0000-4000-8000-000000000002");
+  await page.getByRole("button", { name: "继续写 seed", exact: true }).click();
+  await expect(page).toHaveURL(/\/\?continue=1$/);
+  await expect(page.getByRole("textbox", { name: "写下种子" })).toHaveValue("D4_FOLLOW_UP_PRIVATE");
+  expect(page.url()).not.toContain("D4_FOLLOW_UP_PRIVATE");
+  await page.getByRole("button", { name: "清除续写", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "写下种子" })).toHaveValue("");
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "写下种子" })).toHaveValue("");
+});
+
+test("D4 private history shows totals and the oldest top record across pages", async ({ page, context }, testInfo) => {
+  await signIn(context);
+  await context.request.post(`${apiBaseUrl}/__runtime/d4-history`);
+  await page.goto("/me");
+  await expect(page.getByText("历史最高共鸣 500", { exact: true })).toBeVisible();
+  await expect(page.getByText("本页 80 条 · 全部 85 条", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "较早记录", exact: true }).click();
+  await expect(page).toHaveURL(/cursor=/);
+  await expect(page.getByText("本页 5 条 · 全部 85 条", { exact: true })).toBeVisible();
+  await expect(page.getByText("历史最高共鸣 500", { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath("d4-history-mobile.png"), fullPage: true });
+});
+
+test("D4 rejects an external login return target", async ({ page }) => {
+  await page.goto("/login?returnTo=https%3A%2F%2Fevil.example%2Foutside");
+  await page.getByLabel("FM", { exact: true }).fill("FM 78.23");
+  await page.getByLabel("密码", { exact: true }).fill("runtime-password");
+  await page.getByLabel("密码", { exact: true }).press("Enter");
+  await expect(page).toHaveURL(/\/me\?onboarding=login$/);
+});
+
+test("D4 pauses after repeated failures and resumes without creating another signal", async ({ page, context }) => {
+  await signIn(context);
+  const id = "d4000000-0000-4000-8000-000000000001";
+  let calls = 0; let creations = 0;
+  page.on("request", (request) => { if (request.method() === "POST" && request.url().endsWith("/api/signals")) creations += 1; });
+  await page.route(`${apiBaseUrl}/api/signals/${id}`, async (route) => {
+    calls += 1;
+    await route.fulfill({ status: 503, json: { error: { code: "UNAVAILABLE", message: "synthetic failure" }, meta: { requestId: "d4-stop" } } });
+  });
+  await page.goto(`/signal/${id}/transmitting`);
+  const resume = page.getByRole("button", { name: "继续查询状态", exact: true });
+  await expect(resume).toBeVisible({ timeout: 25_000 });
+  expect(calls).toBe(4);
+  await page.waitForTimeout(1_500);
+  expect(calls).toBe(4);
+  await page.unroute(`${apiBaseUrl}/api/signals/${id}`);
+  await context.request.post(`${apiBaseUrl}/__runtime/d4-complete`);
+  await resume.click();
+  await expect(page).toHaveURL(new RegExp(`/result/${id}$`));
+  expect(creations).toBe(0);
+});
+
+});
+
 test("author withdrawal removes sharing and requires a fresh visible preview to republish", async ({ page, context, browser, baseURL }, testInfo) => {
   await signIn(context);
   await page.goto(privatePath);

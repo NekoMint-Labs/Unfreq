@@ -14,7 +14,7 @@ const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-contr
   "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/service-queries", "modules/signals/service-matching", "modules/signals/service-interactions",
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
-  "modules/signals/publication-policy", "modules/signals/galaxy-sampling", "modules/signals/repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
+  "modules/signals/publication-policy", "modules/signals/galaxy-sampling", "modules/signals/history-cursor", "modules/monthly-recaps/repository", "modules/signals/repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
   "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
   "shared/shutdown-budget", "shared/log-redaction", "server"];
 export const runtimeArtifactPaths = Object.freeze([

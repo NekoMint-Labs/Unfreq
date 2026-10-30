@@ -9,6 +9,7 @@ import { normalizeFrequencyCode } from "./identity.js";
 import {
   echoSummaryResponseSchema,
   mySignalsResponseSchema,
+  mySignalsQuerySchema,
   savedSignalsResponseSchema,
 } from "../signals/schemas.js";
 import {
@@ -271,7 +272,9 @@ export async function meRoutes(app: FastifyInstance) {
 
   app.get("/me/signals", async (request, reply) => {
     const frequency = request.requireFrequency();
-    const result = await getMySignals(frequency);
+    const query = mySignalsQuerySchema.safeParse(request.query);
+    if (!query.success) throw new AppError("VALIDATION_ERROR", "Invalid history page.");
+    const result = await getMySignals(frequency, query.data);
     const response = mySignalsResponseSchema.parse(result);
 
     return sendData(reply, request, response);

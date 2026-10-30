@@ -50,6 +50,7 @@ tags:
 ## ENG-005 Echo summary (return-visit)
 
 - `GET /api/me/echo-summary` returns `{ frequencyId, newResonanceCount, totalResonanceCount, since?, topSignal? }`.
+- The total and fallback top record cover all completed, non-deleted expressions owned by the author, including withdrawn private history. They must not derive from the latest 80 rows. Recent resonance inputs also require completed, non-deleted ownership.
 - If there is no persisted `lastSeenAt`, `since` is omitted and `newResonanceCount` must be `0` — never reuse `totalResonanceCount` as a fake new count.
 - `POST /api/me/echo-summary/seen` advances the watermark after the summary is seen or dismissed. It must not create fake counts; a later `GET` counts only resonances after the new watermark.
 - Frontend may compare `totalResonanceCount` with a browser-local previously-seen total for the same `frequencyId`, but that derived prompt is UI-local and must never be sent back as API truth.
@@ -57,7 +58,7 @@ tags:
 ## ENG-006 Monthly recap
 
 - `GET /api/me/recaps/latest` returns `{ recap? }` (empty object when none); `GET /api/me/recaps/:yearMonth` returns 404 when missing; `POST /api/me/recaps` accepts optional `{ yearMonth }` and defaults to the previous UTC month.
-- Generation requires at least 3 `PUBLISHED` signals owned by the frequency in that month and upserts by `(frequency_id, year_month)`.
+- Generation requires at least 3 `PUBLISHED` and `COMPLETED` signals owned by the frequency in that month and upserts by `(frequency_id, year_month)`.
 - The AI recap returns 1–3 theme words and a summary under 100 chars; provider failure uses a deterministic fallback with no medical, psychological, personality, or exaggerated claims.
 - `/me` treats a missing recap as a real empty state and never fabricates a report from local data.
 
@@ -70,3 +71,9 @@ tags:
 
 - Share-card preview data derives from public signal detail: `{ signalId, imageUrl, frequencyCode, expandedText }`.
 - The Web-owned endpoint `/api/og/:signalId` reuses the public detail contract, returns PNG for `PUBLISHED` signals, and returns 404 when the public detail is 404 or a preview/generation variant. Card images must not expose raw database ids beyond public signal ids already in routes.
+
+## ENG-009 Private history
+
+- `GET /api/me/signals?limit=80&cursor=<opaque_cursor>` requires the frequency session and returns at most 80 completed, non-deleted expressions owned by that author. Default limit is 80; accepted limits are integers 1–80. Invalid or unknown query arguments return 400.
+- The response keeps `signals` and `totalResonanceCount`, adding `totalSignalCount`, `topSignal?` and `page: { limit, hasMore, nextCursor? }`. Metadata is optional in shared client types for older-server compatibility; the current API supplies it. Totals and top records cover all eligible private history, regardless of page, using one read-only repeatable-read snapshot.
+- Pages sort by `createdAt DESC, id DESC`. The versioned cursor preserves PostgreSQL microseconds and remains usable after its boundary record is deleted. It is a position, not an authorization capability; every query reapplies ownership. Withdrawn expressions remain author-private history; logical deletion removes them from current totals. Stored monthly recaps retain their separate snapshot semantics.

@@ -40,6 +40,7 @@ export async function listMonthlyRecapSignals(params: {
       and(
         eq(signals.frequencyId, params.frequencyId),
         eq(signals.status, "PUBLISHED"),
+        eq(signals.generationStatus, "COMPLETED"),
         gte(signals.createdAt, params.startAt),
         lt(signals.createdAt, params.endAt),
       ),

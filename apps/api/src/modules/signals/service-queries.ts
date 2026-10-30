@@ -4,19 +4,20 @@ import type { AuthenticatedFrequency } from "../auth/types.js";
 import type { SignalGalaxyQuery } from "./schemas.js";
 import { findPublishedSignalById, findRandomPublishedSignal, findSignalResultById, findSignalSave,
   getFrequencyLastSeenAt, listPublishedGalaxyThemes, listPublishedGalaxySignals, listPublishedSignals, listSavedSignalsForFrequency,
-  listSignalsForAuthor, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
+  readMySignalHistory, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
 import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSignalsLimit, maxMatchCount } from "./service-constants.js";
 import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
 import { findSameFrequencyMatches, scoreSignalMatch } from "./service-matching.js";
-import { buildStableGalaxyPosition, isFiniteGalaxyPosition, sumResonanceCount, toMySignalSummary,
+import { buildStableGalaxyPosition, isFiniteGalaxyPosition, toMySignalSummary,
   toSignalGenerationDetail, toSignalDetail, getFingerprintFrequencyProfile, getSignalFrequencyProfile } from "./service-mappers.js";
 import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
 import { isPublicSignal, publicationProjection } from "./publication-policy.js";
 import { previewSignalPublicationForOwner } from "./service-publication-confirmation.js";
 import { signalBandLabels, signalPrimaryBands } from "./frequency-taxonomy.js";
-import type { EchoSummary, GalaxyResult, MySignalsResult, MySignalSummary, SavedSignalsResult,
+import type { EchoSummary, GalaxyResult, MySignalsResult, SavedSignalsResult,
   SignalRecord, SignalResultDetail } from "./types.js";
 import type { OwnerSignalDetail, PublicSignalDetail, PublicSignalMatchSummary, SignalPublicationActions } from "@unfreq/contracts/signals";
+import { decodeHistoryCursor } from "./history-cursor.js";
 
 const notFound = () => new AppError("NOT_FOUND", "Signal not found.");
 
@@ -67,16 +68,14 @@ export async function getSignalGalaxy(frequency: AuthenticatedFrequency | undefi
 
 export async function getMySignals(
   frequency: AuthenticatedFrequency,
+  query: { limit?: number; cursor?: string } = {},
 ): Promise<MySignalsResult> {
-  const signals = (await listSignalsForAuthor({
-    authorId: frequency.id,
-    limit: mySignalsLimit,
-  })).map(toMySignalSummary);
-
-  return {
-    signals,
-    totalResonanceCount: sumResonanceCount(signals),
-  };
+  const cursor = query.cursor === undefined ? undefined : decodeHistoryCursor(query.cursor);
+  const limit = query.limit ?? mySignalsLimit;
+  if ((query.cursor !== undefined && cursor === undefined) || !Number.isInteger(limit) || limit < 1 || limit > mySignalsLimit) throw new AppError("VALIDATION_ERROR", "Invalid history page.");
+  const result = await readMySignalHistory({ authorId: frequency.id, limit, cursor });
+  return { ...result, signals: result.signals.map(toMySignalSummary),
+    topSignal: result.topSignal === undefined ? undefined : toMySignalSummary(result.topSignal) };
 }
 
 export async function getSavedSignals(
@@ -103,17 +102,8 @@ export async function getMyEchoSummary(
     markSeen?: boolean;
   } = {},
 ): Promise<EchoSummary> {
-  const result = await getMySignals(frequency);
-  const totalTopSignal = result.signals.reduce<MySignalSummary | undefined>(
-    (current, signal) => {
-      if (current === undefined || signal.resonanceCount > current.resonanceCount) {
-        return signal;
-      }
-
-      return current;
-    },
-    undefined,
-  );
+  const result = await getMySignals(frequency, { limit: 1 });
+  const totalTopSignal = result.topSignal;
   const lastSeenAt = await getFrequencyLastSeenAt(frequency.id);
   const sinceSummary =
     lastSeenAt === null

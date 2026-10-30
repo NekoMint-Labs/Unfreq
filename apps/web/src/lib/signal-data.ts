@@ -129,8 +129,11 @@ export async function getSignalGalaxy(
   });
 }
 
-export async function getMySignals(cookieHeader?: string): Promise<MySignalsResponse> {
-  return apiClient.get<MySignalsResponse>("/api/me/signals", {
+export async function getMySignals(cookieHeader?: string, query: { cursor?: string; limit?: number } = {}): Promise<MySignalsResponse> {
+  const params = new URLSearchParams();
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  return apiClient.get<MySignalsResponse>(`/api/me/signals${params.size ? `?${params}` : ""}`, {
     cache: "no-store",
     headers: cookieHeader !== undefined && cookieHeader.length > 0
       ? { cookie: cookieHeader }
@@ -245,10 +248,12 @@ export async function getRandomSignal(): Promise<PublicSignalDetail | undefined>
 export async function getSignal(
   id: string,
   cookieHeader?: string,
+  options?: { signal?: AbortSignal },
 ): Promise<SignalResultDetail | undefined> {
   try {
     const result = await apiClient.get<SignalResponse>(`/api/signals/${id}`, {
       cache: "no-store",
+        signal: options?.signal,
       headers: cookieHeader !== undefined && cookieHeader.length > 0
         ? { cookie: cookieHeader }
         : undefined,

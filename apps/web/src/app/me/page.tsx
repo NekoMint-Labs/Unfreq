@@ -27,6 +27,7 @@ export const dynamic = "force-dynamic";
 type MyFrequencyPageProps = {
   searchParams: Promise<{
     onboarding?: string;
+    cursor?: string;
   }>;
 };
 
@@ -75,7 +76,7 @@ export default async function MyFrequencyPage({ searchParams }: MyFrequencyPageP
   try {
     mySignalsState = {
       isUnavailable: false,
-      value: await getMySignals(cookieHeader),
+      value: await getMySignals(cookieHeader, { cursor: params.cursor }),
     };
   } catch (caughtError) {
     if (!(caughtError instanceof ApiClientError)) {
@@ -118,7 +119,7 @@ export default async function MyFrequencyPage({ searchParams }: MyFrequencyPageP
         <FrequencyOnboardingPanel
           frequencyCode={frequencyCode}
           mode={onboardingMode}
-          signalCount={mySignals.signals.length}
+          signalCount={mySignals.totalSignalCount ?? mySignals.signals.length}
         />
       ) : null}
 
@@ -127,7 +128,10 @@ export default async function MyFrequencyPage({ searchParams }: MyFrequencyPageP
           createdParts={createdParts}
           frequencyCode={frequencyCode}
           signals={mySignals.signals}
-          totalResonanceCount={echoSummary.totalResonanceCount}
+          totalResonanceCount={mySignals.totalResonanceCount}
+          totalSignalCount={mySignals.totalSignalCount}
+          topSignal={mySignals.topSignal}
+          isUnavailable={mySignalsState.isUnavailable}
         />
 
         <div className="grid gap-6">
@@ -143,7 +147,12 @@ export default async function MyFrequencyPage({ searchParams }: MyFrequencyPageP
             </div>
 
             {hasSignals ? (
-              <SignalTimeline signals={mySignals.signals} />
+              <div className="grid gap-5"><SignalTimeline signals={mySignals.signals} />
+                <nav className="flex flex-wrap gap-4" aria-label="航行日志分页">
+                  {params.cursor ? <Link className="radio-button-secondary" href="/me">最新记录</Link> : null}
+                  {mySignals.page?.hasMore && mySignals.page.nextCursor ? <Link className="radio-button-secondary" href={`/me?cursor=${encodeURIComponent(mySignals.page.nextCursor)}`}>较早记录</Link> : null}
+                </nav>
+              </div>
             ) : (
               <div className="grid gap-3">
                 <p className="font-serif text-[20px] leading-[1.8] text-[color:var(--tone-l8)]">

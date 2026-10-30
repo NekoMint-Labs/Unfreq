@@ -9,6 +9,7 @@ import { SignalPlaybackButton } from "@/components/signals/SignalPlaybackButton"
 import { SignalResonanceButton } from "@/components/signals/SignalResonanceButton";
 import { SignalSaveButton } from "@/components/signals/SignalSaveButton";
 import { SignalReportButton } from "@/components/signals/SignalReportButton";
+import { ContinueSignalButton } from "@/components/signals/ContinueSignalButton";
 import { MatchedSignalPanel } from "@/components/signals/MatchedSignalPanel";
 import { ShareSignalCardPreview } from "@/components/signals/ShareSignalCardPreview";
 import { getPublicSignal, getSignal, isSignalGenerationDetail } from "@/lib/signal-data";
@@ -69,7 +70,7 @@ function OwnerContent({ signal, onboarding, origin }: { signal: OwnerSignalDetai
     <details className="signal-archive-section"><summary>查看完整分析（私密）</summary><SignalFingerprintPanel fingerprint={signal.fingerprint} /></details>
     {signal.followUpQuestion ? <section className="signal-archive-section"><p className="radio-kicker">NEXT SIGNAL</p><p>{signal.followUpQuestion}</p></section> : null}
     <section className="signal-archive-section flex flex-wrap gap-4">
-      <Link className="signal-next-secondary" href={`/?parentSignalId=${signal.id}${signal.followUpQuestion ? `&seed=${encodeURIComponent(signal.followUpQuestion)}` : ""}`}>继续写 seed</Link>
+      <ContinueSignalButton parentSignalId={signal.id} seedText={signal.followUpQuestion} />
       <Link className="signal-next-secondary" href="/me">我的频率</Link>
     </section>
   </>;

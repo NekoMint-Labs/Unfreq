@@ -10,6 +10,7 @@ import {
   isSignalGenerationDetail,
 } from "@/lib/signal-data";
 import type { SignalGenerationDetail, SignalGenerationStatus } from "@unfreq/contracts";
+import { startSignalPolling } from "@/lib/signal-polling";
 
 const generationSteps: Array<{
   label: string;
@@ -20,8 +21,6 @@ const generationSteps: Array<{
   { label: "正在匹配", status: "MATCHING" },
   { label: "正在写入", status: "WRITING" },
 ];
-
-const pollIntervalMs = 1300;
 
 type SignalTransmittingClientProps = {
   initialSignal: SignalGenerationDetail;
@@ -76,6 +75,8 @@ export function SignalTransmittingClient({
   const [signal, setSignal] = useState(initialSignal);
   const [pollError, setPollError] = useState<string | undefined>();
   const [isRetrying, setIsRetrying] = useState(false);
+  const [pollStopped, setPollStopped] = useState(false);
+  const [pollVersion, setPollVersion] = useState(0);
   const activeStepIndex = useMemo(() => {
     return getActiveStepIndex(signal.generationStatus);
   }, [signal.generationStatus]);
@@ -87,19 +88,15 @@ export function SignalTransmittingClient({
       return;
     }
 
-    let isCancelled = false;
-
-    const pollSignal = async () => {
-      try {
-        const nextSignal = await getSignal(signal.id);
-
-        if (isCancelled) {
-          return;
-        }
-
+    return startSignalPolling({
+      read: (abortSignal) => getSignal(signal.id, undefined, { signal: abortSignal }),
+      onValue: (nextSignal) => {
+        setPollError(undefined);
+        setPollStopped(false);
         if (nextSignal === undefined) {
           setPollError("信号暂时不可读取。");
-          return;
+          setPollStopped(true);
+          return false;
         }
 
         if (isSignalGenerationDetail(nextSignal)) {
@@ -109,29 +106,20 @@ export function SignalTransmittingClient({
             router.replace(getResultHref(nextSignal.id, onboardingStep));
           }
 
-          return;
+          return nextSignal.generationStatus !== "COMPLETED" && nextSignal.generationStatus !== "FAILED";
         }
 
         if (isSignalDetail(nextSignal) || "visibility" in nextSignal) {
           router.replace(getResultHref(nextSignal.id, onboardingStep));
         }
-      } catch {
-        if (!isCancelled) {
-          setPollError("信号状态暂时没有返回。");
-        }
-      }
-    };
-
-    void pollSignal();
-    const interval = window.setInterval(() => {
-      void pollSignal();
-    }, pollIntervalMs);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [isFailed, onboardingStep, router, signal.id]);
+        return false;
+      },
+      onError: (stopped) => {
+        setPollStopped(stopped);
+        setPollError(stopped ? "信号状态暂时没有返回。已暂停自动查询，可以继续查询。" : "信号状态暂时没有返回。");
+      },
+    });
+  }, [isFailed, onboardingStep, pollVersion, router, signal.id]);
 
   const retry = async () => {
     setIsRetrying(true);
@@ -166,7 +154,7 @@ export function SignalTransmittingClient({
         </div>
 
         <div
-          aria-busy={!isFailed}
+          aria-busy={!isFailed && !pollStopped}
           className="signal-transmitting-core"
           role="status"
         >
@@ -229,6 +217,8 @@ export function SignalTransmittingClient({
             >
               {isRetrying ? "重新发射中" : "重新发射"}
             </button>
+          ) : pollStopped ? (
+            <button className="signal-next-primary" type="button" onClick={() => { setPollError(undefined); setPollStopped(false); setPollVersion((version) => version + 1); }}>继续查询状态</button>
           ) : (
             <Link className="signal-next-primary" href={resultHref}>
               查看结果

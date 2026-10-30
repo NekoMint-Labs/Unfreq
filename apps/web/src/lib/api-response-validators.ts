@@ -374,8 +374,14 @@ export const isMySignalsResponse = (value: unknown): value is MySignalsResponse 
   return (
     isRecord(value) &&
     Array.isArray(value.signals) &&
+    value.signals.length <= 80 &&
     value.signals.every(isMySignalSummary) &&
-    isNonNegativeInteger(value.totalResonanceCount)
+    isNonNegativeInteger(value.totalResonanceCount) &&
+    isOptional(value.totalSignalCount, isNonNegativeInteger) &&
+    (value.totalSignalCount === undefined || (typeof value.totalSignalCount === "number" && value.totalSignalCount >= value.signals.length)) &&
+    isOptional(value.topSignal, isMySignalSummary) &&
+    isOptional(value.page, (page) => isRecord(page) && isNonNegativeInteger(page.limit) && page.limit >= (value.signals as unknown[]).length && page.limit >= 1 && page.limit <= 80 &&
+      isBoolean(page.hasMore) && (page.hasMore ? typeof page.nextCursor === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(page.nextCursor) : page.nextCursor === undefined))
   );
 };
 

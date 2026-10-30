@@ -1,6 +1,7 @@
 import { maxSignalPublicationVersion } from "@unfreq/contracts/signals";
 import { signalPublicContentSchema, signalPublicationPreviewSchema, publicMatchSchema } from "./publication.js";
 import { z } from "zod";
+import { decodeHistoryCursor } from "./history-cursor.js";
 import {
   signalPrimaryBands,
   signalSubFeelings,
@@ -284,7 +285,15 @@ export const mySignalSummarySchema = z.object({
 export const mySignalsResponseSchema = z.object({
   signals: z.array(mySignalSummarySchema),
   totalResonanceCount: z.number().int().nonnegative(),
+  totalSignalCount: z.number().int().nonnegative().optional(),
+  topSignal: mySignalSummarySchema.optional(),
+  page: z.object({ limit: z.number().int().min(1).max(80), hasMore: z.boolean(), nextCursor: z.string().optional() }).optional(),
 });
+
+export const mySignalsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(80).default(80),
+  cursor: z.string().max(256).refine((value) => decodeHistoryCursor(value) !== undefined, "Invalid history cursor").optional(),
+}).strict();
 
 export const echoSummaryResponseSchema = z.object({
   summary: z.object({
