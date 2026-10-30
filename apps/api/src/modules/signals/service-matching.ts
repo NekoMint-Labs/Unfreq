@@ -203,7 +203,7 @@ async function findSemanticSameFrequencyMatches(params: {
 
   try {
     const embedding = await generateEmbedding(
-      params.publicQuery ? params.expandedText : buildSignalEmbeddingText({
+      buildSignalEmbeddingText({
         classification: params.classification,
         expandedText: params.expandedText,
         fingerprint: params.fingerprint,
@@ -211,6 +211,7 @@ async function findSemanticSameFrequencyMatches(params: {
       }),
       {
         logger: params.logger,
+        purpose: params.publicQuery ? "public-detail" : "creation",
       },
     );
     await assertGenerationActive();
@@ -218,10 +219,13 @@ async function findSemanticSameFrequencyMatches(params: {
       embedding.embedding,
       maxMatchCount,
       params.excludeSignalId,
-      embedding.version,
+      embedding,
     );
     await assertGenerationActive();
     const eligible = semanticCandidates.filter(isPublicSignal);
+    params.logger?.info({ action: "signal.semantic_match.candidates", purpose: params.publicQuery ? "public-detail" : "creation",
+      version: embedding.version, provider: embedding.provider, model: embedding.model,
+      dimensions: embedding.dimensions, candidates: eligible.length, legacyVectorsIncluded: false }, "semantic candidates selected within one embedding space");
     const matches = await rerankSemanticMatches({
       candidates: eligible,
       expandedText: params.expandedText,
@@ -273,7 +277,7 @@ export async function findSameFrequencyMatches(params: {
 
   if (semanticResult === undefined || semanticResult.matches.length === 0) {
     const current = await recheckPublicSignals(keywordMatches.flatMap((match) => match.publicationVersion === undefined ? [] : [{ id: match.id, publicationVersion: match.publicationVersion }]));
-    return { matches: keywordMatches.filter((match) => current.some((row) => row.id === match.id)) };
+    return { embedding: semanticResult?.embedding, matches: keywordMatches.filter((match) => current.some((row) => row.id === match.id)) };
   }
 
   const existingIds = new Set(semanticResult.matches.map((match) => match.id));

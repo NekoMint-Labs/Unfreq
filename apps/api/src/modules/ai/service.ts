@@ -3,7 +3,7 @@ import {
   assertGenerationActive, GenerationExecutionStopped,
   getGenerationExecutionContext, throwIfGenerationStopped,
 } from "../../shared/generation-execution.js";
-import { resolveChatProviderConfig } from "./provider-config.js";
+import { ruleExecution, type AiExecutionMetadata, type ProviderResult } from "./provider-execution.js";
 import { createAiReviewRecord } from "./repository.js";
 import {
   aiClassificationSchema,
@@ -93,6 +93,7 @@ function toOutputJson(value: unknown): Record<string, unknown> {
 }
 
 async function recordAiReview(params: {
+  execution: AiExecutionMetadata;
   inputText: string;
   output: unknown;
   reviewType: string;
@@ -100,14 +101,12 @@ async function recordAiReview(params: {
 } & AiReviewTarget) {
   await assertGenerationActive();
   try {
-    const providerConfig = await resolveChatProviderConfig();
-    await assertGenerationActive();
-
     const review = await createAiReviewRecord({
+      execution: params.execution,
       inputText: params.inputText,
-      model: providerConfig.model,
+      model: params.execution.model,
       outputJson: toOutputJson(params.output),
-      provider: providerConfig.provider,
+      provider: params.execution.provider,
       reviewType: params.reviewType,
       status: params.status,
       targetId: params.targetId,
@@ -139,13 +138,21 @@ async function runAi<TOutput>(params: {
   inputText: string;
   parse: (value: unknown) => TOutput;
   reviewType: string;
-  providerCall: () => Promise<unknown>;
+  providerCall: () => Promise<ProviderResult<unknown>>;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   await assertGenerationActive();
   const rawResult = await params.providerCall();
   await assertGenerationActive();
-  const result = params.parse(rawResult);
+  let result: TOutput;
+  try { result = params.parse(rawResult.output); }
+  catch (error) {
+    if (error instanceof AppError && error.code === "AI_UNAVAILABLE") {
+      throw new AppError(error.code, error.message, { execution: rawResult.execution });
+    }
+    throw error;
+  }
   const review = await recordAiReview({
+    execution: rawResult.execution,
     inputText: params.inputText,
     output: result,
     reviewType: params.reviewType,
@@ -166,7 +173,7 @@ async function runAiWithFallback<TOutput>(params: {
   inputText: string;
   parse: (value: unknown) => TOutput;
   reviewType: string;
-  providerCall: () => Promise<unknown>;
+  providerCall: () => Promise<ProviderResult<unknown>>;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   try {
     return await runAi(params);
@@ -178,7 +185,9 @@ async function runAiWithFallback<TOutput>(params: {
     }
 
     const result = params.fallbackCall();
+    const previous = (error.details as { execution?: AiExecutionMetadata } | undefined)?.execution;
     const review = await recordAiReview({
+      execution: ruleExecution(params.reviewType, previous),
       inputText: params.inputText,
       output: result,
       reviewType: params.reviewType,

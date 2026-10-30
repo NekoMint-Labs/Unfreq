@@ -159,6 +159,8 @@ export type CreateSignalInput = {
 };
 
 export type WriteSignalEmbeddingInput = SignalEmbeddingMeta & {
+  expectedExpandedText: string;
+  expectedPublicationVersion?: number;
   embedding: number[];
   id: string;
 };

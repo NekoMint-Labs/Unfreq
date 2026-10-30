@@ -117,7 +117,7 @@ describe("generation cancellation across real provider adapters", () => {
     await started.promise;
     await vi.advanceTimersByTimeAsync(kind === "chat" ? 10_000 : 5_000);
     const result = await work;
-    if (kind === "chat") expect(result).toMatchObject({ channel: "MIDNIGHT" });
+    if (kind === "chat") expect(result).toMatchObject({ output: { channel: "MIDNIGHT" } });
     else if (kind === "embedding") expect(result).toMatchObject({ embedding: [0.1, 0.2, 0.3] });
     else expect(result).toMatchObject({ results: [{ id: "synthetic-candidate" }] });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -230,12 +230,13 @@ describe("generation result and audit fences", () => {
     });
   });
 
-  it("stops before inserting an audit when cancellation arrives during audit configuration lookup", async () => {
+  it("stops before inserting an audit when cancellation arrives during provider response decoding", async () => {
     const { ctx, controller } = execution();
     const lookupStarted = deferred();
     const release = deferred();
-    state.auditConfig.mockImplementationOnce(async () => { lookupStarted.resolve(); await release.promise; return state.chat[0]; });
-    vi.stubGlobal("fetch", vi.fn(async () => chatResponse()));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => {
+      lookupStarted.resolve(); await release.promise; return chatResponse().json();
+    } })));
     const work = runWithGenerationExecution(ctx, () => classifyContentWithFallback({ content: "synthetic input" }));
     const rejected = expect(work).rejects.toMatchObject({ reason: "obsolete" });
     await lookupStarted.promise;
@@ -243,6 +244,7 @@ describe("generation result and audit fences", () => {
     release.resolve();
     await rejected;
     expect(state.review).not.toHaveBeenCalled();
+    expect(state.auditConfig).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

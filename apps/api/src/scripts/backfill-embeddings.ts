@@ -1,13 +1,16 @@
 import { closeDatabaseConnection } from "../db/client.js";
+import { embeddingBackfillPlan, parseBackfillOptions } from "../modules/ai/embedding-backfill-plan.js";
+import { resolveEmbeddingProviderConfigs } from "../modules/ai/provider-config.js";
 import {
   generateEmbedding,
   isEmbeddingProviderConfigured,
 } from "../modules/ai/embedding.js";
 import {
   listSignalsMissingEmbedding,
+  recheckPublicSignals,
   writeSignalEmbeddingIfMissing,
 } from "../modules/signals/repository.js";
-import { buildSignalEmbeddingText } from "../modules/signals/service.js";
+import { buildSignalEmbeddingText } from "../modules/signals/service-embedding.js";
 
 type BackfillStats = {
   failed: number;
@@ -22,7 +25,6 @@ type BackfillLogger = {
   warn: (fields: Record<string, unknown>, message: string) => void;
 };
 
-const defaultLimit = 100;
 
 const logger: BackfillLogger = {
   error(fields, message) {
@@ -36,24 +38,6 @@ const logger: BackfillLogger = {
   },
 };
 
-function parseLimit(argv: string[]): number {
-  const rawLimit = argv
-    .find((item) => item.startsWith("--limit="))
-    ?.slice("--limit=".length);
-
-  if (rawLimit === undefined || rawLimit.length === 0) {
-    return defaultLimit;
-  }
-
-  const limit = Number(rawLimit);
-
-  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-    throw new Error("--limit must be an integer between 1 and 1000.");
-  }
-
-  return limit;
-}
-
 function toReason(error: unknown): string {
   if (error instanceof Error) {
     return error.name;
@@ -62,12 +46,13 @@ function toReason(error: unknown): string {
   return "unknown";
 }
 
-async function backfillEmbeddings(limit: number): Promise<BackfillStats> {
-  if (!(await isEmbeddingProviderConfigured())) {
+async function backfillEmbeddings(options: ReturnType<typeof parseBackfillOptions>): Promise<BackfillStats> {
+  const configs = (await resolveEmbeddingProviderConfigs()).filter((config) => config.apiKey.length > 0 && config.baseUrl.length > 0);
+  if (configs.length === 0 || !(await isEmbeddingProviderConfigured(configs[0]))) {
     throw new Error("Embedding provider is not configured.");
   }
 
-  const signals = await listSignalsMissingEmbedding(limit);
+  const signals = await listSignalsMissingEmbedding(options.limit);
   const stats: BackfillStats = {
     failed: 0,
     skipped: 0,
@@ -75,10 +60,14 @@ async function backfillEmbeddings(limit: number): Promise<BackfillStats> {
     total: signals.length,
   };
 
+  logger.info({ action: "signal.embedding.backfill.plan", mode: options.apply ? "apply" : "dry-run",
+    ...embeddingBackfillPlan(signals, configs) }, "embedding backfill scope and accounting bounds");
+  if (!options.apply) return stats;
+
   logger.info(
     {
       action: "signal.embedding.backfill",
-      limit,
+      limit: options.limit,
       total: signals.length,
     },
     "signal embedding backfill started",
@@ -86,16 +75,22 @@ async function backfillEmbeddings(limit: number): Promise<BackfillStats> {
 
   for (const signal of signals) {
     try {
+      const [current] = await recheckPublicSignals([{ id: signal.id, publicationVersion: signal.publicationVersion }]);
+      if (current === undefined || current.expandedText !== signal.expandedText) { stats.skipped += 1; continue; }
       const embedding = await generateEmbedding(
         buildSignalEmbeddingText({
           expandedText: signal.expandedText,
           fingerprint: signal.fingerprintJson,
         }),
         {
+          configs,
+          purpose: "backfill",
           logger,
         },
       );
       const written = await writeSignalEmbeddingIfMissing({
+        expectedExpandedText: signal.expandedText,
+        expectedPublicationVersion: signal.publicationVersion,
         dimensions: embedding.dimensions,
         embedding: embedding.embedding,
         model: embedding.model,
@@ -138,7 +133,7 @@ async function backfillEmbeddings(limit: number): Promise<BackfillStats> {
 }
 
 try {
-  const stats = await backfillEmbeddings(parseLimit(process.argv.slice(2)));
+  const stats = await backfillEmbeddings(parseBackfillOptions(process.argv.slice(2)));
   process.exitCode = stats.failed > 0 ? 1 : 0;
 } catch (error) {
   logger.error(

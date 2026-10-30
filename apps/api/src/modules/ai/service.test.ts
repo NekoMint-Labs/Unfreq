@@ -1,3 +1,4 @@
+import type { ProviderResult } from "./provider-execution.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
 import {
@@ -25,6 +26,12 @@ import {
   signalSeedClassificationWithProvider,
 } from "./provider.js";
 import type { AiSignalFingerprint, AiSignalSeedClassification } from "./signal-types.js";
+
+function providerResult<T>(output: T): ProviderResult<T> {
+  return { output, execution: { schemaVersion: 1, taskType: "synthetic-task", source: "provider",
+    provider: "synthetic-provider", model: "synthetic-model", inputTemplateVersion: "synthetic-v1",
+    promptVersion: "synthetic-v1", durationMs: 1, attempts: [], cost: "unknown" } };
+}
 
 const testSignalFingerprint = {
   coreNeed: "希望被理解",
@@ -138,11 +145,11 @@ beforeEach(() => {
 
 describe("ai service", () => {
   it("returns AI_UNAVAILABLE for direct AI calls when provider output is invalid", async () => {
-    vi.mocked(classifyWithProvider).mockResolvedValue({
+    vi.mocked(classifyWithProvider).mockResolvedValue(providerResult({
       channel: "MIDNIGHT",
       confidence: 2,
       reason: "invalid confidence",
-    });
+    }));
 
     await expect(
       classifyContent({ content: "凌晨一点，我还在想念那段声音。" }),
@@ -199,7 +206,7 @@ describe("ai service", () => {
   });
 
   it("records signal fingerprint fallback when provider output is invalid", async () => {
-    vi.mocked(signalFingerprintWithProvider).mockResolvedValue({
+    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(providerResult({
       ...testSignalFingerprint,
       energy: 2,
       frequency: "SIG-BAD",
@@ -211,7 +218,7 @@ describe("ai service", () => {
       tags: [],
       theme: "",
       title: "",
-    });
+    }));
 
     const result = await generateSignalFingerprintWithFallback({
       content: "今晚有点孤独，也有点想念。",
@@ -231,7 +238,7 @@ describe("ai service", () => {
   });
 
   it("normalizes mismatched signal fingerprint frequency options", async () => {
-    vi.mocked(signalFingerprintWithProvider).mockResolvedValue({
+    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(providerResult({
       ...testSignalFingerprint,
       displayText: "关系星云 · 努力怀疑",
       primaryBand: "relationship_nebula",
@@ -239,7 +246,7 @@ describe("ai service", () => {
       signalType: "custom-label",
       subFeeling: "effort_doubt",
       theme: "关系星云",
-    });
+    }));
 
     const result = await generateSignalFingerprintWithFallback({
       content: "今晚有点孤独，也有点想念。",
@@ -262,9 +269,9 @@ describe("ai service", () => {
   });
 
   it("records signal program fallback when provider output is invalid", async () => {
-    vi.mocked(signalProgramWithProvider).mockResolvedValue({
+    vi.mocked(signalProgramWithProvider).mockResolvedValue(providerResult({
       programTitle: "",
-    } as unknown as Awaited<ReturnType<typeof signalProgramWithProvider>>);
+    } as unknown as Awaited<ReturnType<typeof signalProgramWithProvider>>["output"]));
 
     const result = await generateSignalProgramWithFallback({
       fingerprint: testSignalFingerprint,
@@ -284,10 +291,10 @@ describe("ai service", () => {
   });
 
   it("rejects invalid signal expansion provider output without local literary fallback", async () => {
-    vi.mocked(signalExpansionWithProvider).mockResolvedValue({
+    vi.mocked(signalExpansionWithProvider).mockResolvedValue(providerResult({
       expandedText: "我把这句种子放在夜里反复看：今晚想把这段匿名信号留在这里。",
       followUpQuestion: "你最近一次意识到自己在绕开什么，是在哪个瞬间？",
-    });
+    }));
 
     await expect(
       generateSignalExpansionWithFallback({
@@ -302,11 +309,11 @@ describe("ai service", () => {
   });
 
   it("rejects signal expansion output that repeats blocked templates", async () => {
-    vi.mocked(signalExpansionWithProvider).mockResolvedValue({
+    vi.mocked(signalExpansionWithProvider).mockResolvedValue(providerResult({
       expandedText:
         "我把这句话留在心里：sekai..。窗外车声慢下来，桌面还摊着没收好的纸，我把外套搭回椅背，口袋里的钥匙轻轻响了一下。我没有急着把它说出口，只是突然发现，自己已经很久没有把真实感受放到前面。",
       followUpQuestion: "你最近在哪里听见过自己的停顿？",
-    });
+    }));
 
     await expect(
       generateSignalExpansionWithFallback({
@@ -338,11 +345,11 @@ describe("ai service", () => {
   });
 
   it("rejects signal expansion output that drifts into food-care scenes", async () => {
-    vi.mocked(signalExpansionWithProvider).mockResolvedValue({
+    vi.mocked(signalExpansionWithProvider).mockResolvedValue(providerResult({
       expandedText:
         "她递来一杯温水，指尖碰了碰杯壁，试了温度才松手。厨房里飘出姜丝红糖的气味，他往锅里多撒了一把红枣。她没说话，只是把杯子轻轻推回他手边，水面晃了晃，映出窗外的光。",
       followUpQuestion: "你先看见了什么？",
-    });
+    }));
 
     await expect(
       generateSignalExpansionWithFallback({
@@ -357,7 +364,7 @@ describe("ai service", () => {
   });
 
   it("records combined signal material when provider output is valid", async () => {
-    vi.mocked(signalMaterialWithProvider).mockResolvedValue({
+    vi.mocked(signalMaterialWithProvider).mockResolvedValue(providerResult({
       classification: testSeedClassification,
       expansion: {
         expandedText:
@@ -365,7 +372,7 @@ describe("ai service", () => {
         followUpQuestion: "第一口想给谁？",
       },
       fingerprint: testSignalFingerprint,
-    });
+    }));
 
     const result = await generateSignalMaterial({
       content: "我想吃糖醋排骨",
@@ -391,14 +398,14 @@ describe("ai service", () => {
   });
 
   it("records signal seed classification fallback when provider output is invalid", async () => {
-    vi.mocked(signalSeedClassificationWithProvider).mockResolvedValue({
+    vi.mocked(signalSeedClassificationWithProvider).mockResolvedValue(providerResult({
       energy: "extreme",
       expansionMode: "",
       keywords: [],
       mood: "",
       shouldBeNegative: false,
       type: "food",
-    } as unknown as Awaited<ReturnType<typeof signalSeedClassificationWithProvider>>);
+    } as unknown as Awaited<ReturnType<typeof signalSeedClassificationWithProvider>>["output"]));
 
     const result = await classifySignalSeedWithFallback({
       content: "我想吃糖醋排骨",
@@ -421,7 +428,7 @@ describe("ai service", () => {
   });
 
   it("records signal intent analysis fallback when provider output is invalid", async () => {
-    vi.mocked(signalIntentAnalysisWithProvider).mockResolvedValue({
+    vi.mocked(signalIntentAnalysisWithProvider).mockResolvedValue(providerResult({
       confidence: 2,
       energy: "medium",
       expansionMode: "overbuilt_scene",
@@ -429,7 +436,7 @@ describe("ai service", () => {
       mood: "quiet",
       shouldBeNegative: false,
       type: "poetry",
-    } as unknown as Awaited<ReturnType<typeof signalIntentAnalysisWithProvider>>);
+    } as unknown as Awaited<ReturnType<typeof signalIntentAnalysisWithProvider>>["output"]));
 
     const result = await analyzeSignalIntentWithFallback({
       content: "空山新雨后，天气晚来秋",
@@ -451,12 +458,12 @@ describe("ai service", () => {
   });
 
   it("records signal expansion review fallback when provider output is invalid", async () => {
-    vi.mocked(signalExpansionReviewWithProvider).mockResolvedValue({
+    vi.mocked(signalExpansionReviewWithProvider).mockResolvedValue(providerResult({
       pass: "no",
       problems: [],
       rewriteInstruction: "",
       score: 20,
-    } as unknown as Awaited<ReturnType<typeof signalExpansionReviewWithProvider>>);
+    } as unknown as Awaited<ReturnType<typeof signalExpansionReviewWithProvider>>["output"]));
 
     const result = await reviewSignalExpansionWithFallback({
       classification: testSeedClassification,

@@ -312,7 +312,7 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
-    const signal = await getSignalDetailForFrequency(parsedParams.data.id, request.frequency);
+    const signal = await getSignalDetailForFrequency(parsedParams.data.id, request.frequency, request.log);
     const response = signalResponseSchema.parse({ signal });
 
     return sendData(reply, request, response);
@@ -325,7 +325,7 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
-    const matches = await getSignalMatches(parsedParams.data.id);
+    const matches = await getSignalMatches(parsedParams.data.id, request.log);
     const response = signalMatchesResponseSchema.parse({ matches });
 
     return sendData(reply, request, response);

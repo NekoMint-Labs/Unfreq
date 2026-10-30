@@ -11,6 +11,7 @@ export type ChatProviderFailureKind =
 export type ChatProviderFailureBoundary = "provider_call" | "provider_config_resolution";
 
 export type ChatProviderFailureDetails = {
+  execution?: import("./provider-execution.js").AiExecutionMetadata;
   boundary: ChatProviderFailureBoundary;
   fallbackBoundary?: "provider_fallback";
   kind: ChatProviderFailureKind;

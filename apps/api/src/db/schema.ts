@@ -728,6 +728,7 @@ export const adminActions = pgTable(
 export const aiReviews = pgTable(
   "ai_reviews",
   {
+    executionJson: jsonb("execution_json").$type<import("@unfreq/contracts/admin").AiExecutionMetadata>(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     id: uuid("id").defaultRandom().primaryKey(),
     inputText: text("input_text").notNull(),

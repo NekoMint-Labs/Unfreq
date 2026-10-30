@@ -11,6 +11,7 @@ function toCurrentTargetType(value: string | null): AiReviewRecord["targetType"]
 }
 
 export async function createAiReviewRecord(params: {
+  execution: import("./provider-execution.js").AiExecutionMetadata;
   inputText: string;
   model: string;
   outputJson: Record<string, unknown>;
@@ -23,6 +24,7 @@ export async function createAiReviewRecord(params: {
   const [review] = await db
     .insert(aiReviews)
     .values({
+      executionJson: params.execution,
       inputText: params.inputText,
       model: params.model,
       outputJson: params.outputJson,
@@ -39,6 +41,7 @@ export async function createAiReviewRecord(params: {
   }
 
   return {
+    execution: review.executionJson ?? undefined,
     createdAt: review.createdAt.toISOString(),
     id: review.id,
     inputText: review.inputText,

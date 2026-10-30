@@ -1,3 +1,4 @@
+import { embeddingSpaceKey } from "../../src/modules/ai/embedding-space.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { buildPublicationPreview, confirmPublicationSnapshot } from "../../src/modules/signals/publication.js";
@@ -1289,4 +1290,74 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await expectNotPublic(id);
     } finally { hold.release(); await waitForActualGenerationIdle(); }
   });
+  it("E1 isolates semantic spaces, preserves legacy reads and fences vector writes to the unchanged body", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { listPublishedSemanticSignalMatchCandidates, writeSignalEmbeddingIfMissing, listSignalsMissingEmbedding } = await h.loadModule("repository");
+      const config = { provider: "e1-synthetic", model: "embed-a", dimensions: 3, version: "v1" };
+      const version = embeddingSpaceKey(config);
+      const body = fixtureExpansion.expandedText;
+      const preview = buildPublicationPreview({ authorId: author.id, authorFreqCode: author.frequencyCode,
+        expandedText: body, generationStatus: "COMPLETED", primaryBand: fixtureFingerprint.primaryBand,
+        fingerprintJson: fixtureFingerprint }, 0);
+      const snapshot = JSON.stringify(confirmPublicationSnapshot(preview, new Date("2026-10-30T00:00:00Z")));
+      const variants = [
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: "embed-b", embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: embeddingSpaceKey({ ...config, model: "embed-b" }), embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: "other", embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 4, embedding_version: embeddingSpaceKey({ ...config, dimensions: 4 }), embedding: "[1,2,3,4]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: "v1", embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: embeddingSpaceKey(config, "signal-body-v2"), embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: "E1_UNCONFIRMED_PRIVATE_BODY" },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3,4]", expanded_text: body },
+      ];
+      const rows = variants.map((variant) => {
+        const id = randomUUID(); track(id);
+        return { ...variant, id, author_id: author.id, frequency_id: author.id,
+          raw_input: "E1_PRIVATE_SEED", seed_text: "E1_PRIVATE_SEED", fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+          publication_snapshot: snapshot, publication_version: 1, status: "PUBLISHED", generation_status: "COMPLETED" };
+      });
+      await h.sql`insert into signals ${h.sql(rows, ...Object.keys(rows[0]) as Array<keyof typeof rows[number]>)}`;
+      const matches = await listPublishedSemanticSignalMatchCandidates([1, 2, 3], 20, undefined, { ...config, version });
+      expect(matches.map((match) => match.id)).toEqual([rows[0].id]);
+      expect(await listPublishedSemanticSignalMatchCandidates([1, 2, 3], 20, undefined, config)).toEqual([]);
+      const legacy = await request("GET", `/api/signals/${rows[4].id}`);
+      expect(legacy.statusCode).toBe(200);
+      expect(legacy.body).not.toMatch(/E1_PRIVATE_SEED|embedding_version/u);
+      const [old] = await h.sql`select embedding_version, embedding::text from signals where id = ${rows[4].id}`;
+      expect(old).toMatchObject({ embedding_version: "v1", embedding: "[1,2,3]" });
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[4].id, expectedExpandedText: body })).toBe(false);
+      await h.sql`update signals set embedding = null where id = ${rows[6].id}`;
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[6].id, expectedExpandedText: body })).toBe(false);
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[6].id, expectedExpandedText: "E1_UNCONFIRMED_PRIVATE_BODY" })).toBe(true);
+      await h.sql`update signals set embedding = null where id in ${h.sql([rows[0].id, rows[1].id, rows[6].id])}`;
+      await h.sql`update signals set status = 'DRAFT' where id = ${rows[1].id}`;
+      const backfill = await listSignalsMissingEmbedding(1000);
+      expect(backfill.map((row) => row.id)).toContain(rows[0].id);
+      expect(backfill.map((row) => row.id)).not.toContain(rows[1].id);
+      expect(backfill.map((row) => row.id)).not.toContain(rows[6].id);
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${rows[0].id}`;
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[0].id,
+        expectedExpandedText: body, expectedPublicationVersion: 1 })).toBe(false);
+    });
+  });
+
+  it("E1 persists actual transport lineage with nullable historical audit compatibility", async () => {
+    const id = await createDraft();
+    const reviews = await h.sql`select provider, model, execution_json from ai_reviews where target_id = ${id}`;
+    // Some generation stages are audited before the signal target exists.
+    const actual = reviews.length === 0
+      ? await h.sql`select provider, model, execution_json from ai_reviews where execution_json is not null order by created_at desc limit 1`
+      : reviews;
+    expect(actual.length).toBeGreaterThan(0);
+    for (const row of actual) {
+      expect(row).toMatchObject({ provider: "integration-loopback", model: "synthetic-signal-v1",
+        execution_json: { source: "provider", provider: "integration-loopback", model: "synthetic-signal-v1",
+          promptVersion: expect.stringMatching(/^sha256:/u), attempts: [expect.objectContaining({ outcome: "SUCCEEDED" })] } });
+      expect(JSON.stringify(row.execution_json)).not.toContain(fixtureSeed);
+    }
+    const [legacy] = await h.sql`insert into ai_reviews (input_text, model, output_json, provider, review_type, status)
+      values ('E1 synthetic historical audit', 'unknown', '{}', 'unknown', 'e1-legacy', 'SUCCEEDED') returning execution_json`;
+    expect(legacy.execution_json).toBeNull();
+  });
+
 });

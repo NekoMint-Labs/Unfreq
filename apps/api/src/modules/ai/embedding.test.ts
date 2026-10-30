@@ -48,12 +48,12 @@ describe("embedding adapter", () => {
       timeoutMs: 1000,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       dimensions: signalEmbeddingDimensions,
       embedding,
       model: "text-embedding-v3",
       provider: "dashscope",
-      version: "v1",
+      version: expect.stringMatching(/^es1:[a-f0-9]{64}$/u),
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
@@ -103,6 +103,10 @@ describe("embedding adapter", () => {
     expect(() => validateEmbeddingVector([...buildEmbedding(0.1), null].slice(1))).toThrow(
       AppError,
     );
+  });
+
+  it("rejects zero vectors whose cosine distance is undefined", () => {
+    expect(() => validateEmbeddingVector(buildEmbedding(0))).toThrow(AppError);
   });
 
   it("rejects empty input without calling the provider", async () => {

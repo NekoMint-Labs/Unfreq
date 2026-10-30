@@ -827,6 +827,7 @@ describe("signal service AI generation", () => {
     await vi.waitFor(() => {
       expect(writeSignalEmbeddingIfMissing).toHaveBeenCalledWith({
         dimensions: 1024,
+        expectedExpandedText: defaultExpansion.expandedText,
         embedding,
         id: "00000000-0000-4000-8000-000000000001",
         model: "text-embedding-v3",
@@ -868,6 +869,7 @@ describe("signal service AI generation", () => {
       id: "00000000-0000-4000-8000-000000000401",
       source: "PUBLISHED",
     });
+    expect(generateEmbedding).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to keyword matches when embedding generation fails", async () => {

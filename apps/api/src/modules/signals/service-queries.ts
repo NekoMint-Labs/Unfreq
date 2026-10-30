@@ -135,11 +135,11 @@ export async function getMyEchoSummary(
 }
 
 
-async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency): Promise<PublicSignalDetail> {
+async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency, logger?: EmbeddingLogger): Promise<PublicSignalDetail> {
   if (!isPublicSignal(signal)) throw notFound();
   const snapshot = parsePublicationSnapshot(signal.publicationSnapshot)!;
   const result = await findSameFrequencyMatches({ excludeSignalId: signal.id,
-    publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
+    logger, publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
   const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
   const candidates = result.matches.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
   // Parent and every match are rechecked together after provider/save awaits.
@@ -157,10 +157,10 @@ async function toPublishedSignalDetail(signal: SignalRecord, frequency?: Authent
   return detail;
 }
 
-export async function getSignalDetail(id: string): Promise<PublicSignalDetail> {
+export async function getSignalDetail(id: string, logger?: EmbeddingLogger): Promise<PublicSignalDetail> {
   const signal = await findPublishedSignalById(id);
   if (signal === undefined) throw notFound();
-  return toPublishedSignalDetail(signal);
+  return toPublishedSignalDetail(signal, undefined, logger);
 }
 
 async function ownerActions(signal: SignalRecord, frequency: AuthenticatedFrequency): Promise<SignalPublicationActions> {
@@ -181,13 +181,13 @@ async function ownerActions(signal: SignalRecord, frequency: AuthenticatedFreque
     ...(preview === undefined ? {} : { preview }), ...(content === undefined ? {} : { publishedContent: content }) };
 }
 
-export async function getSignalDetailForFrequency(id: string, frequency: AuthenticatedFrequency | undefined): Promise<SignalResultDetail> {
+export async function getSignalDetailForFrequency(id: string, frequency: AuthenticatedFrequency | undefined, logger?: EmbeddingLogger): Promise<SignalResultDetail> {
   const signal = await findSignalResultById(id);
   if (signal === undefined || signal.status === "DELETED" || signal.status === "HIDDEN") throw notFound();
   const owned = frequency !== undefined && (signal.authorId ?? signal.frequencyId) === frequency.id && frequency.status !== "BANNED";
   if (owned) {
     const publication = await ownerActions(signal, frequency);
-    const matches = isPublicSignal(signal) ? (await toPublishedSignalDetail(signal)).matches : [];
+    const matches = isPublicSignal(signal) ? (await toPublishedSignalDetail(signal, undefined, logger)).matches : [];
     // The second read fences owner actions that raced with moderation/withdrawal.
     const latest = await findSignalResultById(id);
     if (latest === undefined || latest.publicationVersion !== signal.publicationVersion) throw notFound();
@@ -200,11 +200,11 @@ export async function getSignalDetailForFrequency(id: string, frequency: Authent
     createdAt: signal.createdAt.toISOString(), updatedAt: signal.updatedAt.toISOString(),
   };
   if (!isPublicSignal(signal)) throw notFound();
-  return toPublishedSignalDetail(signal, frequency);
+  return toPublishedSignalDetail(signal, frequency, logger);
 }
 
-export async function getSignalMatches(id: string): Promise<PublicSignalMatchSummary[]> {
-  return (await getSignalDetail(id)).matches;
+export async function getSignalMatches(id: string, logger?: EmbeddingLogger): Promise<PublicSignalMatchSummary[]> {
+  return (await getSignalDetail(id, logger)).matches;
 }
 
 export async function getRandomSignal(frequency: AuthenticatedFrequency | undefined): Promise<PublicSignalDetail> {

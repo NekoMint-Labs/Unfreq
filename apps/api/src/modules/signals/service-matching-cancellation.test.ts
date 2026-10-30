@@ -12,7 +12,7 @@ const calls = vi.hoisted(() => ({
 vi.mock("../ai/embedding.js", () => ({ isEmbeddingProviderConfigured: calls.embeddingConfigured, generateEmbedding: calls.embedding }));
 vi.mock("../ai/reranker.js", () => ({ isRerankerProviderConfigured: calls.rerankerConfigured, rerankCandidates: calls.rerank }));
 vi.mock("./repository.js", () => ({ listPublishedSemanticSignalMatchCandidates: calls.semantic, recheckPublicSignals: calls.recheck, listPublishedSignalMatchCandidates: calls.keyword }));
-vi.mock("./service-embedding.js", () => ({ buildSignalEmbeddingText: () => "synthetic embedding input" }));
+vi.mock("./service-embedding.js", () => ({ buildSignalEmbeddingText: (input: { expandedText: string }) => `正文：${input.expandedText}` }));
 
 const candidate: SignalSemanticMatchRecord = confirmUnitPublication({
   publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
@@ -113,7 +113,7 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     candidate.expandedText = "PRIVATE-unconfirmed-candidate-edit";
     try {
       await findSameFrequencyMatches({ ...input, publicQuery: true });
-      expect(calls.embedding.mock.calls[0]?.[0]).toBe(input.expandedText);
+      expect(calls.embedding.mock.calls[0]?.[0]).toBe(`正文：${input.expandedText}`);
       expect(calls.rerank.mock.calls[0]?.[0].candidates[0].expandedText).toBe("synthetic public candidate");
     } finally { candidate.expandedText = original; }
   });

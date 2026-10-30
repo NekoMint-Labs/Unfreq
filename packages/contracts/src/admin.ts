@@ -172,7 +172,34 @@ export type AdminFrequencyRecord = {
   status: AdminUserStatus;
 };
 
+export type AiProviderAttempt = {
+  provider: string;
+  model: string;
+  profile: "default" | "fast";
+  outcome: "SUCCEEDED" | "FAILED";
+  durationMs: number;
+  failureKind?: string;
+  statusCode?: number;
+  responseModel?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+};
+
+export type AiExecutionMetadata = {
+  schemaVersion: 1;
+  taskType: string;
+  source: "provider" | "rules" | "unavailable";
+  provider: string;
+  model: string;
+  promptVersion: string;
+  inputTemplateVersion: string;
+  durationMs: number;
+  attempts: AiProviderAttempt[];
+  fallbackReason?: string;
+  cost: "unknown";
+};
+
 export type AdminAiReviewRecord = {
+  execution?: AiExecutionMetadata;
   createdAt: string;
   id: string;
   inputText: string;

@@ -1,5 +1,9 @@
 # AI Provider Fallback Debug Playbook
 
+E1 起，`ai_reviews.execution_json` 记录 transport 返回的实际来源和尝试轨迹；`provider/model` 不再从配置首项推测。`FALLBACK` 的最终来源是 `local-rules`，先前的 Provider 调用与可用用量仍留在 attempts。旧记录没有 execution 时，其原有 provider/model 不能作为已验证的实际血缘。费用缺失记为 unknown。
+
+向量查询必须携带新的完整空间元数据，旧向量继续保留但不自动加入新空间。缺失向量回填默认只预览当前确认公开范围；迁移、索引和费用核算边界见 [E1 实施与操作记录](../implementation/e1-provider-lineage-20261030.md)。
+
 ## Entry Points
 
 - Provider adapter: `apps/api/src/modules/ai/provider.ts`

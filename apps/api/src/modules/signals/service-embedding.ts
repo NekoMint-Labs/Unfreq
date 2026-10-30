@@ -1,3 +1,4 @@
+import { signalEmbeddingText } from "../ai/embedding-space.js";
 import {
   generateEmbedding,
   type EmbeddingLogger,
@@ -13,7 +14,6 @@ import {
 import { toSafeErrorReason } from "./service-errors.js";
 import {
   buildInitialGalaxyPosition,
-  getFingerprintFrequencyProfile,
   isFiniteGalaxyPosition,
 } from "./service-mappers.js";
 import type {
@@ -38,40 +38,7 @@ export function buildSignalEmbeddingText(input: {
   fingerprint: SignalFingerprint;
   seedText?: string;
 }): string {
-  const frequencyProfile = getFingerprintFrequencyProfile(input.fingerprint);
-
-  return [
-    input.classification === undefined ? "" : `类型：${input.classification.type}`,
-    input.classification === undefined ? "" : `情绪：${input.classification.mood}`,
-    input.classification === undefined
-      ? ""
-      : `扩写方式：${input.classification.expansionMode}`,
-    input.classification === undefined
-      ? ""
-      : `意图焦点：${input.classification.intendedFocus ?? input.classification.keywords.join("、")}`,
-    input.classification === undefined
-      ? ""
-      : `必须保留：${(input.classification.preserve ?? input.classification.keywords).join("、")}`,
-    input.classification === undefined || (input.classification.mustAvoid ?? []).length === 0
-      ? ""
-      : `避免方向：${(input.classification.mustAvoid ?? []).join("、")}`,
-    input.classification === undefined
-      ? ""
-      : `场景方向：${input.classification.sceneHint ?? input.classification.keywords.join("、")}`,
-    input.classification === undefined
-      ? ""
-      : `分类关键词：${input.classification.keywords.join("、")}`,
-    `标题：${input.fingerprint.title}`,
-    `主频段：${frequencyProfile.displayText}`,
-    `情绪色彩：${frequencyProfile.emotionTone}`,
-    `核心需求：${frequencyProfile.coreNeed}`,
-    `内在冲突：${frequencyProfile.innerConflict}`,
-    `共振关键词：${frequencyProfile.resonanceKeywords.join("、")}`,
-    input.seedText === undefined ? "" : `原句：${input.seedText}`,
-    `扩写：${input.expandedText}`,
-  ]
-    .filter((item) => item.trim().length > 0)
-    .join("\n");
+  return signalEmbeddingText(input.expandedText);
 }
 
 // The durable pending path awaits this optional tail before its completion
@@ -130,6 +97,7 @@ export function queueSignalEmbeddingWrite(params: {
         ));
       const written = await writeSignalEmbeddingIfMissing({
         ...toSignalEmbeddingMeta(embedding),
+        expectedExpandedText: params.signal.expandedText,
         embedding: embedding.embedding,
         id: params.signal.id,
       });
@@ -274,6 +242,7 @@ export async function writeSignalEmbedding(params: {
 
   return writeSignalEmbeddingIfMissing({
     ...toSignalEmbeddingMeta(embedding),
+    expectedExpandedText: params.signal.expandedText,
     embedding: embedding.embedding,
     id: params.signal.id,
   });

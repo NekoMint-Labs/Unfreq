@@ -1,4 +1,6 @@
 import { env } from "../../config/env.js";
+import { embeddingSpaceKey, signalEmbeddingTemplateVersion } from "./embedding-space.js";
+import { safeProviderAccounting, type AiExecutionMetadata } from "./provider-execution.js";
 import { AppError } from "../../shared/errors.js";
 import {
   assertGenerationActive,
@@ -39,6 +41,7 @@ export type EmbeddingProviderConfig = {
 };
 
 export type EmbeddingResult = {
+  execution?: AiExecutionMetadata;
   dimensions: number;
   embedding: number[];
   model: string;
@@ -53,6 +56,9 @@ export type EmbeddingLogger = {
 };
 
 type GenerateEmbeddingOptions = {
+  configs?: EmbeddingProviderConfig[];
+  templateVersion?: string;
+  purpose?: "creation" | "public-detail" | "backfill";
   config?: EmbeddingProviderConfig;
   logger?: EmbeddingLogger;
   retryDelayMs?: number;
@@ -99,6 +105,10 @@ export function validateEmbeddingVector(
     throw new AppError("AI_UNAVAILABLE", "Embedding provider returned an invalid vector.");
   }
 
+  if (value.every((item) => item === 0)) {
+    throw new AppError("AI_UNAVAILABLE", "Embedding provider returned a zero vector.");
+  }
+
   return value;
 }
 
@@ -116,7 +126,7 @@ async function requestEmbedding(params: {
   config: EmbeddingProviderConfig;
   signal: AbortSignal;
   text: string;
-}): Promise<number[]> {
+}): Promise<{ embedding: unknown; accounting: ReturnType<typeof safeProviderAccounting> }> {
   const response = await fetch(`${normalizeBaseUrl(params.config.baseUrl)}/embeddings`, {
     body: JSON.stringify({
       dimensions: params.config.dimensions,
@@ -142,7 +152,8 @@ async function requestEmbedding(params: {
   const payload = (await response.json()) as EmbeddingPayload;
   await assertGenerationActive();
 
-  return validateEmbeddingVector(extractEmbedding(payload), params.config.dimensions);
+  return { embedding: extractEmbedding(payload),
+    accounting: safeProviderAccounting(payload) };
 }
 
 export async function generateEmbedding(
@@ -150,8 +161,13 @@ export async function generateEmbedding(
   options: GenerateEmbeddingOptions = {},
 ): Promise<EmbeddingResult> {
   await assertGenerationActive();
+  const startedAt = Date.now();
+  const execution: AiExecutionMetadata = { schemaVersion: 1, taskType: "embedding", source: "unavailable",
+    provider: "unavailable", model: "unavailable", promptVersion: "not-applicable",
+    inputTemplateVersion: options.templateVersion ?? signalEmbeddingTemplateVersion,
+    attempts: [], durationMs: 0, cost: "unknown" };
   const compactText = text.trim();
-  const configs = options.config === undefined ? await getEmbeddingConfigs() : [options.config];
+  const configs = options.configs ?? (options.config === undefined ? await getEmbeddingConfigs() : [options.config]);
   await assertGenerationActive();
   const retryDelayMs = options.retryDelayMs ?? defaultRetryDelayMs;
   const timeoutMs = options.timeoutMs ?? embeddingTimeoutMs;
@@ -172,7 +188,9 @@ export async function generateEmbedding(
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       await assertGenerationActive();
-      const startedAt = Date.now();
+      const attemptStartedAt = Date.now();
+      let dispatched = false;
+      let accounting: ReturnType<typeof safeProviderAccounting> = {};
       let timeout: NodeJS.Timeout | undefined;
       let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
       let shouldRetry = false;
@@ -197,45 +215,67 @@ export async function generateEmbedding(
         combined = combineGenerationAbortSignal(controller.signal);
         timeout = setTimeout(() => { controller.abort(); }, timeoutMs);
         throwIfGenerationStopped();
-        const embedding = await requestEmbedding({
+        dispatched = true;
+        const result = await requestEmbedding({
           config,
           signal: combined.signal,
           text: compactText,
         });
+        accounting = result.accounting;
+        const embedding = validateEmbeddingVector(result.embedding, config.dimensions);
         await assertGenerationActive();
+
+        const actualModel = accounting.responseModel ?? config.model;
+        const version = embeddingSpaceKey({ ...config, model: actualModel }, options.templateVersion ?? signalEmbeddingTemplateVersion);
+        execution.attempts.push({ provider: config.provider, model: config.model, profile: "default",
+          outcome: "SUCCEEDED", durationMs: Date.now() - attemptStartedAt, ...accounting });
+        Object.assign(execution, { source: "provider", provider: config.provider, model: actualModel, durationMs: Date.now() - startedAt });
 
         options.logger?.info(
           {
             action: "embedding.generate",
+            purpose: options.purpose ?? "creation",
+            persisted: false,
+            cost: "unknown",
+            inputCharacters: compactText.length,
+            ...accounting,
+            execution,
             attempts: attempt,
             configIndex,
             dimensions: config.dimensions,
-            durationMs: Date.now() - startedAt,
+            durationMs: Date.now() - attemptStartedAt,
             model: config.model,
             provider: config.provider,
-            version: config.version,
+            version,
           },
           "embedding generation completed",
         );
         await assertGenerationActive();
 
         return {
+          execution,
           dimensions: config.dimensions,
           embedding,
-          model: config.model,
+          model: actualModel,
           provider: config.provider,
-          version: config.version,
+          version,
         };
       } catch (error) {
         throwIfGenerationStopped(error);
         await assertGenerationActive();
         lastError = error;
+        if (dispatched) execution.attempts.push({ provider: config.provider, model: config.model, profile: "default",
+          outcome: "FAILED", durationMs: Date.now() - attemptStartedAt, failureKind: toErrorReason(error), ...accounting });
 
         const fields = {
           action: "embedding.generate",
+          purpose: options.purpose ?? "creation",
+          cost: "unknown",
+          inputCharacters: compactText.length,
+          ...accounting,
           attempt,
           configIndex,
-          durationMs: Date.now() - startedAt,
+          durationMs: Date.now() - attemptStartedAt,
           dimensions: config.dimensions,
           maxAttempts,
           model: config.model,
@@ -260,7 +300,8 @@ export async function generateEmbedding(
 
   await assertGenerationActive();
   if (lastError instanceof AppError) {
-    throw lastError;
+    execution.durationMs = Date.now() - startedAt;
+    throw new AppError(lastError.code, lastError.message, { execution });
   }
 
   throw new AppError("AI_UNAVAILABLE", "Embedding provider unavailable.");

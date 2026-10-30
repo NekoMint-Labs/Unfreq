@@ -16,6 +16,8 @@ import {
   users,
 } from "../../db/schema.js";
 import { serializePgVector } from "../../db/vector.js";
+import { isEmbeddingSpaceKey } from "../ai/embedding-space.js";
+import type { EmbeddingResult } from "../ai/embedding.js";
 import type {
   CreateSignalInput,
   SignalAudioStatus,
@@ -460,16 +462,21 @@ export async function listPublishedSignalMatchCandidates(
 export async function listPublishedSemanticSignalMatchCandidates(
   embedding: number[],
   limit: number,
-  excludeSignalId?: string,
-  embeddingVersion?: string,
+  excludeSignalId: string | undefined,
+  space: Omit<EmbeddingResult, "embedding">,
 ): Promise<SignalSemanticMatchRecord[]> {
+  // Legacy vectors have no provable template/normalization lineage. They stay
+  // readable, but cannot be silently treated as members of a new space.
+  if (!isEmbeddingSpaceKey(space.version) || embedding.length !== space.dimensions) return [];
   const queryVector = serializePgVector(embedding);
   const distance = sql<number>`${signals.embedding} <=> ${queryVector}::vector`.mapWith(Number);
   const filters = [...getPublicCompletedSignalFilters(), isNotNull(signals.embedding)];
 
-  if (embeddingVersion !== undefined) {
-    filters.push(eq(signals.embeddingVersion, embeddingVersion));
-  }
+  filters.push(eq(signals.embeddingVersion, space.version), eq(signals.embeddingProvider, space.provider),
+    eq(signals.embeddingModel, space.model), eq(signals.embeddingDimensions, space.dimensions),
+    sql`vector_dims(${signals.embedding}) = ${space.dimensions}`,
+    // A vector of an older/private body must not stand in for confirmed text.
+    sql`${signals.publicationSnapshot}->'content'->>'expandedText' = ${signals.expandedText}`);
 
   if (excludeSignalId !== undefined) {
     filters.push(ne(signals.id, excludeSignalId));
@@ -496,8 +503,9 @@ export async function listSignalsMissingEmbedding(limit: number): Promise<Signal
     .select(signalSelection)
     .from(signals)
     .leftJoin(users, eq(signals.authorId, users.id))
-    .where(and(eq(signals.generationStatus, "COMPLETED"), isNull(signals.embedding)))
-    .orderBy(asc(signals.createdAt))
+    .where(and(...getPublicCompletedSignalFilters(), isNull(signals.embedding),
+      sql`${signals.publicationSnapshot}->'content'->>'expandedText' = ${signals.expandedText}`))
+    .orderBy(asc(signals.createdAt), asc(signals.id))
     .limit(limit);
 
   return rows.map(toSignalRecord);
@@ -532,6 +540,7 @@ export async function listSignalsByRawInput(rawInputs: string[]): Promise<Signal
 export async function writeSignalEmbeddingIfMissing(
   params: WriteSignalEmbeddingInput,
 ): Promise<boolean> {
+  if (!isEmbeddingSpaceKey(params.version) || params.embedding.length !== params.dimensions) return false;
   const [updated] = await db
     .update(signals)
     .set({
@@ -542,7 +551,11 @@ export async function writeSignalEmbeddingIfMissing(
       embeddingVersion: params.version,
       updatedAt: new Date(),
     })
-    .where(and(eq(signals.id, params.id), isNull(signals.embedding)))
+    .where(and(eq(signals.id, params.id), isNull(signals.embedding), eq(signals.expandedText, params.expectedExpandedText),
+      ...(params.expectedPublicationVersion === undefined ? [] : [
+        ...getPublicCompletedSignalFilters(), eq(signals.publicationVersion, params.expectedPublicationVersion),
+        sql`${signals.publicationSnapshot}->'content'->>'expandedText' = ${signals.expandedText}`,
+      ])))
     .returning({
       id: signals.id,
     });
