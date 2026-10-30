@@ -32,6 +32,8 @@ export type ProviderRequestEvent = {
 };
 
 export type IntegrationProvider = {
+  setRerankFixture: (mode: "percent" | "partial") => void;
+  readonly rerankCalls: number;
   origin: string;
   tasks: string[];
   readonly requestEvents: readonly ProviderRequestEvent[];
@@ -63,8 +65,27 @@ export async function createProviderStub(): Promise<IntegrationProvider> {
     getChatProviderPrompt(task), task as Exclude<ProviderTask, "unsupported" | "invalid">,
   ]));
   let inFlight = 0;
+  let rerankMode: "percent" | "partial" = "percent";
+  let rerankCalls = 0;
   const server = createServer((request, response) => {
     void (async () => {
+      if (request.method === "POST" && request.url === "/v1/rerank") {
+        inFlight += 1;
+        try {
+          let raw = "";
+          for await (const chunk of request) { raw += chunk; if (raw.length > 128_000) throw new Error("Oversized synthetic rerank request."); }
+          const body = JSON.parse(raw) as { candidates?: Array<{ id: string }>; model?: string };
+          if (body.model !== "e2-reranker" || !Array.isArray(body.candidates) || body.candidates.length !== 2 || body.candidates.some((item) => typeof item.id !== "string")) {
+            throw new Error("Invalid synthetic rerank fixture.");
+          }
+          rerankCalls += 1;
+          const results = body.candidates.map((item, index) => ({ id: item.id, score: index === 0 ? 80 : 20 }));
+          response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ model: "e2-reranker-actual",
+            results: rerankMode === "partial" ? results.slice(0, 1) : results, meta: { tokens: { input_tokens: 12, output_tokens: 0 } } }));
+        } catch { response.writeHead(400).end(); }
+        finally { inFlight -= 1; }
+        return;
+      }
       if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
         response.writeHead(404).end();
         return;
@@ -141,6 +162,8 @@ export async function createProviderStub(): Promise<IntegrationProvider> {
     for (const hold of [...holds]) hold.release();
   };
   return {
+    setRerankFixture(mode) { rerankMode = mode; },
+    get rerankCalls() { return rerankCalls; },
     origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     tasks,
     requestEvents,

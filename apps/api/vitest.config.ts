@@ -26,6 +26,7 @@ export default defineConfig({
       RERANKER_API_KEY: "",
       RERANKER_BASE_URL: "",
       RERANKER_PROVIDER: "disabled",
+      RERANKER_SCORE_SCALE: "",
       TTS_API_KEY: "",
       TTS_BASE_URL: "",
     },

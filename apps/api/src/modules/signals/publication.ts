@@ -157,13 +157,19 @@ const countSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const sourceSchema = z.enum(["human", "seed", "ai_generated"]);
 const idSchema = z.uuid();
 const positionSchema = z.strictObject({ x: z.number(), y: z.number(), z: z.number() });
+const matchScoreProvenanceSchema = z.strictObject({
+  version: z.literal("match-score-v1"), scale: z.literal("zero_to_hundred"),
+  method: z.enum(["rules", "cosine", "reranker"]),
+  reason: z.enum(["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed"]),
+});
 export const publicMatchSchema = z.strictObject({
+  scoreProvenance: matchScoreProvenanceSchema.optional(),
   expandedText: nonblankTextSchema,
   authorFreqCode: frequencyCodeSchema.optional(),
   tags: z.array(tagSchema).max(3).refine((tags) => new Set(tags).size === tags.length),
   primaryBand: z.enum(signalPrimaryBands).optional(),
   id: idSchema,
-  score: z.number().finite().min(0),
+  score: z.number().finite().min(0).max(100),
   source: z.enum(["PUBLISHED", "SEEDED", "FALLBACK"]),
   resonanceCount: countSchema,
   publicationVersion: publicVersionSchema,
@@ -239,6 +245,7 @@ export function projectPublicSignal(input: ProjectionInput<PublicMetadata &
       ...publicContent(match),
       id: match.id,
       score: match.score,
+      ...(match.scoreProvenance === undefined ? {} : { scoreProvenance: match.scoreProvenance }),
       source: match.source,
       resonanceCount: match.resonanceCount,
       publicationVersion: match.publicationVersion,
@@ -247,15 +254,17 @@ export function projectPublicSignal(input: ProjectionInput<PublicMetadata &
 }
 
 export function projectPublicMatch(
-  input: ProjectionInput & { score: number },
+  input: ProjectionInput & { score: number; scoreProvenance?: import("@unfreq/contracts/signals").SignalMatchSummary["scoreProvenance"] },
 ): PublicSignalMatchSummary | undefined {
   const basis = projectionBasis(input);
-  const score = z.number().finite().min(0).safeParse(input.score);
+  const score = z.number().finite().min(0).max(100).safeParse(input.score);
+  const provenance = matchScoreProvenanceSchema.safeParse(input.scoreProvenance);
   if (basis === undefined || !score.success) return undefined;
   return {
     ...publicContent(basis.snapshot.content),
     id: basis.metadata.id,
     score: score.data,
+    ...(provenance.success ? { scoreProvenance: provenance.data } : {}),
     source: "PUBLISHED",
     resonanceCount: basis.metadata.resonanceCount,
     publicationVersion: basis.state.currentPublicationVersion,

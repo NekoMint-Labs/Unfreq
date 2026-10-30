@@ -1360,4 +1360,60 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(legacy.execution_json).toBeNull();
   });
 
+  it("E2 returns bounded public scores and safe provenance through the full HTTP projection", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const response = await request("GET", `/api/signals/${signal.id}`);
+      expect(response.statusCode).toBe(200);
+      const matches = response.json().data.signal.matches;
+      expect(matches.length).toBeGreaterThan(0);
+      for (const match of matches) {
+        expect(match.score).toBeGreaterThanOrEqual(0); expect(match.score).toBeLessThanOrEqual(100);
+        expect(match.scoreProvenance).toEqual({ version: "match-score-v1", scale: "zero_to_hundred", method: "rules", reason: "rules_only" });
+        for (const key of ["rawScore", "rawScale", "model", "provider", "seedText", "frequencyProfile"]) expect(match).not.toHaveProperty(key);
+      }
+    });
+  });
+
+  it("E2 preserves a declared range through admin storage and real HTTP transport, rejecting a partial batch", async () => {
+    const invalid = await request("POST", "/api/admin/provider-configs/reranker", admin.cookie, {
+      provider: "integration-loopback", model: "e2-reranker", baseUrl: h.provider.origin + "/v1", apiKey: "E2-STUB-ONLY",
+      extraJson: { scoreScale: "auto" },
+    });
+    expectError(invalid, 400, "VALIDATION_ERROR");
+    const created = await request("POST", "/api/admin/provider-configs/reranker", admin.cookie, {
+      provider: "integration-loopback", model: "e2-reranker", baseUrl: h.provider.origin + "/v1", apiKey: "E2-STUB-ONLY",
+      extraJson: { scoreScale: "zero_to_hundred" },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().data.providerConfig.id as string;
+    try {
+      const [{ rerankCandidates }, { resolveRerankerProviderConfigs }] = await Promise.all([h.loadModule("reranker"), h.loadModule("providerConfig")]);
+      const configs = await resolveRerankerProviderConfigs();
+      expect(configs[0]).toMatchObject({ provider: "integration-loopback", scoreScale: "zero_to_hundred" });
+      const calls = h.provider.rerankCalls;
+      const input = { queryText: "E2 synthetic confirmed query", candidates: [
+        { id: "a", expandedText: "E2 synthetic confirmed candidate A", distance: 0.2 },
+        { id: "b", expandedText: "E2 synthetic confirmed candidate B", distance: 0.5 },
+      ] };
+      const result = await rerankCandidates(input);
+      expect(result).toMatchObject({ model: "e2-reranker-actual", scoreScale: "zero_to_one",
+        results: [{ id: "a", rawScore: 80, rawScale: "zero_to_hundred", score: 0.8 }, { id: "b", rawScore: 20, score: 0.2 }],
+        execution: { cost: "unknown", attempts: [{ outcome: "SUCCEEDED", usage: { input_tokens: 12, output_tokens: 0 } }] } });
+      h.provider.setRerankFixture("partial");
+      await expect(rerankCandidates(input)).rejects.toMatchObject({ code: "AI_UNAVAILABLE", details: {
+        execution: { attempts: [{ outcome: "FAILED", failureKind: "invalid_score_batch", usage: { input_tokens: 12 } }] },
+      } });
+      expect(h.provider.rerankCalls - calls).toBe(2);
+      expect((await request("DELETE", `/api/admin/provider-configs/reranker/${id}`, admin.cookie)).statusCode).toBe(200);
+      const remaining = await resolveRerankerProviderConfigs();
+      expect(remaining.every((config) => config.model !== "e2-reranker")).toBe(true);
+    } finally {
+      h.provider.setRerankFixture("percent");
+      // Defensive cleanup only of this test's own synthetic provider row.
+      await h.sql`delete from provider_configs where id = ${id}`;
+    }
+  });
+
 });

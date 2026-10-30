@@ -44,6 +44,8 @@ AdminDashboard -> admin-data -> /api/admin/provider-configs
 
 ## Known Pitfalls
 
+- Rerank requires an explicit higher-is-more-relevant score range. Set `extraJson.scoreScale` through the admin form, or `RERANKER_SCORE_SCALE` for the environment, to `zero_to_one` or `zero_to_hundred` after checking the selected model's contract. Missing/unknown ranges are not inferred from the Provider name or a sample number; undeclared configurations use semantic fallback. Health probes apply the same complete-batch validation. See [E2 score contract and compatibility](../implementation/e2-rerank-scores-20261030.md).
+
 - Stored keys can be unreadable when `PROVIDER_CONFIG_SECRET` changes. Chat config resolution skips that row and keeps environment fallback.
 - Empty environment chat config should not block later database configs.
 - API key values must stay server-side. UI should only show `apiKeyLast4` and `keyState`.

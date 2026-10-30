@@ -87,7 +87,7 @@ async function main() {
     EMBEDDING_API_KEY: ["providerembedding", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", EMBEDDING_BASE_URL: ["providerembedding", "redisfault"].includes(caseId) ? `${http.origin}/v1` : "",
     EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "synthetic-embedding", EMBEDDING_PROVIDER: "integration-loopback", EMBEDDING_VERSION: "b3-synthetic-v1",
     RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${http.origin}/v1` : "",
-    RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker",
+    RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker", RERANKER_SCORE_SCALE: "zero_to_one",
     TTS_API_KEY: "abuse-stub-only", TTS_BASE_URL: ws.toString(), TTS_PROVIDER: "integration-loopback", TTS_MODEL: "synthetic-tts", TTS_VOICE_LEFT: "synthetic", TTS_VOICE_RIGHT: "synthetic",
     SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault", "reports"].includes(caseId) ? "true" : "false",
     SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",

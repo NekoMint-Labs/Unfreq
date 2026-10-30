@@ -21,7 +21,7 @@ export function safeProviderAccounting(payload: unknown): Pick<AiProviderAttempt
   const rawUsage = typeof record.usage === "object" && record.usage !== null
     ? record.usage as Record<string, unknown> : {};
   const usage: Record<string, number> = {};
-  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens"] as const) {
+  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"] as const) {
     const value = rawUsage[key];
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) usage[key] = value;
   }

@@ -20,6 +20,8 @@ export type AdminAiReviewStatus = "FALLBACK" | "SUCCEEDED";
 export type AdminCapabilityStatus = "configured" | "degraded" | "disabled";
 export type AdminChatProviderProfile = "default" | "fast";
 export type AdminProviderConfigKind = "chat" | "embedding" | "reranker" | "tts";
+/** Provider relevance, higher is better; this is not a calibrated probability. */
+export type RerankerScoreScale = "zero_to_one" | "zero_to_hundred";
 
 export type AdminOverview = {
   aiReviews: {
@@ -181,7 +183,7 @@ export type AiProviderAttempt = {
   failureKind?: string;
   statusCode?: number;
   responseModel?: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; input_tokens?: number; output_tokens?: number };
 };
 
 export type AiExecutionMetadata = {

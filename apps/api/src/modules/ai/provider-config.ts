@@ -83,6 +83,7 @@ export type TtsProviderConfig = {
 };
 
 export type RerankerProviderConfig = {
+  scoreScale?: string;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -299,6 +300,7 @@ export function getEnvironmentProviderConfig(kind: ProviderConfigKind): Provider
     apiKeyLast4:
       env.rerankerApiKey.length > 0 ? toApiKeyLast4(env.rerankerApiKey) : undefined,
     baseUrl: env.rerankerBaseUrl,
+    extraJson: { scoreScale: env.rerankerScoreScale },
     isEnabled: true,
     kind,
     model: env.rerankerModel,
@@ -382,6 +384,7 @@ export async function listProviderConfigViews(params: {
         (config.baseUrl.length > 0 &&
           (kind === "chat" || keyConfigured) &&
           config.provider.length > 0 &&
+          (kind !== "reranker" || ["zero_to_one", "zero_to_hundred"].includes(String(config.extraJson?.scoreScale))) &&
           config.model.length > 0);
       const failureCount = kind === "tts" ? params.failures[kind] : 0;
 
@@ -701,6 +704,7 @@ export async function resolveRerankerProviderConfigs(): Promise<RerankerProvider
               baseUrl: config.baseUrl,
               model: config.model,
               provider: config.provider,
+              scoreScale: readStringExtra(config.extraJson, "scoreScale", ""),
             },
           ];
     });
@@ -712,6 +716,7 @@ export async function resolveRerankerProviderConfigs(): Promise<RerankerProvider
       baseUrl: env.rerankerBaseUrl,
       model: env.rerankerModel,
       provider: env.rerankerProvider,
+      scoreScale: env.rerankerScoreScale,
     },
   ];
 }

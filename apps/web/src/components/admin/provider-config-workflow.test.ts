@@ -9,6 +9,17 @@ import {
 } from "./provider-config-workflow";
 
 describe("provider config workflow helpers", () => {
+  it("does not infer a reranker range and persists an explicit score contract", () => {
+    const draft = createEmptyProviderDraft("reranker");
+    expect(draft.scoreScale).toBe("");
+    expect(buildProviderPayload("reranker", draft).extraJson).toEqual({ scoreScale: "" });
+    draft.scoreScale = "zero_to_hundred";
+    expect(buildProviderPayload("reranker", draft).extraJson).toEqual({ scoreScale: "zero_to_hundred" });
+    const stored = { id: "synthetic-reranker", apiKeyLast4: "only", baseUrl: "https://synthetic.invalid", kind: "reranker" as const,
+      model: "synthetic", provider: "synthetic", isEnabled: true, keyState: "configured" as const, priority: 100,
+      source: "database" as const, status: "configured" as const, extraJson: { scoreScale: "zero_to_hundred" } };
+    expect(buildProviderPayload("reranker", toProviderDrafts([stored])[stored.id]).extraJson).toEqual({ scoreScale: "zero_to_hundred" });
+  });
   it("removes the temporary provider draft after add", () => {
     const drafts = {
       "existing:chat": { id: "1", model: "main" },

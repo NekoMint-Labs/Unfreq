@@ -1,139 +1,61 @@
-export type RerankerAdapterCandidate = {
-  expandedText: string;
-  id: string;
-};
+import type { RerankerScoreScale } from "@unfreq/contracts/admin";
 
+export const rerankerScoreVersion = "relevance-range-v1";
+export type RerankerAdapterCandidate = { expandedText: string; id: string };
 export type RerankerAdapterResult = {
   id: string;
   reason: string;
+  rawScore: number;
+  rawScale: RerankerScoreScale;
+  /** Common relevance scale [0,1], higher is better, not a probability. */
   score: number;
 };
-
-type GenericRerankerPayload = {
-  results?: Array<{
-    id?: unknown;
-    reason?: unknown;
-    score?: unknown;
-  }>;
-};
-
-type SiliconFlowRerankerPayload = {
-  results?: Array<{
-    index?: unknown;
-    relevance_score?: unknown;
-  }>;
-};
-
-function isSiliconFlowProvider(provider: string): boolean {
-  return provider.trim().toLowerCase() === "siliconflow";
+export function isRerankerScoreScale(value: unknown): value is RerankerScoreScale {
+  return value === "zero_to_one" || value === "zero_to_hundred";
 }
-
+export function normalizeRerankerScore(value: unknown, scale: unknown): number | undefined {
+  if (!isRerankerScoreScale(scale) || typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const maximum = scale === "zero_to_one" ? 1 : 100;
+  if (value < 0 || value > maximum) return undefined;
+  return value / maximum;
+}
+function isSiliconFlowProvider(provider: string): boolean { return provider.trim().toLowerCase() === "siliconflow"; }
 export function buildRerankerRequestBody(params: {
-  candidates: RerankerAdapterCandidate[];
-  model: string;
-  provider: string;
-  queryText: string;
+  candidates: RerankerAdapterCandidate[]; model: string; provider: string; queryText: string;
 }): Record<string, unknown> {
-  if (isSiliconFlowProvider(params.provider)) {
-    return {
-      documents: params.candidates.map((candidate) => candidate.expandedText),
-      model: params.model,
-      query: params.queryText,
-    };
-  }
-
-  return {
-    candidates: params.candidates,
-    model: params.model,
-    query: params.queryText,
+  if (isSiliconFlowProvider(params.provider)) return {
+    documents: params.candidates.map((candidate) => candidate.expandedText), model: params.model,
+    query: params.queryText, top_n: params.candidates.length, return_documents: false,
   };
+  return { candidates: params.candidates, model: params.model, query: params.queryText };
 }
 
-function readGenericRerankerResults(
-  payload: unknown,
-): NonNullable<GenericRerankerPayload["results"]> {
-  if (typeof payload !== "object" || payload === null) {
-    return [];
-  }
-
-  const results = (payload as GenericRerankerPayload).results;
-
-  return Array.isArray(results) ? results : [];
-}
-
-function readSiliconFlowRerankerResults(
-  payload: unknown,
-): NonNullable<SiliconFlowRerankerPayload["results"]> {
-  if (typeof payload !== "object" || payload === null) {
-    return [];
-  }
-
-  const results = (payload as SiliconFlowRerankerPayload).results;
-
-  return Array.isArray(results) ? results : [];
-}
-
-function parseGenericRerankerPayload(
-  payload: unknown,
-  candidateIds: Set<string>,
-): RerankerAdapterResult[] {
-  const results = readGenericRerankerResults(payload);
-
-  return results.flatMap((item) => {
-    if (
-      typeof item.id !== "string" ||
-      !candidateIds.has(item.id) ||
-      typeof item.score !== "number" ||
-      !Number.isFinite(item.score)
-    ) {
-      return [];
-    }
-
-    return {
-      id: item.id,
-      reason: typeof item.reason === "string" ? item.reason : "reranker",
-      score: item.score,
-    };
-  });
-}
-
-function parseSiliconFlowRerankerPayload(
-  payload: unknown,
-  candidates: RerankerAdapterCandidate[],
-): RerankerAdapterResult[] {
-  const results = readSiliconFlowRerankerResults(payload);
-
-  return results.flatMap((item) => {
-    if (
-      typeof item.index !== "number" ||
-      !Number.isInteger(item.index) ||
-      item.index < 0 ||
-      item.index >= candidates.length ||
-      typeof item.relevance_score !== "number" ||
-      !Number.isFinite(item.relevance_score)
-    ) {
-      return [];
-    }
-
-    return {
-      id: candidates[item.index].id,
-      reason: "reranker",
-      score: item.relevance_score,
-    };
-  });
-}
-
+// A batch is atomic: duplicate/unknown IDs, partial coverage, non-finite or
+// out-of-contract scores invalidate the whole provider response. Never fill a
+// hole with a number from another score distribution.
 export function parseRerankerResponsePayload(params: {
-  candidates: RerankerAdapterCandidate[];
-  payload: unknown;
-  provider: string;
+  candidates: RerankerAdapterCandidate[]; payload: unknown; provider: string; scoreScale?: unknown;
 }): RerankerAdapterResult[] {
-  if (isSiliconFlowProvider(params.provider)) {
-    return parseSiliconFlowRerankerPayload(params.payload, params.candidates);
+  if (!isRerankerScoreScale(params.scoreScale) || typeof params.payload !== "object" || params.payload === null) return [];
+  const values = (params.payload as { results?: unknown }).results;
+  if (!Array.isArray(values) || values.length !== params.candidates.length || values.length === 0) return [];
+  const candidates = new Set(params.candidates.map((item) => item.id));
+  if (candidates.size !== params.candidates.length) return [];
+  const seen = new Set<string>();
+  const results: RerankerAdapterResult[] = [];
+  for (const raw of values) {
+    if (typeof raw !== "object" || raw === null) return [];
+    const item = raw as Record<string, unknown>;
+    const siliconFlow = isSiliconFlowProvider(params.provider);
+    const index = item.index;
+    const id = siliconFlow
+      ? typeof index === "number" && Number.isInteger(index) && index >= 0 && index < params.candidates.length ? params.candidates[index].id : undefined
+      : item.id;
+    const rawScore = siliconFlow ? item.relevance_score : item.score;
+    const score = normalizeRerankerScore(rawScore, params.scoreScale);
+    if (typeof id !== "string" || !candidates.has(id) || seen.has(id) || score === undefined) return [];
+    seen.add(id);
+    results.push({ id, reason: "provider_relevance", rawScore: rawScore as number, rawScale: params.scoreScale, score });
   }
-
-  return parseGenericRerankerPayload(
-    params.payload,
-    new Set(params.candidates.map((candidate) => candidate.id)),
-  );
+  return results;
 }

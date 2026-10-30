@@ -22,7 +22,7 @@ describe("provider health checks", () => {
     const stopped = new AbuseControlStopped(reason, rule[kind], 1000);
     vi.mocked(authorizeProviderDispatch).mockRejectedValueOnce(stopped);
     await expect(testProviderConfig(kind, {
-      apiKey: "synthetic-probe-key", baseUrl: "https://probe.invalid/v1", model: "synthetic", provider: "synthetic",
+      apiKey: "synthetic-probe-key", baseUrl: "https://probe.invalid/v1", model: "synthetic", provider: "synthetic", extraJson: { scoreScale: "zero_to_one" },
     })).rejects.toBe(stopped);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -133,6 +133,7 @@ describe("provider health checks", () => {
         documents: ["一段安静的测试文本。", "另一段用于排序的测试文本。"],
         model: "Qwen/Qwen3-Reranker-0.6B",
         query: "测试文本",
+        top_n: 2, return_documents: false,
       });
 
       return Promise.resolve(
@@ -142,7 +143,7 @@ describe("provider health checks", () => {
               {
                 index: 0,
                 relevance_score: 0.91,
-              },
+              }, { index: 1, relevance_score: 0.4 },
             ],
           }),
           { status: 200 },
@@ -154,7 +155,7 @@ describe("provider health checks", () => {
     const result = await testProviderConfig("reranker", {
       apiKey: "sk-test",
       baseUrl: "https://api.siliconflow.com/v1",
-      extraJson: {},
+      extraJson: { scoreScale: "zero_to_one" },
       model: "Qwen/Qwen3-Reranker-0.6B",
       provider: "siliconflow",
     });

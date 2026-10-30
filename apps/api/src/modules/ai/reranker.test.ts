@@ -12,6 +12,7 @@ describe("reranker adapter", () => {
         documents: ["第一段候选信号", "第二段候选信号"],
         model: "Qwen/Qwen3-Reranker-0.6B",
         query: "测试文本",
+        top_n: 2, return_documents: false,
       });
 
       return Promise.resolve(
@@ -55,21 +56,25 @@ describe("reranker adapter", () => {
         baseUrl: "https://api.siliconflow.com/v1",
         model: "Qwen/Qwen3-Reranker-0.6B",
         provider: "siliconflow",
+        scoreScale: "zero_to_one",
       },
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       model: "Qwen/Qwen3-Reranker-0.6B",
       provider: "siliconflow",
+        scoreScale: "zero_to_one",
       results: [
         {
           id: "candidate-b",
-          reason: "reranker",
+          reason: "provider_relevance",
+          rawScore: 0.82, rawScale: "zero_to_one",
           score: 0.82,
         },
         {
           id: "candidate-a",
-          reason: "reranker",
+          reason: "provider_relevance",
+          rawScore: 0.41, rawScale: "zero_to_one",
           score: 0.41,
         },
       ],
@@ -129,13 +134,15 @@ describe("reranker adapter", () => {
         baseUrl: "https://reranker.example.com/v1",
         model: "generic-reranker",
         provider: "openai-compatible",
+        scoreScale: "zero_to_one",
       },
     );
 
     expect(result.results).toEqual([
       {
         id: "candidate-a",
-        reason: "matched",
+        reason: "provider_relevance",
+        rawScore: 0.66, rawScale: "zero_to_one",
         score: 0.66,
       },
     ]);

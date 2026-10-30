@@ -48,7 +48,7 @@ beforeEach(() => {
   calls.embeddingConfigured.mockReset().mockResolvedValue(true);
   calls.embedding.mockReset().mockResolvedValue({ embedding: [0.1, 0.2, 0.3], dimensions: 3, model: "synthetic", provider: "synthetic", version: "unit-v1" });
   calls.rerankerConfigured.mockReset().mockResolvedValue(true);
-  calls.rerank.mockReset().mockResolvedValue({ model: "synthetic", provider: "synthetic", results: [{ id: candidate.id, reason: "synthetic", score: 0.9 }] });
+  calls.rerank.mockReset().mockResolvedValue({ model: "synthetic", provider: "synthetic", scoreScale: "zero_to_one", results: [{ id: candidate.id, reason: "synthetic", score: 0.9, rawScore: 0.9, rawScale: "zero_to_one" }] });
   calls.semantic.mockReset().mockResolvedValue([candidate]);
   calls.keyword.mockReset().mockResolvedValue([]);
   calls.recheck.mockReset().mockImplementation(async (rows: SignalSemanticMatchRecord[]) => rows.map((row) => row.expandedText === undefined ? candidate : row));

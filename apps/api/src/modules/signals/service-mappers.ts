@@ -1,3 +1,4 @@
+import { cosineRelevance } from "./match-scoring.js";
 import { isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
 import {
@@ -295,10 +296,10 @@ export function toMatchSummary(signal: SignalRecord, score: number): SignalMatch
 }
 
 export function toSemanticMatchSummary(signal: SignalSemanticMatchRecord): SignalMatchSummary {
-  const distance = Math.max(0, signal.distance);
+  const distance = signal.distance;
 
   return {
-    ...toMatchSummary(signal, Number(((1 / (1 + distance)) * 100).toFixed(4))),
+    ...toMatchSummary(signal, Number((cosineRelevance(distance) * 100).toFixed(4))),
     distance: Number(distance.toFixed(6)),
   };
 }

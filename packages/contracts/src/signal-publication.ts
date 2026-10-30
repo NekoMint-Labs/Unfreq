@@ -50,7 +50,15 @@ export type SignalPublicationActions = {
   publishedContent?: SignalPublicContent;
 };
 
+export type SignalMatchScoreProvenance = {
+  version: "match-score-v1";
+  scale: "zero_to_hundred";
+  method: "rules" | "cosine" | "reranker";
+  reason: "rules_only" | "reranker_complete" | "reranker_not_configured" | "reranker_failed";
+};
+
 export type PublicSignalMatchSummary = SignalPublicContent & {
+  scoreProvenance?: SignalMatchScoreProvenance;
   id: string;
   score: number;
   source: SignalMatchSource;

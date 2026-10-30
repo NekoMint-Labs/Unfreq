@@ -1,3 +1,4 @@
+import { composeMatchScore, cosineRelevance, matchScoreVersion } from "./match-scoring.js";
 import { isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
@@ -8,6 +9,7 @@ import {
   isEmbeddingProviderConfigured,
 } from "../ai/embedding.js";
 import { isRerankerProviderConfigured, rerankCandidates } from "../ai/reranker.js";
+import { normalizeRerankerScore } from "../ai/reranker-adapter.js";
 import type { AiSignalSeedClassification } from "../ai/signal-types.js";
 import {
   listPublishedSemanticSignalMatchCandidates,
@@ -73,7 +75,8 @@ async function findKeywordSameFrequencyMatches(
   await assertGenerationActive();
   const publishedMatches = publishedCandidates
     .filter((candidate) => candidate.id !== options.excludeSignalId && isPublicSignal(candidate))
-    .map((candidate) => toMatchSummary(candidate, scoreSignalMatch(fingerprint, candidate)))
+    .map<SignalMatchSummary>((candidate) => ({ ...toMatchSummary(candidate, composeMatchScore(undefined, scoreSignalMatch(fingerprint, candidate))),
+      scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred" as const, method: "rules" as const, reason: "rules_only" as const } }))
     .filter((candidate) => candidate.score > 0)
     .sort((left, right) => {
       if (right.score !== left.score) {
@@ -94,15 +97,15 @@ async function rerankSemanticMatches(params: {
   logger?: EmbeddingLogger;
 }): Promise<SignalMatchSummary[]> {
   await assertGenerationActive();
-  const applyFrequencyScore = (match: SignalMatchSummary, candidate: SignalRecord) => {
-    const semanticScore = match.score;
-    const frequencyScore = scoreSignalMatch(params.fingerprint, candidate);
-
-    return {
-      ...match,
-      score: Number(((semanticScore * 0.6) + frequencyScore).toFixed(4)),
-    };
-  };
+  const applyScore = (candidate: SignalSemanticMatchRecord, retrieval: number,
+    method: "cosine" | "reranker", reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed"): SignalMatchSummary => ({
+    ...toSemanticMatchSummary(candidate),
+    score: composeMatchScore(retrieval, scoreSignalMatch(params.fingerprint, candidate)),
+    scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred" as const, method, reason },
+  });
+  const sorted = (matches: SignalMatchSummary[]) => matches.sort((a,b) => b.score - a.score || a.id.localeCompare(b.id));
+  const cosineFallback = (reason: "reranker_not_configured" | "reranker_failed") => sorted(params.candidates.map((candidate) =>
+    applyScore(candidate, cosineRelevance(candidate.distance), "cosine", reason)));
 
   const observed = params.candidates;
   const current = await recheckPublicSignals(observed);
@@ -110,15 +113,7 @@ async function rerankSemanticMatches(params: {
   const configured = await isRerankerProviderConfigured();
   await assertGenerationActive();
   if (!configured) {
-    return params.candidates
-      .map((candidate) => applyFrequencyScore(toSemanticMatchSummary(candidate), candidate))
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
+    return cosineFallback("reranker_not_configured");
   }
 
   try {
@@ -135,32 +130,24 @@ async function rerankSemanticMatches(params: {
         };
       }),
       queryText: params.expandedText,
-    });
+    }, undefined, { logger: params.logger });
     await assertGenerationActive();
-    const scoreById = new Map(
-      reranked.results.map((result) => {
-        return [result.id, result.score];
-      }),
-    );
-
-    return params.candidates
-      .map((candidate) => {
-        const fallback = toSemanticMatchSummary(candidate);
-        const score = scoreById.get(candidate.id);
-        const match = {
-          ...fallback,
-          score: score === undefined ? fallback.score : Number(score.toFixed(4)),
-        };
-
-        return applyFrequencyScore(match, candidate);
-      })
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
+    const scoreById = new Map(reranked.results.map((result) => [result.id, result.score]));
+    // Defence in depth: a mocked/older adapter must not reintroduce per-ID mixing.
+    if (reranked.scoreScale !== "zero_to_one" || scoreById.size !== params.candidates.length || reranked.results.length !== params.candidates.length ||
+        reranked.results.some((result) => normalizeRerankerScore(result.rawScore, result.rawScale) !== result.score) ||
+        params.candidates.some((candidate) => { const score = scoreById.get(candidate.id); return score === undefined || !Number.isFinite(score) || score < 0 || score > 1; })) {
+      throw new Error("Incomplete normalized rerank batch.");
+    }
+    const matches = sorted(params.candidates.map((candidate) => applyScore(candidate, scoreById.get(candidate.id)!, "reranker", "reranker_complete")));
+    const legacy = params.candidates.map((candidate) => {
+      const result = reranked.results.find((item) => item.id === candidate.id)!;
+      return { id: candidate.id, score: Number((0.6 * result.rawScore + scoreSignalMatch(params.fingerprint, candidate)).toFixed(4)) };
+    }).sort((a,b) => b.score-a.score || a.id.localeCompare(b.id));
+    params.logger?.info({ action: "signal.match.scoring", version: matchScoreVersion, execution: reranked.execution,
+      previous: legacy, current: matches.map((match) => ({ id: match.id, score: match.score })),
+      rawScores: reranked.results.map(({ id, rawScore, rawScale, score }) => ({ id, rawScore, rawScale, normalizedScore: score })) }, "match score scale comparison; no quality claim");
+    return matches;
   } catch (error) {
     throwIfGenerationStopped(error);
     await assertGenerationActive();
@@ -173,15 +160,7 @@ async function rerankSemanticMatches(params: {
       "signal reranker fell back",
     );
 
-    return params.candidates
-      .map((candidate) => applyFrequencyScore(toSemanticMatchSummary(candidate), candidate))
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
+    return cosineFallback("reranker_failed");
   }
 }
 
@@ -222,7 +201,7 @@ async function findSemanticSameFrequencyMatches(params: {
       embedding,
     );
     await assertGenerationActive();
-    const eligible = semanticCandidates.filter(isPublicSignal);
+    const eligible = semanticCandidates.filter((candidate) => isPublicSignal(candidate) && Number.isFinite(candidate.distance) && candidate.distance >= 0 && candidate.distance <= 2);
     params.logger?.info({ action: "signal.semantic_match.candidates", purpose: params.publicQuery ? "public-detail" : "creation",
       version: embedding.version, provider: embedding.provider, model: embedding.model,
       dimensions: embedding.dimensions, candidates: eligible.length, legacyVectorsIncluded: false }, "semantic candidates selected within one embedding space");

@@ -93,6 +93,7 @@ const envSchema = z.object({
   RERANKER_BASE_URL: z.union([z.string().url(), z.literal("")]).default(""),
   RERANKER_MODEL: z.string().min(1).default("local-disabled"),
   RERANKER_PROVIDER: z.string().min(1).default("disabled"),
+  RERANKER_SCORE_SCALE: z.enum(["", "zero_to_one", "zero_to_hundred"]).default(""),
   SESSION_SECRET: z
     .string()
     .min(32)
@@ -239,6 +240,7 @@ export const env = {
   rerankerBaseUrl: parsedEnv.data.RERANKER_BASE_URL,
   rerankerModel: parsedEnv.data.RERANKER_MODEL,
   rerankerProvider: parsedEnv.data.RERANKER_PROVIDER,
+  rerankerScoreScale: parsedEnv.data.RERANKER_SCORE_SCALE,
   sessionSecret: parsedEnv.data.SESSION_SECRET,
   webOrigin: parsedEnv.data.WEB_ORIGIN,
 } as const;

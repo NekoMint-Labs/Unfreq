@@ -247,6 +247,18 @@ function ProviderConfigCard({
             </select>
           </label>
         ) : null}
+        {resolvedKind === "reranker" ? (
+          <label className="grid gap-2 text-sm">
+            <span>分数范围（高分表示更相关）</span>
+            <select className="radio-field min-h-11" value={draft.scoreScale}
+              onChange={(event) => updateProviderDraft(draftKey, { scoreScale: event.target.value as ProviderConfigDraft["scoreScale"] })}>
+              <option value="">未声明，使用语义回退</option>
+              <option value="zero_to_one">0–1</option>
+              <option value="zero_to_hundred">0–100</option>
+            </select>
+            <span className="text-xs text-[color:var(--radio-dim)]">按该模型的接口约定选择；这些分数不代表匹配概率。</span>
+          </label>
+        ) : null}
         <label className="inline-flex min-h-10 items-center gap-2 self-end text-sm text-[color:var(--radio-muted)]">
           <input
             checked={draft.isEnabled}

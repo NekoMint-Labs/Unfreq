@@ -148,7 +148,7 @@ async function toPublishedSignalDetail(signal: SignalRecord, frequency?: Authent
   if (parent === undefined) throw notFound();
   const matches = candidates.flatMap((match) => {
     const row = current.find((item) => item.id === match.id);
-    const projected = row === undefined ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score });
+    const projected = row === undefined ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score, scoreProvenance: match.scoreProvenance });
     return projected === undefined ? [] : [projected];
   });
   const detail = projectPublicSignal({ ...publicationProjection(parent, signal.publicationVersion), matches,

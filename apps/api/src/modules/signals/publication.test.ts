@@ -417,12 +417,15 @@ describe("public whitelist projections", () => {
     expect(projectPublicSignal({ ...base, matches: [{ ...match, program: signal.programJson } as NonNullable<typeof match>] })).toBeUndefined();
   });
 
-  it("preserves existing finite nonnegative match scores without introducing the later scoring contract", () => {
+  it("enforces the E2 public scale and projects only safe score provenance", () => {
     const base = { signal: signalFixture(), snapshot: confirmedSnapshot(), state: validState() };
-    const match = projectPublicMatch({ ...base, score: 250 });
-    expect(match?.score).toBe(250);
-    expect(projectPublicSignal({ ...base, matches: match ? [match] : [] })?.matches[0]?.score).toBe(250);
-    for (const score of [-1, NaN, Infinity]) expect(projectPublicMatch({ ...base, score })).toBeUndefined();
+    const scoreProvenance = { version: "match-score-v1", scale: "zero_to_hundred", method: "cosine", reason: "reranker_failed" } as const;
+    const match = projectPublicMatch({ ...base, score: 90, scoreProvenance });
+    expect(match).toMatchObject({ score: 90, scoreProvenance });
+    expect(projectPublicSignal({ ...base, matches: match ? [match] : [] })?.matches[0]?.scoreProvenance).toEqual(scoreProvenance);
+    expect(JSON.stringify(match)).not.toContain("PRIVATE_");
+    for (const score of [-1, 101, 250, NaN, Infinity]) expect(projectPublicMatch({ ...base, score })).toBeUndefined();
+    expect(projectPublicMatch({ ...base, score: 90, scoreProvenance: { ...scoreProvenance, secret: "PRIVATE_MODEL" } as typeof scoreProvenance })?.scoreProvenance).toBeUndefined();
   });
 
   it("keeps Galaxy links only inside the caller's current visible set", () => {

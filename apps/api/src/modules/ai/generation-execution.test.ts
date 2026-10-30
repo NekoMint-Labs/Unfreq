@@ -14,7 +14,7 @@ import { generateOwnedSignalOutput } from "../signals/service-creation.js";
 const state = vi.hoisted(() => ({
   chat: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/chat-${index}`, profile: "default", model: "synthetic-chat", provider: "synthetic" })),
   embedding: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/embed-${index}`, dimensions: 3, model: "synthetic-embedding", provider: "synthetic", version: "unit-v1" })),
-  reranker: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/rank-${index}`, model: "synthetic-reranker", provider: "synthetic" })),
+  reranker: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/rank-${index}`, model: "synthetic-reranker", provider: "synthetic", scoreScale: "zero_to_one" })),
   auditConfig: vi.fn(), review: vi.fn(),
 }));
 vi.mock("./provider-config.js", () => ({

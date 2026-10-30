@@ -13,6 +13,8 @@ import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtim
 type ManagedEnvironment = { databaseUrl: string; redisUrl: string; runId: string };
 type IntegrationSql = ReturnType<typeof postgres>;
 type CoreModules = {
+  reranker: typeof import("../../src/modules/ai/reranker.js");
+  providerConfig: typeof import("../../src/modules/ai/provider-config.js");
   app: typeof import("../../src/app.js");
   env: typeof import("../../src/config/env.js");
   repository: typeof import("../../src/modules/signals/repository.js");
@@ -23,6 +25,7 @@ type CoreModules = {
   audioStorage: typeof import("../../src/modules/signals/audio-storage.js");
 };
 const coreModulePaths: Record<keyof CoreModules, string> = {
+  reranker: "modules/ai/reranker.js", providerConfig: "modules/ai/provider-config.js",
   app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
   mappers: "modules/signals/service-mappers.js", audioStorage: "modules/signals/audio-storage.js",
   publicationRepository: "modules/signals/publication-repository.js",
@@ -91,7 +94,7 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     AI_PROVIDER: "integration-loopback", AI_MODEL: "synthetic-signal-v1",
     AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "",
     EMBEDDING_API_KEY: "", EMBEDDING_BASE_URL: "", EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "integration-disabled", EMBEDDING_PROVIDER: "disabled", EMBEDDING_VERSION: "integration-v1",
-    RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_MODEL: "integration-disabled", RERANKER_PROVIDER: "disabled",
+    RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_MODEL: "integration-disabled", RERANKER_PROVIDER: "disabled", RERANKER_SCORE_SCALE: "",
     TTS_API_KEY: "", TTS_BASE_URL: "", TTS_MODEL: "integration-disabled", TTS_PROVIDER: "disabled",
     TTS_STORAGE_DIR: join(directory, "audio"), TTS_VOICE_LEFT: "integration", TTS_VOICE_RIGHT: "integration",
     IMAGE_STORAGE_DIR: join(directory, "images"), HEALTH_DEPENDENCY_TIMEOUT_MS: "500", DB_POOL_MAX: "4",
