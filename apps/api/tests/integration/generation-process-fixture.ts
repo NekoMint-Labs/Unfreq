@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import type { FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
@@ -25,6 +26,7 @@ const commandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("diagnostics") }).strict(),
   z.object({ kind: z.literal("worker-state") }).strict(),
   z.object({ kind: z.literal("control-state") }).strict(),
+  z.object({ kind: z.literal("http-state") }).strict(),
   z.object({ kind: z.literal("checkpoint-arm"), point: z.enum(["before-dispatch", "before-complete", "before-next-claim"]) }).strict(),
   z.object({ kind: z.literal("checkpoint-release"), gateId: z.string().uuid() }).strict(),
   z.object({ kind: z.literal("probe-completion"), id: z.string().uuid() }).strict(),
@@ -35,8 +37,22 @@ const messageSchema = z.object({ id: z.number().int().positive(), command: comma
 export type GenerationCommand = z.infer<typeof commandSchema>;
 export type GenerationHttpResponse = { statusCode: number; body: unknown; cookie?: string };
 export type GenerationDiagnostics = { blockedHttp: number; unhandled: number };
-export type GenerationShutdownDiagnostics = GenerationDiagnostics & { pendingHttp: number; abortedHttp: number };
+export type GenerationShutdownDiagnostics = GenerationDiagnostics & {
+  pendingHttp: number; abortedHttp: number; shutdownAbortedHttp: number;
+  closeStartedAt: number; closeFinishedAt: number;
+};
 export type GenerationWorkerState = { mode: "worker" | "repository"; accepting: boolean; activeCount: number };
+export type GenerationHttpAbortReason = "shutdown" | "deadline" | "obsolete" | "storage-uncertain" | "aborted" | "other";
+export type GenerationHttpTiming = {
+  seq: number; callId: number;
+  event: "fetch-entry" | "headers-returned" | "threw" | "aborted" | "finally";
+  at: number; elapsedMs: number; pendingHttp: number; aborted: boolean;
+  abortReason?: GenerationHttpAbortReason;
+  signalId?: string; attemptId?: string;
+};
+export type GenerationHttpState = {
+  timings: GenerationHttpTiming[]; timingsDropped: number; pendingHttp: number; abortedHttp: number; shutdownAbortedHttp: number;
+};
 export type GenerationStageResult = {
   staged: "older" | "newer"; id: string; attemptId: string; ownerId: string;
   attemptCount: number; leaseUntil: string; deadlineAt: string; phase: "WRITING";
@@ -147,6 +163,19 @@ async function main() {
   let unhandled = 0;
   let pendingHttp = 0;
   let abortedHttp = 0;
+  let shutdownAbortedHttp = 0;
+  let httpSequence = 0;
+  let httpCallSequence = 0;
+  let httpTimingsDropped = 0;
+  const httpTimings: GenerationHttpTiming[] = [];
+  const { GenerationExecutionStopped, getGenerationExecutionContext } = await import("../../src/shared/generation-execution.js");
+  const abortReason = (reason: unknown): GenerationHttpAbortReason => {
+    if (!(reason instanceof GenerationExecutionStopped)) return "other";
+    switch (reason.reason) {
+      case "shutdown": case "deadline": case "obsolete": case "storage-uncertain": case "aborted": return reason.reason;
+      default: return "other";
+    }
+  };
   globalThis.fetch = (async (input, init) => {
     let url: URL;
     try { url = new URL(typeof input === "string" || input instanceof URL ? input : input.url); }
@@ -156,11 +185,42 @@ async function main() {
       throw new Error("Generation outbound HTTP blocked.");
     }
     pendingHttp += 1;
+    const callId = ++httpCallSequence;
+    const startedAt = performance.now();
     const signal = init?.signal;
-    const aborted = () => { abortedHttp += 1; };
+    const audit = getGenerationExecutionContext()?.auditContext;
+    const operation = audit?.kind === "signal-generation" ? audit : undefined;
+    const recordHttp = (event: GenerationHttpTiming["event"]) => {
+      httpTimings.push({ seq: ++httpSequence, callId, event, at: Date.now(),
+        elapsedMs: Math.max(0, performance.now() - startedAt), pendingHttp,
+        aborted: signal?.aborted === true,
+        ...(signal?.aborted === true ? { abortReason: abortReason(signal.reason) } : {}),
+        ...(operation === undefined ? {} : { signalId: operation.signalId, attemptId: operation.attemptId }) });
+      if (httpTimings.length > 256) {
+        const removed = httpTimings.length - 256;
+        httpTimings.splice(0, removed);
+        httpTimingsDropped += removed;
+      }
+    };
+    recordHttp("fetch-entry");
+    const aborted = () => {
+      abortedHttp += 1;
+      if (abortReason(signal?.reason) === "shutdown") shutdownAbortedHttp += 1;
+      recordHttp("aborted");
+    };
     signal?.addEventListener("abort", aborted, { once: true });
-    try { return await originalFetch(input, { ...init, redirect: "error" }); }
-    finally { pendingHttp -= 1; signal?.removeEventListener("abort", aborted); }
+    try {
+      const response = await originalFetch(input, { ...init, redirect: "error" });
+      recordHttp("headers-returned");
+      return response;
+    } catch (error) {
+      recordHttp("threw");
+      throw error;
+    } finally {
+      pendingHttp -= 1;
+      signal?.removeEventListener("abort", aborted);
+      recordHttp("finally");
+    }
   }) as typeof fetch;
 
   // No app/env/db module is imported until both endpoint validation and the
@@ -251,6 +311,9 @@ async function main() {
       return { mode: owned.mode, accepting: worker.accepting, activeCount: worker.activeCount } satisfies GenerationWorkerState;
     }
     if (command.kind === "control-state") return controls.state satisfies GenerationControlState;
+    if (command.kind === "http-state") return {
+      timings: httpTimings, timingsDropped: httpTimingsDropped, pendingHttp, abortedHttp, shutdownAbortedHttp,
+    } satisfies GenerationHttpState;
     if (command.kind === "checkpoint-arm") { phase("CONTROL"); return controls.arm(command.point); }
     if (command.kind === "checkpoint-release") { phase("CONTROL"); return controls.release(command.gateId); }
     if (command.kind === "probe-completion") {
@@ -347,8 +410,11 @@ async function main() {
     }
     closing = true;
     phase("SHUTDOWN");
+    const closeStartedAt = Date.now();
     await app.close();
-    return { blockedHttp, unhandled, pendingHttp, abortedHttp } satisfies GenerationShutdownDiagnostics;
+    const closeFinishedAt = Date.now();
+    return { blockedHttp, unhandled, pendingHttp, abortedHttp, shutdownAbortedHttp,
+      closeStartedAt, closeFinishedAt } satisfies GenerationShutdownDiagnostics;
   }
 
   process.on("message", (input: unknown) => {

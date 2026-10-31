@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -13,7 +14,7 @@ import { fixtureSeed } from "./fixtures.js";
 import { installDispatchFault, readRetryHistory, type RetryHistory } from "./generation-test-db.js";
 import { verifyIntegrationRuntime, type IntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 import type { GenerationControlState } from "./generation-test-controls.js";
-import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationMessage, GenerationWorkerState, GenerationShutdownDiagnostics } from "./generation-process-fixture.js";
+import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, GenerationHttpResponse, GenerationHttpState, GenerationMessage, GenerationWorkerState, GenerationShutdownDiagnostics } from "./generation-process-fixture.js";
 
 type Sql = ReturnType<typeof postgres>;
 type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure" |
@@ -215,11 +216,12 @@ export type GenerationHarness = {
   inject: (child: GenerationProcess, command: Omit<Extract<GenerationCommand, { kind: "inject" }>, "kind">) => Promise<GenerationHttpResponse>;
   row: (id: string) => Promise<GenerationRow>;
   waitRow: (id: string, predicate: (row: GenerationRow) => boolean, label: string, milliseconds?: number) => Promise<GenerationRow>;
-  waitHold: (hold: ProviderRequestHold, child: GenerationProcess) => Promise<void>;
+  waitCompleted: (ids: string[], label: string, expectedAttempts?: number) => Promise<GenerationRow[]>;
+  waitHold: (hold: ProviderRequestHold, child: GenerationProcess, signalId?: string) => Promise<void>;
   waitIdle: () => Promise<void>;
   holdClaims: () => Promise<{ release: () => Promise<void> }>;
   waitNoAppConnections: () => Promise<void>;
-  waitControl: (child: GenerationProcess, predicate: (state: GenerationControlState) => boolean, label: string) => Promise<GenerationControlState>;
+  waitControl: (child: GenerationProcess, predicate: (state: GenerationControlState) => boolean, label: string, signalId?: string) => Promise<GenerationControlState>;
   installDispatchFault: (session: GenerationSession, mode: "twice" | "always") => Promise<void>;
   retryHistory: () => Promise<RetryHistory[]>;
   record: (event: string, values?: Record<string, string | number | boolean | null>) => void;
@@ -451,6 +453,43 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
       const outcomes = new Set(["PENDING", "RETURNED", "THREW", "APPLIED", "OBSOLETE", "ACTIVE", "INACTIVE", "EMPTY", "CLAIMED", "COMPLETED", "FAILED"]);
       const phases = new Set(["RECEIVED", "EXPANDING", "MATCHING", "WRITING", "COMPLETED", "FAILED"]);
       const statuses = new Set(["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"]);
+      // Snapshot live child metadata before database observations or an owned
+      // kill. These diagnostics run after, and cannot reverse, a failed verdict.
+      const httpEvents = new Set(["fetch-entry", "headers-returned", "threw", "aborted", "finally"]);
+      for (const child of children.filter((value) => !value.isClosed)) {
+        try {
+          const [state, worker, http] = await Promise.all([
+            child.request<GenerationControlState>({ kind: "control-state" }, 1_000),
+            child.request<GenerationWorkerState>({ kind: "worker-state" }, 1_000),
+            child.request<GenerationHttpState>({ kind: "http-state" }, 1_000),
+          ]);
+          record("failure-worker-state", { pid: child.pid, activeCount: finite(worker.activeCount), accepting: worker.accepting,
+            timingsDropped: finite(state.timingsDropped), claimCallsCompleted: finite(state.claimCallsCompleted) });
+          record("failure-http-state", { pid: child.pid, pendingHttp: finite(http.pendingHttp),
+            abortedHttp: finite(http.abortedHttp), shutdownAbortedHttp: finite(http.shutdownAbortedHttp),
+            timingsDropped: finite(http.timingsDropped) });
+          for (const timing of state.timings.slice(-256)) {
+            if (!methods.has(timing.method) || !["entry", "exit"].includes(timing.event) || !outcomes.has(timing.outcome)) continue;
+            record("failure-repository-timing", { pid: child.pid, seq: finite(timing.seq), callId: finite(timing.callId),
+              method: timing.method, timingEvent: timing.event, observedAt: finite(timing.at),
+              elapsedMs: finite(timing.elapsedMs), outcome: timing.outcome,
+              ...(timing.signalId !== undefined && ownedIds.has(timing.signalId) ? { id: timing.signalId } : {}),
+              ...(timing.attemptId !== undefined && /^[a-f0-9-]{36}$/u.test(timing.attemptId) ? { attemptId: timing.attemptId } : {}),
+              ...(timing.fromPhase !== undefined && phases.has(timing.fromPhase) ? { fromPhase: timing.fromPhase } : {}),
+              ...(timing.toPhase !== undefined && phases.has(timing.toPhase) ? { toPhase: timing.toPhase } : {}) });
+          }
+          for (const timing of http.timings.slice(-256)) {
+            if (!httpEvents.has(timing.event)) continue;
+            record("failure-http-timing", { pid: child.pid, seq: finite(timing.seq), callId: finite(timing.callId),
+              timingEvent: timing.event, observedAt: finite(timing.at), elapsedMs: finite(timing.elapsedMs),
+              pendingHttp: finite(timing.pendingHttp), aborted: timing.aborted === true,
+              ...(timing.abortReason !== undefined && ["shutdown", "deadline", "obsolete", "storage-uncertain", "aborted", "other"].includes(timing.abortReason)
+                ? { abortReason: timing.abortReason } : {}),
+              ...(timing.signalId !== undefined && ownedIds.has(timing.signalId) ? { id: timing.signalId } : {}),
+              ...(timing.attemptId !== undefined && /^[a-f0-9-]{36}$/u.test(timing.attemptId) ? { attemptId: timing.attemptId } : {}) });
+          }
+        } catch { record("failure-diagnostics-error", { scope: "child", pid: child.pid, code: "OWNED_CHILD_OBSERVATION_FAILED" }); }
+      }
       try {
         if (ownedIds.size) {
           const rows = await readySql<{ id: string; status: string; phase: string; attempt_count: number | null;
@@ -465,24 +504,6 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
             deadlineRemainingMs: value.deadline_remaining_ms === null ? null : finite(Number(value.deadline_remaining_ms)) });
         }
       } catch { record("failure-diagnostics-error", { scope: "database", code: "OWNED_ROW_OBSERVATION_FAILED" }); }
-      for (const child of children.filter((value) => !value.isClosed)) {
-        try {
-          const state = await child.request<GenerationControlState>({ kind: "control-state" }, 1_000);
-          const worker = await child.request<GenerationWorkerState>({ kind: "worker-state" }, 1_000);
-          record("failure-worker-state", { pid: child.pid, activeCount: finite(worker.activeCount), accepting: worker.accepting,
-            timingsDropped: finite(state.timingsDropped), claimCallsCompleted: finite(state.claimCallsCompleted) });
-          for (const timing of state.timings.slice(-256)) {
-            if (!methods.has(timing.method) || !["entry", "exit"].includes(timing.event) || !outcomes.has(timing.outcome)) continue;
-            record("failure-repository-timing", { pid: child.pid, seq: finite(timing.seq), callId: finite(timing.callId),
-              method: timing.method, timingEvent: timing.event, observedAt: finite(timing.at),
-              elapsedMs: finite(timing.elapsedMs), outcome: timing.outcome,
-              ...(timing.signalId !== undefined && ownedIds.has(timing.signalId) ? { id: timing.signalId } : {}),
-              ...(timing.attemptId !== undefined && /^[a-f0-9-]{36}$/u.test(timing.attemptId) ? { attemptId: timing.attemptId } : {}),
-              ...(timing.fromPhase !== undefined && phases.has(timing.fromPhase) ? { fromPhase: timing.fromPhase } : {}),
-              ...(timing.toPhase !== undefined && phases.has(timing.toPhase) ? { toPhase: timing.toPhase } : {}) });
-          }
-        } catch { record("failure-diagnostics-error", { scope: "child", pid: child.pid, code: "OWNED_CHILD_OBSERVATION_FAILED" }); }
-      }
       const tasks = new Set(["signal-material", "signal-intent-analysis", "signal-fingerprint", "signal-expansion", "signal-expansion-review", "unsupported", "invalid"]);
       try {
         record("failure-provider-state", { inFlight: finite(readyProvider.inFlight), requestEventsDropped: finite(readyProvider.requestEventsDropped) });
@@ -492,6 +513,54 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
             observedAt: finite(event.at), elapsedMs: finite(event.elapsedMs) });
         }
       } catch { record("failure-diagnostics-error", { scope: "provider", code: "SYNTHETIC_PROVIDER_OBSERVATION_FAILED" }); }
+    };
+
+    // Preparation has no independent 3s service promise. Its fixed outer
+    // watchdog includes queue setup; once claimed, the real database deadline
+    // is authoritative and is never extended by a later scan or retry.
+    const ownedPreparation = (id: string) => {
+      assertOwned(id);
+      const startedAt = performance.now();
+      const watchdogMs = 10_000 + 5_000;
+      const watchdog = startedAt + watchdogMs;
+      let attemptDeadline = Number.POSITIVE_INFINITY;
+      const remaining = () => Math.min(watchdog, attemptDeadline) - performance.now();
+      return {
+        remaining,
+        async read() {
+          const queryStartedAt = performance.now();
+          const [value] = await readySql<{
+            id: string; status: string; phase: string; attempt_id: string | null;
+            deadline_remaining_ms: number | null; live_attempt: boolean; dispatched: boolean;
+          }[]>`
+            select id, status, generation_status as phase, generation_attempt_id as attempt_id,
+              (extract(epoch from (generation_attempt_deadline_at - clock_timestamp())) * 1000)::double precision as deadline_remaining_ms,
+              coalesce(status = 'DRAFT' and generation_status in ('EXPANDING','MATCHING','WRITING')
+                and generation_lease_owner is not null and generation_lease_until > clock_timestamp()
+                and generation_attempt_deadline_at > clock_timestamp(), false) as live_attempt,
+              generation_dispatch_started_at is not null as dispatched
+            from signals where id = ${id}`;
+          if (value === undefined) throw new Error("Owned preparation row disappeared.");
+          if (value.deadline_remaining_ms !== null) {
+            // Subtract the entire query duration conservatively, rather than
+            // adding transport delay to the database's remaining attempt time.
+            attemptDeadline = Math.min(attemptDeadline, queryStartedAt + Number(value.deadline_remaining_ms));
+          }
+          return value;
+        },
+        recordSuccess(pid: number, kind: "http" | "control") {
+          const preparationMs = Math.max(0, performance.now() - startedAt);
+          record("owned-preparation-reached", { id, pid, kind, preparationMs,
+            legacy3sObservationMet: preparationMs <= 3_000, watchdogMs });
+        },
+        async fail(child: GenerationProcess, reason: "watchdog" | "attempt-invalid" | "http-not-pending") {
+          record("owned-preparation-failed", { id, pid: child.pid, reason,
+            preparationMs: Math.max(0, performance.now() - startedAt), watchdogMs });
+          await captureFailureDiagnostics();
+          await child.hardStop("owned-preparation-failed");
+          throw new Error("Owned preparation did not reach its real live-attempt checkpoint.");
+        },
+      };
     };
     return {
       sql: readySql, provider: readyProvider, journal, record, close, inject, row, captureFailureDiagnostics,
@@ -562,17 +631,154 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         if (!predicate(current)) throw new Error(`Generation invariant did not settle: ${label}; status=${current.status}, generation=${current.generation_status}.`);
         return current;
       },
-      async waitHold(hold, child) {
+      async waitCompleted(ids, label, expectedAttempts = 1) {
+        if (!ids.length || new Set(ids).size !== ids.length || !Number.isSafeInteger(expectedAttempts) || expectedAttempts < 1 || expectedAttempts > 3) {
+          throw new Error("Invalid owned completion observation.");
+        }
+        for (const id of ids) assertOwned(id);
+        const startedAt = performance.now();
+        const startedWallAt = Date.now();
+        // C=2 and the real 10s attempt limit are fixed by the owned fixture.
+        // Account for sequential waves and bounded retry backoff once only.
+        const watchdogMs = Math.ceil(ids.length / 2) * expectedAttempts * 10_000 + expectedAttempts * 500 + 5_000;
+        const watchdog = startedAt + watchdogMs;
+        const assertWithinWatchdog = () => {
+          if (performance.now() >= watchdog) {
+            record("owned-completion-watchdog-failed", { count: ids.length, expectedAttempts, watchdogMs,
+              observationElapsedMs: Math.max(0, performance.now() - startedAt) });
+            throw new Error("Owned generation exceeded its fixed batch observation watchdog.");
+          }
+        };
+        const observedCompletions = new Set<string>();
+        const observedExpiredAttempts = new Set<string>();
+        type CompletionObservation = GenerationRow & {
+          completion_valid: boolean; claimed_at_ms: number | null; completed_at_ms: number | null;
+          pending_to_claim_ms: number | null; claim_to_completion_ms: number | null;
+          attempt_budget_ms: number | null; deadline_remaining_ms: number | null;
+        };
+        while (true) {
+          assertWithinWatchdog();
+          // One snapshot and one query per sample avoids N independent 25ms
+          // loops competing with the queue worker through the observer pool.
+          const rows = await readySql<CompletionObservation[]>`
+            select id, status, generation_status, generation_error, expanded_text, updated_at,
+              galaxy_position is not null as positioned,
+              generation_attempt_count, generation_attempt_id, generation_lease_owner, generation_lease_until,
+              generation_dispatch_started_at, generation_attempt_deadline_at,
+              coalesce(generation_lease_until <= clock_timestamp(), false) as lease_expired,
+              coalesce(status = 'DRAFT' and generation_status = 'COMPLETED' and galaxy_position is not null
+                and generation_attempt_count = ${expectedAttempts} and generation_attempt_id is not null
+                and generation_dispatch_started_at is not null
+                and generation_lease_owner is null and generation_lease_until is null
+                and generation_attempt_deadline_at = generation_attempt_started_at + interval '10000 milliseconds'
+                and generation_dispatch_started_at >= generation_attempt_started_at
+                and updated_at >= generation_dispatch_started_at
+                and updated_at < generation_attempt_deadline_at, false) as completion_valid,
+              (extract(epoch from generation_attempt_started_at) * 1000)::double precision as claimed_at_ms,
+              case when generation_status = 'COMPLETED' then (extract(epoch from updated_at) * 1000)::double precision end as completed_at_ms,
+              (extract(epoch from (generation_attempt_started_at - created_at)) * 1000)::double precision as pending_to_claim_ms,
+              case when generation_status = 'COMPLETED' then
+                (extract(epoch from (updated_at - generation_attempt_started_at)) * 1000)::double precision end as claim_to_completion_ms,
+              (extract(epoch from (generation_attempt_deadline_at - generation_attempt_started_at)) * 1000)::double precision as attempt_budget_ms,
+              (extract(epoch from (generation_attempt_deadline_at - clock_timestamp())) * 1000)::double precision as deadline_remaining_ms
+            from signals where id in ${readySql(ids)}`;
+          assertWithinWatchdog();
+          if (rows.length !== ids.length) throw new Error("Owned completion row disappeared.");
+          for (const value of rows) {
+            if (value.generation_status === "COMPLETED") {
+              // Compare the committed write time inside PostgreSQL, before
+              // considering the observer's clock or an expired read snapshot.
+              if (!value.completion_valid) {
+                record("owned-completion-invariant-failed", { id: value.id, attemptCount: value.generation_attempt_count,
+                  positioned: value.positioned, attemptBudgetMs: value.attempt_budget_ms,
+                  claimToCompletionMs: value.claim_to_completion_ms });
+                throw new Error("Owned completion violated its persisted attempt invariants.");
+              }
+              if (!observedCompletions.has(value.id)) {
+                observedCompletions.add(value.id);
+                const accepted = journal.find((event) => event.event === "accepted-pending" && event.id === value.id);
+                const acceptedAt = typeof accepted?.at === "number" ? accepted.at : undefined;
+                record("owned-completion-observed", { id: value.id, attemptCount: value.generation_attempt_count,
+                  pendingToClaimMs: value.pending_to_claim_ms,
+                  acceptedResponseToClaimMs: acceptedAt === undefined || value.claimed_at_ms === null ? null : value.claimed_at_ms - acceptedAt,
+                  claimToCompletionMs: value.claim_to_completion_ms, attemptBudgetMs: value.attempt_budget_ms,
+                  observationElapsedMs: Math.max(0, performance.now() - startedAt), watchdogMs,
+                  persistedWithinLegacy5s: value.completed_at_ms !== null && value.completed_at_ms <= startedWallAt + 5_000 });
+              }
+            } else {
+              if (value.generation_status === "FAILED" || (value.generation_attempt_count ?? 0) > expectedAttempts) {
+                record("owned-completion-terminal-failed", { id: value.id, attemptCount: value.generation_attempt_count,
+                  failed: value.generation_status === "FAILED", expectedAttempts });
+                throw new Error("Owned generation did not complete in its expected attempt count.");
+              }
+              // A statement snapshot can still show the old running row while
+              // a valid completion transaction is committing. Do not call that
+              // a business failure merely because this observation is later.
+              if (value.deadline_remaining_ms !== null && value.deadline_remaining_ms <= 0) {
+                const key = `${value.id}:${value.generation_attempt_id}`;
+                if (!observedExpiredAttempts.has(key)) {
+                  observedExpiredAttempts.add(key);
+                  record("attempt-deadline-observed-before-terminal", { id: value.id,
+                    attemptCount: value.generation_attempt_count, deadlineRemainingMs: value.deadline_remaining_ms });
+                }
+              }
+            }
+          }
+          if (rows.every((value) => value.completion_valid)) {
+            record(label, { count: rows.length, expectedAttempts, watchdogMs,
+              observationElapsedMs: Math.max(0, performance.now() - startedAt) });
+            const byId = new Map(rows.map((value) => [value.id, value]));
+            return ids.map((id) => byId.get(id)!);
+          }
+          await sleep(Math.max(1, Math.min(100, watchdog - performance.now())));
+        }
+      },
+      async waitHold(hold, child, signalId) {
+        if (signalId !== undefined) {
+          const preparation = ownedPreparation(signalId);
+          let received = false;
+          void hold.received.then(() => { received = true; });
+          try {
+            while (true) {
+              const current = await preparation.read();
+              if (preparation.remaining() <= 0) await preparation.fail(child, "watchdog");
+              if (current.phase === "FAILED" || current.phase === "COMPLETED" || current.status !== "DRAFT") {
+                await preparation.fail(child, "attempt-invalid");
+              }
+              if (received) {
+                const http = await child.request<GenerationHttpState>({ kind: "http-state" }, 1_000);
+                const live = await preparation.read();
+                if (preparation.remaining() <= 0 || !live.live_attempt || !live.dispatched) {
+                  await preparation.fail(child, "attempt-invalid");
+                }
+                const latestCalls = new Map(http.timings.map((timing) => [timing.callId, timing]));
+                const pending = http.pendingHttp > 0 && [...latestCalls.values()].some((timing) =>
+                  timing.signalId === signalId && timing.attemptId === live.attempt_id && timing.event === "fetch-entry" && !timing.aborted);
+                if (!pending) await preparation.fail(child, "http-not-pending");
+                preparation.recordSuccess(child.pid, "http");
+                return;
+              }
+              await sleep(Math.max(1, Math.min(100, preparation.remaining())));
+            }
+          } catch (error) {
+            if (child.isClosed) hold.release();
+            throw error;
+          }
+        }
         let timer: NodeJS.Timeout | undefined;
         try {
-          await Promise.race([
-            hold.received,
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => {
-                void child.hardStop("provider-checkpoint-timeout").then(() => { hold.release(); reject(new Error("Provider checkpoint did not arrive; its owned process was terminated.")); }, reject);
-              }, 3_000);
-            }),
-          ]);
+          await new Promise<void>((resolve, reject) => {
+            let timedOut = false;
+            void hold.received.then(() => { if (!timedOut) resolve(); }, reject);
+            timer = setTimeout(() => {
+              timedOut = true;
+              record("provider-checkpoint-observation-timeout", { pid: child.pid, budgetMs: 3_000 });
+              // Freeze the failed 3s verdict before diagnostics. A late held
+              // request cannot win the race while its live owner is inspected.
+              void captureFailureDiagnostics().then(() => child.hardStop("provider-checkpoint-timeout"))
+                .then(() => { hold.release(); reject(new Error("Provider checkpoint did not arrive; its owned process was terminated.")); }, reject);
+            }, 3_000);
+          });
         } finally { if (timer) clearTimeout(timer); }
       },
       async waitIdle() {
@@ -619,13 +825,33 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
         } while (Date.now() < deadline);
         throw new Error("Owned app database sessions did not actually close.");
       },
-      async waitControl(child, predicate, label) {
+      async waitControl(child, predicate, label, signalId) {
+        if (signalId !== undefined) {
+          const preparation = ownedPreparation(signalId);
+          while (true) {
+            const state = await child.request<GenerationControlState>({ kind: "control-state" }, 1_000);
+            const current = await preparation.read();
+            if (preparation.remaining() <= 0) await preparation.fail(child, "watchdog");
+            if (current.phase === "FAILED" || current.phase === "COMPLETED" || current.status !== "DRAFT") {
+              await preparation.fail(child, "attempt-invalid");
+            }
+            if (predicate(state)) {
+              if (!current.live_attempt) await preparation.fail(child, "attempt-invalid");
+              preparation.recordSuccess(child.pid, "control");
+              record(label, { pid: child.pid, id: signalId });
+              return state;
+            }
+            await sleep(Math.max(1, Math.min(100, preparation.remaining())));
+          }
+        }
         const deadline = Date.now() + 3_000;
         do {
           const state = await child.request<GenerationControlState>({ kind: "control-state" }, 1_000);
           if (predicate(state)) { record(label, { pid: child.pid }); return state; }
           await sleep(20);
         } while (Date.now() < deadline);
+        record("checkpoint-observation-timeout", { pid: child.pid, budgetMs: 3_000 });
+        await captureFailureDiagnostics();
         await child.hardStop("checkpoint-observation-timeout");
         throw new Error(`Generation checkpoint was not reached: ${label}; owned process terminated.`);
       },
