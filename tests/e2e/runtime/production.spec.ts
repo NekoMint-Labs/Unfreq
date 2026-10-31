@@ -1,4 +1,6 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from "playwright/test";
+import { e4InterpretationCases, e4InvalidInterpretationCases, e4PsychologicalMarkers, e4ExpressionBody,
+  e4OldConfirmedId, e4OldConfirmedBody, e4OldConfirmedTag, e4RecapSummary } from "./interpretation-fixture.mjs";
 
 const apiBaseUrl = `http://127.0.0.1:${process.env.RUNTIME_API_PORT ?? 4200}`;
 const privateSeed = "PRIVATE-SEED-runtime-7a38";
@@ -696,4 +698,201 @@ test("E3 does not infer a human source from legacy PUBLISHED status", async ({ p
   const panel = page.getByRole("heading", { name: "同频信号", exact: true }).locator("..");
   await expect(panel).toContainText("来源未标注");
   await expect(panel).not.toContainText("用户发起");
+});
+
+async function prepareE4Interpretations(context: BrowserContext) {
+  const response = await context.request.post(`${apiBaseUrl}/__runtime/e4-interpretations`);
+  expect(response.status()).toBe(200);
+  expect((await response.json()).data).toEqual({ synthetic: true, expressionCount: e4InterpretationCases.length });
+}
+
+async function openE4InterpretationWithKeyboard(page: Page) {
+  const disclosure = page.getByText("查看表达记录（私密）", { exact: true });
+  const details = disclosure.locator("..");
+  await disclosure.focus();
+  await expect(disclosure).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(details).toHaveJSProperty("open", true);
+  await expect(details.getByRole("heading", { name: "解读状态", exact: true })).toBeVisible();
+  await expect(details.getByText("暂不展示心理解读。", { exact: true })).toBeVisible();
+  for (const marker of [...e4PsychologicalMarkers, "82%", "63%", "主频段", "开放度", "意义深空 · 努力怀疑"]) {
+    await expect(details).not.toContainText(marker);
+  }
+  return { disclosure, details };
+}
+
+for (const fixture of e4InterpretationCases) {
+  test(`E4 ${fixture.mode} interpretation stays neutral with complete text on desktop and 390px`, async ({ page, context }, testInfo) => {
+    await signIn(context);
+    await prepareE4Interpretations(context);
+    const response = await context.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`);
+    expect(response.status()).toBe(200);
+    const signal = (await response.json()).data.signal;
+    expect(signal.seedText).toBe(fixture.seed);
+    expect(signal.expandedText).toBe(e4ExpressionBody(fixture.mode));
+    // Inspect the actual wire payload: a passing screen must not be caused by
+    // accidentally dropping the new source fields, or by neutral test text.
+    expect(signal.fingerprint.title).toBe(e4PsychologicalMarkers[0]);
+    if (fixture.interpretation === undefined) {
+      expect(signal.fingerprint).not.toHaveProperty("interpretation");
+      expect(signal.frequencyProfile).not.toHaveProperty("interpretation");
+    } else {
+      expect(signal.fingerprint.interpretation).toEqual(fixture.interpretation);
+      expect(signal.frequencyProfile.interpretation).toEqual(fixture.interpretation);
+    }
+    expect(signal.publication.preview.content).toEqual({ expandedText: signal.expandedText, authorFreqCode: "FM 78.23", tags: [] });
+    expect(signal.publication.preview.digest).toMatch(/^[a-f0-9]{64}$/u);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ reducedMotion: width === 390 ? "reduce" : "no-preference" });
+      await page.goto(`/result/${fixture.id}`);
+      await expect(page.getByRole("heading", { name: "私密草稿", exact: true })).toBeVisible();
+      await expect(page.getByText(fixture.seed, { exact: true })).toBeVisible();
+      const privateReading = page.locator(".signal-expanded-reading").filter({ has: page.getByText("PRIVATE PREVIEW", { exact: true }) });
+      await expect(privateReading.locator("p.whitespace-pre-wrap")).toHaveText(e4ExpressionBody(fixture.mode));
+      const publication = page.getByRole("region", { name: "发布预览" });
+      await expect(publication.locator(".signal-publication-body")).toHaveText(e4ExpressionBody(fixture.mode));
+      await expect(publication.locator(".radio-tag")).toHaveCount(0);
+      const { disclosure, details } = await openE4InterpretationWithKeyboard(page);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await details.screenshot({ path: testInfo.outputPath(`e4-interpretation-${fixture.mode}-${width}.png`), animations: "disabled" });
+      await page.screenshot({ path: testInfo.outputPath(`e4-owner-complete-${fixture.mode}-${width}.png`), fullPage: true, animations: "disabled" });
+      await disclosure.focus();
+      await page.keyboard.press("Enter");
+      await expect(details).toHaveJSProperty("open", false);
+      await expect(disclosure).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(details.getByRole("heading", { name: "解读状态", exact: true })).toBeVisible();
+    }
+  });
+}
+
+for (const fixture of e4InvalidInterpretationCases) {
+  test(`E4 rejects the invalid ${fixture.mode} source and state pair at the Web boundary`, async ({ page, context }) => {
+    await signIn(context);
+    await prepareE4Interpretations(context);
+    const wire = await context.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`);
+    expect(wire.status()).toBe(200);
+    expect((await wire.json()).data.signal.fingerprint.interpretation).toEqual(fixture.interpretation);
+    await page.goto(`/result/${fixture.id}`);
+    await expect(page.getByRole("heading", { name: "这一页暂时没有接上。", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "确认发布", exact: true })).toHaveCount(0);
+    await expect(page.getByText(e4ExpressionBody(fixture.mode), { exact: true })).toHaveCount(0);
+    for (const marker of e4PsychologicalMarkers) await expect(page.locator("body")).not.toContainText(marker, { useInnerText: true });
+  });
+}
+
+test("E4 neutral private display preserves new publication safeguards and old confirmed public content", async ({ page, context, browser, baseURL }, testInfo) => {
+  await signIn(context);
+  await prepareE4Interpretations(context);
+  const fixture = e4InterpretationCases.find((item) => item.mode === "provider")!;
+  const path = `/result/${fixture.id}`;
+  const anonymous = await browser.newContext({ baseURL });
+  const nonAuthor = await browser.newContext({ baseURL });
+  try {
+    await signIn(nonAuthor, "FM 21.04");
+    const oldBeforeResponse = await anonymous.request.get(`${apiBaseUrl}/api/signals/${e4OldConfirmedId}`);
+    expect(oldBeforeResponse.status()).toBe(200);
+    const oldBefore = (await oldBeforeResponse.json()).data.signal;
+    expect(oldBefore).toMatchObject({ expandedText: e4OldConfirmedBody, tags: ["意义深空", e4OldConfirmedTag], primaryBand: "meaning_deep_space", publicationVersion: 7 });
+    for (const visitor of [anonymous, nonAuthor]) {
+      expect((await visitor.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`)).status()).toBe(404);
+      expect((await visitor.request.post(`${apiBaseUrl}/api/signals/${fixture.id}/publish`, { data: {} })).status()).toBe(404);
+      expect((await visitor.request.get(`/api/og/${fixture.id}`)).status()).toBe(404);
+      const denied = await visitor.newPage();
+      try {
+        const response = await denied.goto(path);
+        expect(response).not.toBeNull();
+        await expect(denied.getByRole("heading", { name: "404", exact: true })).toBeVisible();
+        await expect(denied.locator('meta[name="robots"]').first()).toHaveAttribute("content", /noindex/u);
+        const html = await response!.text();
+        expect(html).not.toContain(fixture.seed);
+        expect(html).not.toContain(`E4_BODY_START_${fixture.mode}`);
+      } finally { await denied.close(); }
+    }
+    const candidate = (await (await context.request.get(`${apiBaseUrl}/api/signals/${fixture.id}/publication-preview`)).json()).data.preview;
+    expect(candidate.content).toEqual({ expandedText: e4ExpressionBody(fixture.mode), authorFreqCode: "FM 78.23", tags: [] });
+    expect((await context.request.post(`${apiBaseUrl}/api/signals/${fixture.id}/publish`, { data: { expectedVersion: 0, digest: "0".repeat(64) } })).status()).toBe(409);
+    await page.goto(path);
+    await openE4InterpretationWithKeyboard(page);
+    const publish = page.waitForRequest((request) => request.url().endsWith(`/${fixture.id}/publish`) && request.method() === "POST");
+    await page.getByRole("button", { name: "确认发布", exact: true }).click();
+    expect((await publish).postDataJSON()).toEqual({ expectedVersion: candidate.version, digest: candidate.digest });
+    await expect(page.getByRole("heading", { name: "已公开", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "当前公开内容", exact: true }).locator("..").locator(".signal-expanded-text")).toHaveText(e4ExpressionBody(fixture.mode));
+    const firstPublic = (await (await anonymous.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`)).json()).data.signal;
+    expect(firstPublic).toMatchObject({ expandedText: candidate.content.expandedText, tags: [], publicationVersion: 1 });
+    for (const key of ["primaryBand", "fingerprint", "frequencyProfile", "seedText", "rawInput", "interpretation"]) expect(firstPublic).not.toHaveProperty(key);
+    await page.goto(`/result/${e4OldConfirmedId}`);
+    await openE4InterpretationWithKeyboard(page);
+    await expect(page.getByText(e4OldConfirmedTag, { exact: true })).toBeVisible();
+    await expect(page.getByText(e4OldConfirmedBody, { exact: true }).first()).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.screenshot({ path: testInfo.outputPath("e4-old-confirmed-mobile.png"), fullPage: true, animations: "disabled" });
+    const oldAfter = (await (await anonymous.request.get(`${apiBaseUrl}/api/signals/${e4OldConfirmedId}`)).json()).data.signal;
+    expect(oldAfter).toEqual(oldBefore);
+    await page.goto(path);
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "撤回公开", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "已撤回公开", exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "发布预览" }).locator(".signal-publication-body")).toHaveText(e4ExpressionBody(fixture.mode));
+    await expect(page.getByText("SHARE SIGNAL", { exact: true })).toHaveCount(0);
+    expect((await anonymous.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`)).status()).toBe(404);
+    expect((await anonymous.request.get(`/api/og/${fixture.id}?v=1`)).status()).toBe(404);
+    expect((await context.request.post(`${apiBaseUrl}/api/signals/${fixture.id}/publish`, { data: { expectedVersion: candidate.version, digest: candidate.digest } })).status()).toBe(409);
+    const republish = page.waitForRequest((request) => request.url().endsWith(`/${fixture.id}/publish`) && request.method() === "POST");
+    await page.getByRole("button", { name: "确认重新发布", exact: true }).click();
+    expect((await republish).postDataJSON()).toEqual({ expectedVersion: 2, digest: candidate.digest });
+    await expect(page.getByRole("heading", { name: "已公开", exact: true })).toBeVisible();
+    const restored = (await (await anonymous.request.get(`${apiBaseUrl}/api/signals/${fixture.id}`)).json()).data.signal;
+    expect(restored.expandedText).toBe(firstPublic.expandedText);
+    expect(restored.tags).toEqual(firstPublic.tags);
+    expect(restored.publicationVersion).toBe(3);
+    expect((await (await anonymous.request.get(`${apiBaseUrl}/api/signals/${e4OldConfirmedId}`)).json()).data.signal).toEqual(oldBefore);
+  } finally { await anonymous.close(); await nonAuthor.close(); }
+});
+
+test("E4 history omits unsupported frequency summaries and labels saved monthly text as automatic", async ({ page, context, browser, baseURL }, testInfo) => {
+  await signIn(context);
+  await prepareE4Interpretations(context);
+  const beforeResponse = await context.request.get(`${apiBaseUrl}/api/me/recaps/2026-10`);
+  expect(beforeResponse.status()).toBe(200);
+  const saved = (await beforeResponse.json()).data.recap;
+  expect(saved.summary).toBe(e4RecapSummary);
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/me");
+    await expect(page.getByRole("heading", { name: "航行日志", exact: true })).toBeVisible();
+    await expect(page.getByText("本页 4 条 · 全部 4 条", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "本页表达更多落在", exact: true })).toHaveCount(0);
+    for (const fixture of e4InterpretationCases) await expect(page.getByText(fixture.seed, { exact: true })).toBeVisible();
+    const card = page.getByRole("heading", { name: "2026-10 月度回顾", exact: true }).locator("xpath=ancestor::section[1]");
+    await expect(card.getByText(e4RecapSummary, { exact: true })).toBeVisible();
+    await expect(card.getByText("自动整理的回顾，可能有误，请对照原文。", { exact: true })).toBeVisible();
+    for (const marker of e4PsychologicalMarkers) await expect(page.locator("body")).not.toContainText(marker, { useInnerText: true });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`e4-history-${width}.png`), fullPage: true, animations: "disabled" });
+    const open = card.getByRole("link", { name: "打开", exact: true });
+    await open.focus(); await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/me\/recap\/2026-10$/u);
+    await expect(page.getByRole("heading", { name: "2026-10 月度回顾", exact: true })).toBeVisible();
+    await expect(page.getByText(e4RecapSummary, { exact: true })).toBeVisible();
+    await expect(page.getByText("自动整理的回顾，可能有误，请对照原文。", { exact: true })).toBeVisible();
+    await expect(page.getByText(e4OldConfirmedBody, { exact: true })).toHaveText(saved.topSignal.expandedText);
+    await expect(page.getByText("E4已保存主题", { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`e4-monthly-detail-${width}.png`), fullPage: true, animations: "disabled" });
+  }
+  expect((await (await context.request.get(`${apiBaseUrl}/api/me/recaps/2026-10`)).json()).data.recap).toEqual(saved);
+  const anonymous = await browser.newContext({ baseURL });
+  const nonAuthor = await browser.newContext({ baseURL });
+  try {
+    expect((await anonymous.request.get(`${apiBaseUrl}/api/me/recaps/2026-10`)).status()).toBe(401);
+    await signIn(nonAuthor, "FM 21.04");
+    expect((await nonAuthor.request.get(`${apiBaseUrl}/api/me/recaps/2026-10`)).status()).toBe(404);
+    for (const visitor of [anonymous, nonAuthor]) {
+      const response = await visitor.request.get("/me/recap/2026-10");
+      expect(await response.text()).not.toContain(e4RecapSummary);
+    }
+  } finally { await anonymous.close(); await nonAuthor.close(); }
 });

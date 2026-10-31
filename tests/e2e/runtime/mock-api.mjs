@@ -1,4 +1,5 @@
-import { preview, publicView, ownerView, galaxyPoint } from "../publication-fixture.mjs";
+import { preview as historicalPreview, publicView as historicalPublicView, ownerView as historicalOwnerView, galaxyPoint as historicalGalaxyPoint } from "../publication-fixture.mjs";
+import { e4InterpretationCases, e4OldConfirmedId, e4NewPublicationPreview, makeE4InterpretationSignals, makeE4OldConfirmedSignal, makeE4Recap } from "./interpretation-fixture.mjs";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 
@@ -92,6 +93,36 @@ const d4Parent = "d4000000-0000-4000-8000-000000000002";
 const d4Signal = makeSignal(d4Id, "D4_SYNTHETIC_PENDING_SEED", "D4_SYNTHETIC_COMPLETE", { status: "DRAFT" });
 let d4Complete = false;
 let d4History = false;
+let e4InterpretationFixture = false;
+let e4Recap;
+
+// Keep historical C1 fixtures unchanged. Only the dedicated E4 payloads model
+// new empty-label previews and immutable, previously confirmed public content.
+function preview(signal) {
+  return signal.runtimeE4Interpretation ? e4NewPublicationPreview(signal) : historicalPreview(signal);
+}
+function publicView(signal) {
+  const view = historicalPublicView(signal);
+  if (!signal.runtimeE4Interpretation) return view;
+  const { primaryBand: _oldBand, tags: _oldTags, expandedText: _oldBody, authorFreqCode: _oldFrequency, ...metadata } = view;
+  const content = signal.runtimeE4ConfirmedContent ?? e4NewPublicationPreview(signal).content;
+  return { ...metadata, ...content, tags: [...content.tags] };
+}
+function ownerView(signal) {
+  const view = historicalOwnerView(signal);
+  if (!signal.runtimeE4Interpretation) return view;
+  const { runtimeE4Interpretation: _fixture, runtimeE4ConfirmedContent: _stored, ...owner } = view;
+  return { ...owner, publication: { ...view.publication, preview: preview(signal),
+    ...(view.publication.state === "PUBLIC" ? { publishedContent: { ...signal.runtimeE4ConfirmedContent, tags: [...signal.runtimeE4ConfirmedContent.tags] } } : {}) } };
+}
+function galaxyPoint(signal, isMine, matchIds = []) {
+  const point = historicalGalaxyPoint(signal, isMine, matchIds);
+  if (!signal.runtimeE4Interpretation) return point;
+  const { primaryBand: _oldBand, tags: _oldTags, ...metadata } = point;
+  const content = publicView(signal);
+  return { ...metadata, expandedText: content.expandedText, authorFreqCode: content.authorFreqCode, tags: content.tags,
+    ...(content.primaryBand === undefined ? {} : { primaryBand: content.primaryBand }) };
+}
 function d4Generation() { return { id: d4Id, createdAt: now, updatedAt: now, seedText: d4Signal.seedText, parentSignalId: d4Signal.parentSignalId,
   status: "DRAFT", visibility: "GENERATION_OWNER", generationStatus: "EXPANDING" }; }
 
@@ -153,10 +184,19 @@ const server = createServer(async (request, response) => {
     publicSignal.expandedText = publicOriginalText;
     publicSignal.matches = [];
     e4LegacyEvaluation = false;
+    e4InterpretationFixture = false; e4Recap = undefined;
     savedSignals.clear(); resonatedSignals.clear();
     d4Complete = false; d4History = false; d4Signal.seedText = "D4_SYNTHETIC_PENDING_SEED"; d4Signal.parentSignalId = undefined;
-    for (const id of signals.keys()) if (id.startsWith("d1000000-") || id.startsWith("runtime-e3-source-")) signals.delete(id);
+    for (const id of signals.keys()) if (id.startsWith("d1000000-") || id.startsWith("runtime-e3-source-") || id.startsWith("e4000000-")) signals.delete(id);
     return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/e4-interpretations") {
+    const expressions = makeE4InterpretationSignals(makeSignal);
+    for (const signal of expressions) signals.set(signal.id, signal);
+    signals.set(e4OldConfirmedId, makeE4OldConfirmedSignal(makeSignal));
+    e4InterpretationFixture = true;
+    e4Recap = makeE4Recap(owner, now, summary(signals.get(e4OldConfirmedId)));
+    return ok(response, { synthetic: true, expressionCount: e4InterpretationCases.length });
   }
   if (request.method === "POST" && url.pathname === "/__runtime/e4-legacy-evaluation") {
     e4LegacyEvaluation = true;
@@ -271,6 +311,11 @@ const server = createServer(async (request, response) => {
   if (url.pathname.startsWith("/api/me/")) {
     if (current === undefined) return fail(response, 401, "UNAUTHORIZED");
     if (request.method === "GET" && url.pathname === "/api/me/signals") {
+      if (e4InterpretationFixture && current.id === owner.id) {
+        const expressions = e4InterpretationCases.map(({ id }) => summary(signals.get(id)));
+        return ok(response, { signals: expressions, totalSignalCount: expressions.length, totalResonanceCount: 0,
+          topSignal: expressions[0], page: { limit: 80, hasMore: false } });
+      }
       if (d4History) {
         const all = Array.from({ length: 85 }, (_, index) => summary(makeSignal(`d4000000-0000-4000-8000-${String(1000 + index).padStart(12, "0")}`,
           `D4_HISTORY_${84 - index}`, "D4_HISTORY_BODY", { status: "DRAFT", resonanceCount: index === 84 ? 500 : 1 })));
@@ -281,7 +326,8 @@ const server = createServer(async (request, response) => {
       return ok(response, { signals: [...signals.values()].filter((signal) => signal.frequencyId === current.id).slice(0, 80).map(summary), totalResonanceCount: 0 });
     }
     if (request.method === "GET" && url.pathname === "/api/me/saves") return ok(response, { signals: [] });
-    if (request.method === "GET" && url.pathname === "/api/me/recaps/latest") return ok(response, {});
+    if (request.method === "GET" && url.pathname === "/api/me/recaps/latest") return ok(response, current.id === owner.id && e4Recap ? { recap: e4Recap } : {});
+    if (request.method === "GET" && url.pathname === "/api/me/recaps/2026-10") return current.id === owner.id && e4Recap ? ok(response, { recap: e4Recap }) : fail(response, 404, "NOT_FOUND");
     if (url.pathname === "/api/me/echo-summary" || url.pathname === "/api/me/echo-summary/seen") {
       return ok(response, { summary: { frequencyId: current.id, newResonanceCount: 0, totalResonanceCount: 0 } });
     }
@@ -289,7 +335,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/api/signals/galaxy") {
     const band = url.searchParams.get("band");
     const eligible = [...signals.values()]
-      .filter((signal) => signal.status === "PUBLISHED" && !signal.withdrawn && (band === null || signal.frequencyProfile.primaryBand === band))
+      .filter((signal) => signal.status === "PUBLISHED" && !signal.withdrawn && (band === null || (signal.runtimeE4Interpretation ? signal.runtimeE4ConfirmedContent?.primaryBand : signal.frequencyProfile.primaryBand) === band))
       .map((signal) => galaxyPoint(signal, current?.id === signal.frequencyId));
     const latestOwn = eligible.filter((point) => point.isMine).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
     const focus = eligible.find((point) => point.id === url.searchParams.get("focus"));
@@ -310,6 +356,7 @@ const server = createServer(async (request, response) => {
       if (current?.id !== signal.frequencyId) return fail(response, 404, "NOT_FOUND");
       const body = await readBody(request); const expected = preview(signal);
       if (body.expectedVersion !== expected.version || body.digest !== expected.digest) return fail(response, 409, "CONFLICT");
+      if (signal.runtimeE4Interpretation) signal.runtimeE4ConfirmedContent = structuredClone(expected.content);
       signal.status = "PUBLISHED"; signal.withdrawn = false; signal.publicationVersion = expected.version + 1;
       return ok(response, { signal: ownerView(signal) });
     }

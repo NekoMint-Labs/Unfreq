@@ -86,3 +86,21 @@ the other groups retain their existing settings. These controlled network cases
 do not establish offline/PWA behavior. SQL totals, microsecond boundaries, deletion,
 withdrawal and owner isolation are verified separately in managed API integration.
 The full production suite now has twenty-two cases.
+
+E4's interpretation cases add four dedicated private expressions with rules / unknown /
+unverified Provider / missing legacy provenance. Their payloads deliberately retain
+unsupported psychological markers to check the Web display boundary; they are not
+real API projections or model-quality examples. Each checks complete private and
+publication-preview text, empty new-publication labels, keyboard disclosure, desktop
+and 390px layout, and screenshots. Two invalid source/state pairs must reach the
+safe route-error UI rather than display or publish an invalid payload.
+
+The E4 publication case retains anonymous/non-author denial, digest/version checks,
+withdrawal and fresh confirmation, while comparing a separate historical confirmed
+public expression before/after private-display checks. The shared historical C1
+fixtures keep their existing labels; only dedicated E4 previews use empty labels.
+The history/monthly case checks absent psychological frequency summaries, saved text
+and theme preservation, the automatic-summary note, keyboard navigation, privacy,
+and desktop/390px screenshots. It does not prove database snapshot immutability;
+real API/PostgreSQL checks remain in the isolated integration suite. The added cases
+must be run against a fresh production build; static test edits are not a pass result.
