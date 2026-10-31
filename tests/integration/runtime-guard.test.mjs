@@ -99,6 +99,34 @@ test("changed entry, current input and ownership marker cannot be adopted", asyn
   await assert.rejects(check());
 });
 
+test("E4 interpretation, recap, test and contract tampering is refused until the original bytes are restored", async (t) => {
+  const f = await fixture(t);
+  const runtime = await f.prepare();
+  const check = () => verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime });
+  await check();
+  for (const [base, relative] of [
+    [f.root, "apps/api/src/modules/signals/interpretation.ts"],
+    [runtime.runtimeDirectory, "apps/api/src/modules/signals/interpretation.js"],
+    [f.root, "apps/api/src/modules/monthly-recaps/service.ts"],
+    [runtime.runtimeDirectory, "apps/api/src/modules/monthly-recaps/service.js"],
+    [f.root, "apps/api/tests/integration/core-flow.test.ts"],
+    [f.root, "packages/contracts/src/signals.ts"],
+  ]) {
+    const target = path.join(base, relative);
+    // The fixture creates only registered inputs/artifacts. A missing entry
+    // must fail here rather than silently creating an untracked tamper target.
+    const original = await readFile(target);
+    try {
+      await writeFile(target, Buffer.concat([original, Buffer.from("\n// synthetic E4 tampering\n")]));
+      await assert.rejects(check(), /Managed integration runtime ownership or artifact verification failed/u,
+        `${relative} must participate in runtime verification`);
+    } finally {
+      await writeFile(target, original);
+    }
+    await check();
+  }
+});
+
 test("a source helper cannot vouch for a compiled executing entry or reuse output", async (t) => {
   const f = await fixture(t);
   const runtime = await f.prepare();

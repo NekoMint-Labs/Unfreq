@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import type { LightMyRequestResponse } from "fastify";
 import type { IntegrationHarness } from "./harness.js";
 import { fixtureFingerprint } from "./fixtures.js";
-import { buildPublicationPreview, confirmPublicationSnapshot } from "../../src/modules/signals/publication.js";
+import { confirmPublicationSnapshot, digestPublicationContent } from "../../src/modules/signals/publication.js";
 import { embeddingSpaceKey, signalEmbeddingText } from "../../src/modules/ai/embedding-space.js";
 import { composeMatchScore, cosineRelevance } from "../../src/modules/signals/match-scoring.js";
 import { summarizeMatchEvaluation, type MatchEvaluationRun } from "../../src/modules/signals/match-evaluation.js";
@@ -62,13 +62,19 @@ export async function runFrozenMatchingCase(h: IntegrationHarness, current: Matc
     body: current.query.body, tags: current.query.tags, distance: 0, rerankScore: 0, grade: 0, createdAt: "2030-01-01T00:00:00Z" }].map((candidate) => {
     const authorId = owner(candidate.authorId);
     const fingerprint = { ...fixtureFingerprint, tags: candidate.tags };
-    const preview = buildPublicationPreview({ authorId, authorFreqCode: aliases.get(authorId)!, expandedText: candidate.body,
-      generationStatus: "COMPLETED", primaryBand: "self_mirror", fingerprintJson: fingerprint }, 0);
+    // This corpus freezes synthetic, previously confirmed public labels. New
+    // publication previews intentionally omit unvalidated interpretations and
+    // must not silently erase the frozen recall inputs. This is not evidence
+    // of real author confirmation, Provider accuracy, or a new publish path.
+    const historicalContent = { expandedText: candidate.body, authorFreqCode: aliases.get(authorId)!,
+      tags: [...new Set(["自我镜像", ...candidate.tags.slice(0, 2).map((tag) => tag.trim())
+        .filter((tag) => tag.length > 0 && tag.length <= 16)])], primaryBand: "self_mirror" as const };
+    const historicalPreview = { content: historicalContent, digest: digestPublicationContent(historicalContent), version: 0 };
     const x = 1 - (candidate.distance ?? 0);
     return { id: candidate.id, author_id: authorId, frequency_id: null, raw_input: "E3_PRIVATE_SEED_" + candidate.id,
       seed_text: "E3_PRIVATE_SEED_" + candidate.id, expanded_text: candidate.body, fingerprint_json: JSON.stringify(fingerprint), program_json: "{}",
       primary_band: "self_mirror", source: candidate.source, status: candidate.publicState === "hidden" ? "HIDDEN" : "PUBLISHED",
-      generation_status: "COMPLETED", publication_snapshot: candidate.publicState === "unconfirmed" ? null : JSON.stringify(confirmPublicationSnapshot(preview, new Date("2026-10-30T00:00:00Z"))),
+      generation_status: "COMPLETED", publication_snapshot: candidate.publicState === "unconfirmed" ? null : JSON.stringify(confirmPublicationSnapshot(historicalPreview, new Date("2026-10-30T00:00:00Z"))),
       publication_version: candidate.publicState === "unconfirmed" ? 0 : 1, withdrawn_at: candidate.publicState === "withdrawn" ? "2026-10-30T01:00:00Z" : null,
       embedding: candidate.distance === null ? null : JSON.stringify([x, Math.sqrt(Math.max(0, 1 - x*x)), ...Array<number>(space.dimensions - 2).fill(0)]),
       embedding_dimensions: candidate.distance === null ? null : space.dimensions, embedding_model: candidate.distance === null ? null : space.model,

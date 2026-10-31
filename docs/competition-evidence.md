@@ -24,7 +24,7 @@
 | 范围 | 可追溯记录 | 已知证据边界 |
 | --- | --- | --- |
 | 原产品闭环与技术结构 | [README](../README.md)、[架构](./architecture.md)、Git 历史 | 原项目已经存在；起始时间和原作者贡献待核实 |
-| A1–F2 改造 | [总进度](./implementation/progress.md)及各项实施记录 | 记录对应轮次的本地实现/测试，不等于已合并、部署或成员独立创作 |
+| A1–F4 及 E4 工程补充 | [总进度](./implementation/progress.md)及各项实施记录 | 记录对应轮次的本地实现/测试，不等于已合并、部署或成员独立创作 |
 | 作者确认、撤回与公开投影 | [C1](./implementation/c1-publication-20261030.md) | 保留私密原文与确认版本；没有物理删除/第三方副本清除结论 |
 | 匹配召回与分数 | [E2](./implementation/e2-rerank-scores-20261030.md)、[E3](./implementation/e3-match-recall-20261030.md) | E3 冻结的 4 查询/77 候选为合成标签，不能充当真实用户效果 |
 | Demo 指标纠偏与忠实性评测工具 | [E4](./implementation/e4-faithfulness-20261031.md)、[盲评流程](./faithfulness-evaluation.md) | 60 条输入由编码助手起草、未经人工验证；真实模型、双人盲评、作者认可与真实消融未完成 |

@@ -1383,6 +1383,10 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
 
   it.each([81, 520])("finds recent/own/focused public signals with %i rows inside bounded, stable Galaxy samples", async (size) => {
     await withSyntheticWithdrawalRows(async (track) => {
+      const controlResponse = await request("GET", `/api/signals/${publicControlId}`);
+      expect(controlResponse.statusCode).toBe(200);
+      expect(controlResponse.json().data.signal).toMatchObject({ id: publicControlId, visibility: "PUBLIC", tags: [] });
+      expect(controlResponse.json().data.signal).not.toHaveProperty("primaryBand");
       const rows = Array.from({ length: size }, (_, index) => {
         const owner = index % 2 === 0 ? author : reader;
         const band = signalPrimaryBands[index % signalPrimaryBands.length];
@@ -1434,7 +1438,12 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       expect(response!.body).not.toContain("D1_SYNTHETIC_PRIVATE_SEED");
       const repeated = (await request("GET", "/api/signals/galaxy", author.cookie)).json().data;
       expect(repeated.points.map((point: { id: string }) => point.id)).toEqual(result.points.map((point: { id: string }) => point.id));
-      expect(new Set(result.points.map((point: { primaryBand?: string }) => point.primaryBand)).size).toBe(7);
+      // Seven explicitly confirmed historical bands and the current unlabeled
+      // control are separate categories; missing provenance must not fill a band.
+      const confirmedBands = result.points.flatMap((point: { primaryBand?: string }) => point.primaryBand === undefined ? [] : [point.primaryBand]);
+      expect([...new Set(confirmedBands)].sort()).toEqual([...signalPrimaryBands].sort());
+      expect(result.points.filter((point: { primaryBand?: string }) => point.primaryBand === undefined)
+        .map((point: { id: string }) => point.id)).toEqual([publicControlId]);
       const focus = (await request("GET", `/api/signals/galaxy?focus=${rows[0].id}`, author.cookie)).json().data;
       expect(focus.points.map((point: { id: string }) => point.id)).toContain(rows[0].id);
       expect(focus.coverage).toMatchObject({ focusSignalId: rows[0].id, focusStatus: "available" });
@@ -1443,7 +1452,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const filtered = (await request("GET", `/api/signals/galaxy?band=${band}&focus=${rows[1].id}`, author.cookie)).json().data;
       expect(filtered.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
       expect(filtered.coverage).toMatchObject({ filters: { band }, focusStatus: "unavailable" });
-      expect(filtered.coverage.totalEligibleCount).toBe(rows.filter((row) => row.primary_band === band).length + (fixtureFingerprint.primaryBand === band ? 1 : 0));
+      expect(filtered.coverage.totalEligibleCount).toBe(rows.filter((row) => row.primary_band === band).length);
+      expect(filtered.points.map((point: { id: string }) => point.id)).not.toContain(publicControlId);
       const legacy = (await request("GET", `/api/signals/galaxy?theme=${encodeURIComponent(signalBandLabels[band])}`, author.cookie)).json().data;
       expect(legacy.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
       const anonymous = (await request("GET", "/api/signals/galaxy")).json().data;
@@ -1894,13 +1904,14 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     if (matchingCaptures.every((strategy) => strategy.runs.length === matchingCases.length)) {
       const report = frozenMatchingReport();
       const chosen = report.strategies.find((strategy) => strategy.name === "merged-K12-score80")!.summary;
-      expect(chosen).toMatchObject({ poolRecall: 1, ndcgAt3: 1, noMatchRate: .25, falseMatchQueryRate: 0,
-        humanRelevance: null, currencyCost: null, modelQualityValidated: false });
       const runId = process.env.UNFREQ_INTEGRATION_RUN_ID;
       if (!/^[a-f0-9]{12}$/u.test(runId ?? "")) throw new Error("Invalid evaluation run ownership.");
       const directory = new URL("../../../../test-results/", import.meta.url);
       await mkdir(directory, { recursive: true });
       await writeFile(new URL(`e3-evaluation-${runId}.json`, directory), JSON.stringify(report, null, 2) + "\n");
+      // Keep the measured report even if a frozen expectation fails.
+      expect(chosen).toMatchObject({ poolRecall: 1, ndcgAt3: 1, noMatchRate: .25, falseMatchQueryRate: 0,
+        humanRelevance: null, currencyCost: null, modelQualityValidated: false });
     }
   });
 

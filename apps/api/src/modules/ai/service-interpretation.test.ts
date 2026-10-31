@@ -5,6 +5,7 @@ import { generateSignalFingerprintWithFallback, generateSignalMaterial } from ".
 import { signalFingerprintWithProvider, signalMaterialWithProvider } from "./provider.js";
 import { createAiReviewRecord } from "./repository.js";
 import type { ProviderResult } from "./provider-execution.js";
+import type { AiSignalFingerprint, AiSignalMaterial } from "./signal-types.js";
 
 vi.mock("./repository.js", () => ({ createAiReviewRecord: vi.fn(async (params) => ({ ...params, id: "synthetic-review" })) }));
 vi.mock("./provider.js", async (importOriginal) => ({
@@ -12,8 +13,10 @@ vi.mock("./provider.js", async (importOriginal) => ({
   signalFingerprintWithProvider: vi.fn(), signalMaterialWithProvider: vi.fn(),
 }));
 
-function result(output: unknown): ProviderResult<unknown> {
-  return { output, execution: { schemaVersion: 1, taskType: "synthetic", source: "provider",
+// Deliberately inject untrusted wire payloads at the mocked adapter boundary.
+// The real service parser, rather than this test helper, must reject bad fields.
+function result<T>(output: unknown): ProviderResult<T> {
+  return { output: output as T, execution: { schemaVersion: 1, taskType: "synthetic", source: "provider",
     provider: "synthetic", model: "synthetic", inputTemplateVersion: "synthetic", promptVersion: "synthetic",
     durationMs: 1, attempts: [], cost: "unknown" } };
 }
@@ -21,7 +24,7 @@ beforeEach(() => { vi.mocked(signalFingerprintWithProvider).mockReset(); vi.mock
 
 describe("server-attributed fingerprint interpretation", () => {
   it("overrides a provider's self-certification on the separate fingerprint path", async () => {
-    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(result({ ...fixtureFingerprint,
+    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(result<AiSignalFingerprint>({ ...fixtureFingerprint,
       interpretation: { version: 1, state: "verified", source: "provider", accuracy: 1 } }));
     const generated = await generateSignalFingerprintWithFallback({ content: "今天吃到喜欢的冰淇淋。" });
     expect(generated.result.interpretation).toEqual({ version: 1, state: "unverified", source: "provider" });
@@ -32,7 +35,7 @@ describe("server-attributed fingerprint interpretation", () => {
   });
 
   it("attributes the combined material path without accepting model-supplied confidence", async () => {
-    vi.mocked(signalMaterialWithProvider).mockResolvedValue(result({ ...fixtureMaterial,
+    vi.mocked(signalMaterialWithProvider).mockResolvedValue(result<AiSignalMaterial>({ ...fixtureMaterial,
       fingerprint: { ...fixtureFingerprint, interpretation: { version: 1, state: "verified", source: "rules" } } }));
     const generated = await generateSignalMaterial({ content: "考试通过了，我很开心。" });
     expect(generated.result.fingerprint.interpretation).toEqual({ version: 1, state: "unverified", source: "provider" });
@@ -43,7 +46,7 @@ describe("server-attributed fingerprint interpretation", () => {
   });
 
   it("attributes invalid provider business output to rules, retaining its audit trail", async () => {
-    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(result({ ...fixtureFingerprint, energy: 2 }));
+    vi.mocked(signalFingerprintWithProvider).mockResolvedValue(result<AiSignalFingerprint>({ ...fixtureFingerprint, energy: 2 }));
     const generated = await generateSignalFingerprintWithFallback({ content: "月亮今天请假。" });
     expect(generated.result.interpretation).toEqual({ version: 1, state: "unknown", source: "rules" });
     expect(generated.result.coreNeed).toBe("暂不作心理解读");
