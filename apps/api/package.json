@@ -9,6 +9,7 @@
     "ai:signals:evaluate": "node dist/scripts/evaluate-signal-quality.js",
     "dev": "tsx watch src/server.ts",
     "embeddings:backfill": "node dist/scripts/backfill-embeddings.js",
+    "faithfulness:evaluate": "node dist/scripts/evaluate-faithfulness.js",
     "galaxy:backfill": "node dist/scripts/backfill-galaxy-positions.js",
     "lint": "eslint .",
     "matches:evaluate": "node dist/scripts/evaluate-matches.js",

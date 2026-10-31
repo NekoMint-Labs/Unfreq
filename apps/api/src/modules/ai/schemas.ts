@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { hasRequiredExpansionReviewEvidence } from "./expansion-review-rules.js";
+import type { AiSignalSeedClassification } from "./signal-types.js";
 import {
   normalizeSignalFrequencyProfile,
   signalBandLabels,
@@ -291,22 +293,17 @@ const aiSignalExpansionReviewBaseSchema = z.object({
   score: z.number().min(0).max(10),
 });
 
-export const aiSignalExpansionReviewSchema = aiSignalExpansionReviewBaseSchema.transform(
-  (review) => {
-    const requiredPass =
-      review.hasConcreteObjects &&
-      review.hasSensoryDetails &&
-      review.matchesSeedType &&
-      review.preservesOriginalDirection &&
-      !review.isGenericLiteraryTemplate &&
-      !review.isForcedNegative;
+export function createAiSignalExpansionReviewSchema(
+  mode?: AiSignalSeedClassification["expansionMode"],
+) {
+  return aiSignalExpansionReviewBaseSchema.transform((review) => ({
+    ...review,
+    pass: review.pass && hasRequiredExpansionReviewEvidence(review, mode),
+  }));
+}
 
-    return {
-      ...review,
-      pass: review.pass && requiredPass,
-    };
-  },
-);
+// A caller without the actual input classification must keep the scene checks.
+export const aiSignalExpansionReviewSchema = createAiSignalExpansionReviewSchema();
 
 export const aiSignalContentSchema = z.object({
   rawInput: z.string().trim().min(30).max(100),

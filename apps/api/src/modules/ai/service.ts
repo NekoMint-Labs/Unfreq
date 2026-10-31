@@ -12,7 +12,7 @@ import {
   aiModerationSchema,
   aiMonthlyRecapSchema,
   aiSignalContentSchema,
-  aiSignalExpansionReviewSchema,
+  createAiSignalExpansionReviewSchema,
   aiSignalExpansionSchema,
   aiSignalFingerprintSchema,
   aiSignalMaterialSchema,
@@ -456,7 +456,7 @@ export async function reviewSignalExpansionWithFallback(
   return runAiWithFallback<AiSignalExpansionReview>({
     fallbackCall: () => signalExpansionReviewFallback(input),
     inputText,
-    parse: (value) => parseAiResult(value, aiSignalExpansionReviewSchema),
+    parse: (value) => parseAiResult(value, createAiSignalExpansionReviewSchema(input.classification.expansionMode)),
     providerCall: () => signalExpansionReviewWithProvider(input),
     reviewType: "signal-expansion-review",
     targetId: target?.targetId,

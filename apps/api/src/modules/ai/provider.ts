@@ -1,4 +1,5 @@
 import { signalExpansionBlockedPhrases } from "./provider-prompts.js";
+import { allowsNonSceneExpansion } from "./expansion-review-rules.js";
 import { callChatProvider } from "./provider-transport.js";
 import { evaluateSignalQuality } from "./signal-quality-evaluator.js";
 import {
@@ -1176,9 +1177,7 @@ export function signalExpansionReviewFallback(
   ];
   const hasConcreteObjects = includesAny(input.expandedText, concreteObjectWords);
   const hasSensoryDetails = includesAny(input.expandedText, sensoryWords);
-  const allowsNonSceneMode =
-    input.classification.expansionMode === "aftertaste" ||
-    input.classification.expansionMode === "clarify_thought";
+  const allowsNonSceneMode = allowsNonSceneExpansion(input.classification.expansionMode);
   const isGenericLiteraryTemplate = includesAny(input.expandedText, genericTemplateWords);
   const repeatsCompleteSeed = hasCompleteSeedReuse(input.seedText, input.expandedText);
   const joinsSeedAsTemplatePrefix = hasSeedHardJoin(input.seedText, input.expandedText);

@@ -81,19 +81,6 @@ function logSignalCreationBoundaryFailure(params: {
   );
 }
 
-function isContradictoryPassingReview(review: AiSignalExpansionReview): boolean {
-  return (
-    !review.pass &&
-    review.score >= 8 &&
-    review.problems.length === 0 &&
-    review.rewriteInstruction.length === 0 &&
-    review.matchesSeedType &&
-    review.preservesOriginalDirection &&
-    !review.isGenericLiteraryTemplate &&
-    !review.isForcedNegative
-  );
-}
-
 async function runSignalCreationBoundary<T>(params: {
   boundary: SignalCreationBoundary;
   logger?: EmbeddingLogger;
@@ -129,22 +116,6 @@ async function reviewOrRewriteSignalExpansion(params: {
       seedText: params.seedText,
     })
   ).result;
-
-  if (isContradictoryPassingReview(review)) {
-    params.logger?.warn(
-      {
-        action: "signal.expansion.review_contradictory",
-        reason: "INVALID_AI_REVIEW",
-        targetType: "SIGNAL",
-      },
-      "signal expansion review contradicted itself",
-    );
-
-    review = {
-      ...review,
-      pass: true,
-    };
-  }
 
   if (!review.pass) {
     try {

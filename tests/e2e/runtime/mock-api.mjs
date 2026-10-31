@@ -1,5 +1,6 @@
 import { preview, publicView, ownerView, galaxyPoint } from "../publication-fixture.mjs";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 
 // This server binds only to loopback and uses synthetic, process-local data.
 // It checks the Web/Next boundary; it does not exercise Fastify or a database.
@@ -12,6 +13,30 @@ const owner = {
   createdAt: now, isGuest: false, role: "USER", status: "ACTIVE",
 };
 const other = { ...owner, id: "runtime-other", code: "FM 21.04", freqCode: "FM 21.04" };
+const admin = { ...owner, id: "runtime-admin", code: "FM 99.99", freqCode: "FM 99.99", role: "ADMIN" };
+let e4LegacyEvaluation = false;
+function e4Evaluation() {
+  // These values only exercise Web rendering. Real rule outputs are tested by API tests.
+  const fixtureOutputs = [
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `e4-classification-${index}`, task: "classification", expected: ["STARMAP"], actual: ["STARMAP"], hit: true })),
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `e4-tags-${index}`, task: "tags", expected: ["synthetic"], actual: ["synthetic"], hit: true })),
+    { id: "e4-moderation-0", task: "moderation", expected: ["HIGH"], actual: ["HIGH"], hit: true },
+    ...Array.from({ length: 2 }, (_, index) => ({ id: `e4-matching-${index}`, task: "matching", expected: ["synthetic-candidate"], actual: ["synthetic-candidate"], hit: true })),
+  ];
+  const sampleSize = { classification: 4, tags: 4, moderation: 1, matching: 2 };
+  if (e4LegacyEvaluation) return { generatedAt: now, sampleSize, ablations: [{ label: "去除语义信号", matchTopKRelevance: 50 }],
+    groups: [{ method: "FINAL", label: "最终方案", metrics: [{ key: "matchTopKRelevance", label: "旧版 AI 相关性", value: 99.9, unit: "percent", description: "Legacy synthetic fixture" }] }] };
+  return { generatedAt: now, sampleSize, ablations: [], ablationStatus: "NOT_RUN", evaluationKind: "DEMO_RULE_FIXTURES",
+    modelQualityValidated: false, competitionEvidenceEligible: false,
+    dataset: { version: "e4-browser-synthetic-v1", sha256: createHash("sha256").update(JSON.stringify(fixtureOutputs)).digest("hex"), judgmentSource: "synthetic-presets-not-human" },
+    limitations: ["此处匹配为旧版演示规则，不是 E3 的生产召回与重排。"], fixtureOutputs,
+    groups: [{ method: "RULE_BASELINE", label: "Demo / 本地规则夹具", metrics: [
+      { key: "classificationAccuracy", label: "分类预设命中", numerator: 4, denominator: 4, value: 100, unit: "percent", method: "固定合成频道逐项比较", description: "只检查夹具预设。" },
+      { key: "tagTopKHitRate", label: "标签预设命中", numerator: 4, denominator: 4, value: 100, unit: "percent", method: "每条至少命中一个预设标签", description: "只检查夹具预设。" },
+      { key: "moderationRecall", label: "风险预设召回", numerator: 1, denominator: 1, value: 100, unit: "percent", method: "仅在风险预设样本中计数", description: "只检查夹具预设。" },
+      { key: "matchTop1PresetHitRate", label: "演示匹配 Top-1 预设命中", numerator: 2, denominator: 2, value: 100, unit: "percent", method: "旧演示规则首位 ID 与预设比较", description: "不是人工相关性。" },
+    ] }] };
+}
 const profile = {
   coreNeed: "A quiet moment", displayText: "意义深空 · 努力怀疑",
   emotionTone: "Reflective", innerConflict: "Finding time to pause",
@@ -73,7 +98,7 @@ function d4Generation() { return { id: d4Id, createdAt: now, updatedAt: now, see
 function identity(request) {
   const value = (request.headers.cookie ?? "").split(";")
     .map((entry) => entry.trim()).find((entry) => entry.startsWith(`${sessionCookie}=`))?.split("=")[1];
-  return value === "owner" ? owner : value === "other" ? other : undefined;
+  return value === "owner" ? owner : value === "other" ? other : value === "admin" ? admin : undefined;
 }
 
 function send(response, status, data, headers = {}) {
@@ -127,10 +152,30 @@ const server = createServer(async (request, response) => {
     reportReceipts.clear(); reportSequence = 0;
     publicSignal.expandedText = publicOriginalText;
     publicSignal.matches = [];
+    e4LegacyEvaluation = false;
     savedSignals.clear(); resonatedSignals.clear();
     d4Complete = false; d4History = false; d4Signal.seedText = "D4_SYNTHETIC_PENDING_SEED"; d4Signal.parentSignalId = undefined;
     for (const id of signals.keys()) if (id.startsWith("d1000000-") || id.startsWith("runtime-e3-source-")) signals.delete(id);
     return ok(response, { synthetic: true });
+  }
+  if (request.method === "POST" && url.pathname === "/__runtime/e4-legacy-evaluation") {
+    e4LegacyEvaluation = true;
+    return ok(response, { synthetic: true });
+  }
+  if (url.pathname.startsWith("/api/admin/")) {
+    if (current?.role !== "ADMIN") return fail(response, current ? 403 : 401, "UNAUTHORIZED");
+    if (request.method !== "GET") return fail(response, 405, "METHOD_NOT_ALLOWED");
+    if (url.pathname === "/api/admin/ai-evaluation") return ok(response, { evaluation: e4Evaluation() });
+    if (url.pathname === "/api/admin/overview") return ok(response, { overview: {
+      aiReviews: { total: 0 }, aiOperations: { chatFallbacks: 0, embeddingFailures: 0, rerankerFailures: 0, ttsFailures: 0 },
+      capabilities: { chat: "disabled", embedding: "disabled", reranker: "disabled", tts: "disabled" },
+      frequencies: { active: 0, banned: 0, muted: 0 }, galaxy: { missingCoordinates: 0 }, reports: { pending: 0, rejected: 0, resolved: 0 },
+      signals: { total: 0, draft: 0, published: 0, reviewing: 0, hidden: 0, deleted: 0 }, users: { active: 0, banned: 0, muted: 0 },
+    } });
+    if (url.pathname === "/api/admin/signals") return ok(response, { signals: { items: [], total: 0, limit: 20, hasNextPage: false } });
+    if (url.pathname === "/api/admin/ai-signals") return ok(response, { signals: { items: [], total: 0, limit: 20, hasNextPage: false } });
+    const field = new Map([["/api/admin/reports", "reports"], ["/api/admin/frequencies", "frequencies"], ["/api/admin/users", "users"], ["/api/admin/ai-reviews", "aiReviews"], ["/api/admin/provider-configs", "providerConfigs"]]).get(url.pathname);
+    return field ? ok(response, { [field]: [] }) : fail(response, 404, "NOT_FOUND");
   }
   if (request.method === "POST" && url.pathname === "/__runtime/e3-matches") {
     const mode = url.searchParams.get("mode");
@@ -214,10 +259,10 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/api/auth/frequency/login") {
     let body;
     try { body = await readBody(request); } catch { return fail(response, 400, "VALIDATION_ERROR"); }
-    const frequency = body.frequencyCode === owner.freqCode ? owner : body.frequencyCode === other.freqCode ? other : undefined;
+    const frequency = body.frequencyCode === owner.freqCode ? owner : body.frequencyCode === other.freqCode ? other : body.frequencyCode === admin.freqCode ? admin : undefined;
     if (frequency === undefined || body.password !== "runtime-password") return fail(response, 401, "UNAUTHORIZED");
     return ok(response, { frequency }, {
-      "set-cookie": `${sessionCookie}=${frequency.id === owner.id ? "owner" : "other"}; HttpOnly; Path=/; SameSite=Lax; Max-Age=900`,
+      "set-cookie": `${sessionCookie}=${frequency.id === owner.id ? "owner" : frequency.id === admin.id ? "admin" : "other"}; HttpOnly; Path=/; SameSite=Lax; Max-Age=900`,
     });
   }
   if (request.method === "GET" && url.pathname === "/api/me") {

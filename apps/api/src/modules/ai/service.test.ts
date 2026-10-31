@@ -457,6 +457,33 @@ describe("ai service", () => {
     );
   });
 
+  it.each(["aftertaste", "clarify_thought"] as const)(
+    "parses provider review using the actual %s input mode without forcing scene flags",
+    async (expansionMode) => {
+      vi.mocked(signalExpansionReviewWithProvider).mockResolvedValue(providerResult({
+        hasConcreteObjects: false,
+        hasSensoryDetails: false,
+        isForcedNegative: false,
+        isGenericLiteraryTemplate: false,
+        matchesSeedType: true,
+        pass: true,
+        preservesOriginalDirection: true,
+        problems: [],
+        rewriteInstruction: "",
+        score: 9,
+      }));
+
+      const result = await reviewSignalExpansionWithFallback({
+        classification: { ...testEmotionSeedClassification, expansionMode },
+        expandedText: "对原来的想法保持克制，不额外添加情节。",
+        seedText: "爱与不爱还是很明显的",
+      });
+
+      expect(result.result).toMatchObject({ pass: true, hasConcreteObjects: false, hasSensoryDetails: false });
+      expect(createAiReviewRecord).toHaveBeenCalledWith(expect.objectContaining({ status: "SUCCEEDED" }));
+    },
+  );
+
   it("records signal expansion review fallback when provider output is invalid", async () => {
     vi.mocked(signalExpansionReviewWithProvider).mockResolvedValue(providerResult({
       pass: "no",

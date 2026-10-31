@@ -215,9 +215,12 @@ export type AdminAiReviewRecord = {
 };
 
 export type AdminAiEvaluationMetric = {
+  denominator: number;
   description: string;
   key: string;
   label: string;
+  method: string;
+  numerator: number;
   unit: "percent";
   value: number;
 };
@@ -229,12 +232,29 @@ export type AdminAiEvaluationGroup = {
 };
 
 export type AdminAiEvaluation = {
+  ablationStatus: "NOT_RUN";
   ablations: Array<{
     label: string;
     matchTopKRelevance: number;
   }>;
+  competitionEvidenceEligible: false;
+  dataset: {
+    judgmentSource: "synthetic-presets-not-human";
+    sha256: string;
+    version: string;
+  };
+  evaluationKind: "DEMO_RULE_FIXTURES";
+  fixtureOutputs: Array<{
+    actual: string[];
+    expected: string[];
+    hit: boolean;
+    id: string;
+    task: "classification" | "matching" | "moderation" | "tags";
+  }>;
   generatedAt: string;
   groups: AdminAiEvaluationGroup[];
+  limitations: string[];
+  modelQualityValidated: false;
   sampleSize: {
     classification: number;
     matching: number;

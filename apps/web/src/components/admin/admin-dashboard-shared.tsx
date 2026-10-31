@@ -304,15 +304,19 @@ export function EvaluationGroupCard({ group }: { group: AdminAiEvaluationGroup }
       <dl className="mt-4 grid gap-3">
         {group.metrics.map((metric) => (
           <div className="grid gap-1" key={metric.key}>
-            <div className="flex items-baseline justify-between gap-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
               <dt className="text-sm text-[color:var(--radio-muted)]">{metric.label}</dt>
               <dd className="font-mono text-lg text-[color:var(--radio-text)]">
                 {metric.value.toFixed(1)}%
+                <span className="ml-2 text-xs text-[color:var(--radio-muted)]">
+                  （{metric.numerator}/{metric.denominator}）
+                </span>
               </dd>
             </div>
             <p className="text-xs leading-5 text-[color:var(--radio-dim)]">
               {metric.description}
             </p>
+            <p className="text-xs leading-5 text-[color:var(--radio-dim)]">{metric.method}</p>
           </div>
         ))}
       </dl>

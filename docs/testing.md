@@ -89,6 +89,17 @@ npm run deploy:test
 
 部署脚本测试使用替身 Docker / curl，只验证脚本契约，不会部署应用。Windows 需使用可运行的 Git Bash；Codex 沙箱限制系统对象或原生进程启动时，可在明确获准的执行环境运行，不能把未启动的测试记为通过。
 
+## E4 Demo 指标与离线盲评工具
+
+后台百分比只对应合成规则夹具，不表示模型效果。Seed 忠实性另按[评测准备与盲评说明](./faithfulness-evaluation.md)操作；工具不会调用模型或代写人工评分。
+
+```bash
+npm run api:build
+node --test tests/evaluation/faithfulness-cli.test.mjs
+```
+
+这项 CLI 回归只使用合成捕获与合成评分，检查两份评分表配对、缺失评分、证据篡改、JSON 键顺序和禁止覆盖，不能当作实际盲评。默认 API 单测另覆盖冻结 60 条输入、分母、失败记录与模式复核；生产 Web 套件覆盖后台 Demo 标识、旧数据隐藏、管理员限制、桌面及 390px。
+
 ## CI
 
 现有 API、Web、部署脚本任务保留。Web 单测已并入 `web:check`，不再额外重复执行。新增独立 `Isolated API integration` job，运行同一个托管集成命令；不需要仓库 secrets 或收费 AI。

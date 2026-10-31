@@ -957,6 +957,22 @@ describe("ai provider adapter", () => {
     });
   });
 
+  it.each([
+    "今天什么也不赶，只想慢慢散步",
+    "今天终于投进三分球，开心得跳起来",
+    "蓝色回形针在抽屉里开脱口秀",
+  ])("keeps the local forced-negative guard for a light, joyful or playful seed: %s", (seedText) => {
+    const classification = classifySignalSeedFallback(seedText);
+    expect(classification.shouldBeNegative).toBe(false);
+    const review = signalExpansionReviewFallback({
+      classification,
+      expandedText: "原本轻松的事被解释成无法说出口的孤独，所有笑声背后都藏着痛苦。",
+      seedText,
+    });
+    expect(review).toMatchObject({ isForcedNegative: true, pass: false });
+    expect(review.problems).toContain("原句不负面，但扩写强行转向沉重情绪");
+  });
+
   it("rejects expansions that violate low-invention forbidden boundaries", () => {
     expect(
       signalExpansionReviewFallback({

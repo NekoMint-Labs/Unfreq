@@ -1417,6 +1417,26 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     }
   });
 
+  it("E4 exposes computed Demo fixtures only to an administrator through the real API", async () => {
+    const unauthenticated = await request("GET", "/api/admin/ai-evaluation");
+    expect(unauthenticated.statusCode).toBe(401);
+    expectError(await request("GET", "/api/admin/ai-evaluation", reader.cookie), 403, "FORBIDDEN");
+    const response = await request("GET", "/api/admin/ai-evaluation", admin.cookie);
+    expect(response.statusCode).toBe(200);
+    const evaluation = response.json().data.evaluation;
+    expect(evaluation).toMatchObject({ evaluationKind: "DEMO_RULE_FIXTURES", modelQualityValidated: false,
+      competitionEvidenceEligible: false, ablationStatus: "NOT_RUN", ablations: [],
+      dataset: { judgmentSource: "synthetic-presets-not-human" } });
+    expect(evaluation.dataset.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(evaluation.groups).toHaveLength(1);
+    expect(evaluation.groups[0].method).toBe("RULE_BASELINE");
+    expect(evaluation.fixtureOutputs).toHaveLength(11);
+    for (const metric of evaluation.groups[0].metrics) {
+      expect(metric.denominator).toBeGreaterThan(0);
+      expect(metric.value).toBe(Number((100 * metric.numerator / metric.denominator).toFixed(1)));
+    }
+  });
+
   it.each(matchingCases)("E3 frozen real-code synthetic evaluation: $id", async (current) => {
     await runFrozenMatchingCase(h, current, author, reader, admin, request);
     if (matchingCaptures.every((strategy) => strategy.runs.length === matchingCases.length)) {

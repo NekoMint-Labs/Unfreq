@@ -640,6 +640,56 @@ test("E3 labels user-initiated, system AI and demo content distinctly", async ({
   await expect(page).toHaveURL(/runtime-e3-source-0$/u);
   await expect(page.getByText(/E3_BROWSER_SOURCE_human/u).first()).toBeVisible();
 });
+
+test("E4 keeps traceable Demo metrics separate from model evidence on desktop and mobile", async ({ page, context }) => {
+  await signIn(context, "FM 99.99");
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ reducedMotion: width === 390 ? "reduce" : "no-preference" });
+    await page.goto("/admin");
+    await expect(page.getByRole("heading", { name: "治理控制台" })).toBeVisible();
+    const entry = page.getByRole("button", { name: /Demo \/ 规则夹具/ });
+    await entry.focus();
+    await page.keyboard.press("Enter");
+    const panel = page.locator("#ai-evaluation");
+    await expect(panel.getByRole("heading", { name: "Demo / 规则夹具" })).toBeVisible();
+    await expect(panel).toContainText("不能作为参赛实测指标");
+    await expect(panel).toContainText("未运行真实模型、双人盲评或真实消融");
+    await expect(panel).toContainText("e4-browser-synthetic-v1");
+    await expect(panel).toContainText("不是 E3 的生产召回与重排");
+    await expect(panel).toContainText("（4/4）");
+    await expect(panel).toContainText("（1/1）");
+    await expect(panel).toContainText("（2/2）");
+    await expect(panel).not.toContainText("最终方案");
+    await expect(panel).not.toContainText("去除语义信号");
+    const outputs = panel.getByText("查看夹具逐项输出", { exact: true });
+    await outputs.focus();
+    await page.keyboard.press("Enter");
+    await expect(panel.getByText("e4-classification-0 · 命中预设", { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await panel.screenshot({ path: test.info().outputPath(`e4-demo-${width}.png`) });
+  }
+});
+
+test("E4 suppresses legacy fixed percentages and keeps the admin entry restricted", async ({ page, context, request }) => {
+  await page.goto("/admin");
+  await expect(page.getByRole("heading", { name: "先调频，再进入后台。" })).toBeVisible();
+  expect((await context.request.get(`${apiBaseUrl}/api/admin/ai-evaluation`)).status()).toBe(401);
+  await signIn(context);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "当前频率不能使用后台。" })).toBeVisible();
+  expect((await context.request.get(`${apiBaseUrl}/api/admin/ai-evaluation`)).status()).toBe(403);
+  expect((await request.post(`${apiBaseUrl}/__runtime/e4-legacy-evaluation`)).status()).toBe(200);
+  await signIn(context, "FM 99.99");
+  await page.goto("/admin");
+  await page.getByRole("button", { name: /Demo \/ 规则夹具/ }).click();
+  const panel = page.locator("#ai-evaluation");
+  await expect(panel).toContainText("旧版演示数据缺少可追溯信息，暂不展示百分比");
+  await expect(panel).toContainText("不能作为参赛实测指标");
+  await expect(panel).not.toContainText("99.9%");
+  await expect(panel).not.toContainText("最终方案");
+  await expect(panel).not.toContainText("去除语义信号");
+});
 test("E3 does not infer a human source from legacy PUBLISHED status", async ({ page, request }) => {
   expect((await request.post(`${apiBaseUrl}/__runtime/e3-matches?mode=legacy`)).status()).toBe(200);
   await page.goto(publicPath);

@@ -1190,7 +1190,7 @@ describe("signal service AI generation", () => {
     });
   });
 
-  it("accepts contradictory high-score expansion review instead of rewriting", async () => {
+  it("rewrites and rejects a failed high-score review instead of forcing it to pass", async () => {
     const logger = {
       error: vi.fn(),
       info: vi.fn(),
@@ -1215,23 +1215,24 @@ describe("signal service AI generation", () => {
       reviewId: "00000000-0000-4000-8000-000000000910",
     });
 
-    const signal = await createPublishedSignal(
+    await expect(createPublishedSignal(
       testFrequency,
       {
         seedText: "你是什么人呢",
       },
       logger,
-    );
+    )).rejects.toMatchObject({ code: "AI_UNAVAILABLE" });
 
-    expect(signal.expandedText).toBe(defaultExpansion.expandedText);
-    expect(generateSignalExpansionWithFallback).toHaveBeenCalledTimes(1);
+    expect(generateSignalExpansionWithFallback).toHaveBeenCalledTimes(2);
+    expect(signalStore.createdInputs).toHaveLength(0);
     expect(logger.warn).toHaveBeenCalledWith(
       {
-        action: "signal.expansion.review_contradictory",
-        reason: "INVALID_AI_REVIEW",
+        action: "signal.expansion.review_failed",
+        problemCount: 0,
+        reason: "AI_UNAVAILABLE",
         targetType: "SIGNAL",
       },
-      "signal expansion review contradicted itself",
+      "signal expansion review failed",
     );
   });
 

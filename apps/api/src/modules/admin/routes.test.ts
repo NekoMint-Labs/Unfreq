@@ -953,7 +953,7 @@ describe("admin routes", () => {
     expect(vi.mocked(listAdminAiReviewRecords)).toHaveBeenCalledWith({});
   });
 
-  it("returns reproducible ai evaluation metrics", async () => {
+  it("returns explicitly synthetic Demo rule metrics without model claims", async () => {
     const testApp = await buildApp();
     app = testApp;
 
@@ -967,12 +967,24 @@ describe("admin routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.evaluation).toMatchObject({
+      ablationStatus: "NOT_RUN",
+      ablations: [],
+      competitionEvidenceEligible: false,
+      dataset: {
+        judgmentSource: "synthetic-presets-not-human",
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        version: "admin-rule-fixtures-v1",
+      },
+      evaluationKind: "DEMO_RULE_FIXTURES",
+      modelQualityValidated: false,
       groups: expect.arrayContaining([
         expect.objectContaining({
-          method: "FINAL",
+          method: "RULE_BASELINE",
           metrics: expect.arrayContaining([
             expect.objectContaining({
-              key: "matchTopKRelevance",
+              denominator: 2,
+              key: "matchTop1PresetHitRate",
+              numerator: 2,
               unit: "percent",
             }),
           ]),
@@ -985,6 +997,7 @@ describe("admin routes", () => {
         tags: 4,
       },
     });
+    expect(response.json().data.evaluation.groups).toHaveLength(1);
   });
 
   it("lists, generates, keeps, and deletes admin ai signals", async () => {
