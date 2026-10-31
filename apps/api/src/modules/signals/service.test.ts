@@ -47,6 +47,7 @@ const signalStore = vi.hoisted(() => {
 });
 
 const defaultFingerprint: SignalFingerprint = {
+  interpretation: { version: 1, state: "unverified", source: "provider" },
   coreNeed: "希望被理解",
   displayText: "关系星云 · 被理解需求",
   energy: 0.62,

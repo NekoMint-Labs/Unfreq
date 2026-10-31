@@ -68,7 +68,16 @@ export type SignalSource = "ai_generated" | "human" | "seed";
 export type SignalRiskLevel = "HIGH" | "LOW" | "MEDIUM";
 export type SignalMatchSource = "FALLBACK" | "PUBLISHED" | "SEEDED";
 
+/** Source bookkeeping, never evidence that a psychological interpretation is accurate. */
+export type SignalInterpretation = {
+  version: 1;
+  state: "unknown" | "unverified";
+  source: "rules" | "provider" | "unknown";
+};
+
 export type SignalFrequencyProfile = {
+  /** Missing provenance is unknown. Enum values alone never permit psychological display. */
+  interpretation?: SignalInterpretation;
   coreNeed: string;
   displayText: string;
   emotionTone: string;
@@ -79,6 +88,8 @@ export type SignalFrequencyProfile = {
 };
 
 export type SignalFingerprint = {
+  /** Provider means attributed, not validated. No current state permits psychological display. */
+  interpretation?: SignalInterpretation;
   coreNeed: string;
   displayText: string;
   energy: number;

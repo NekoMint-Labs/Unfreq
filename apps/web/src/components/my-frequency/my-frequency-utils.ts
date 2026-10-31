@@ -1,4 +1,5 @@
 import type { MySignalSummary, SignalFrequencyProfile } from "@unfreq/contracts";
+import { canDisplaySignalInterpretation } from "../../lib/signal-interpretation";
 
 export type SignalTreeNode = {
   children: SignalTreeNode[];
@@ -35,6 +36,9 @@ export function getTopFrequencyProfiles(
   const countByBand = new Map<string, { count: number; profile: SignalFrequencyProfile }>();
 
   for (const signal of signals) {
+    if (!canDisplaySignalInterpretation(signal.frequencyProfile.interpretation)) {
+      continue;
+    }
     const current = countByBand.get(signal.frequencyProfile.primaryBand);
 
     countByBand.set(signal.frequencyProfile.primaryBand, {

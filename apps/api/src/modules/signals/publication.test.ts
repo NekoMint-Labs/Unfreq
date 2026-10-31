@@ -45,6 +45,7 @@ function signalFixture(): SignalRecord {
     embeddingVersion: "PRIVATE_EMBEDDING_VERSION",
     expandedText: "这是作者将在预览中确认的正文。",
     fingerprintJson: {
+      interpretation: { version: 1, state: "unverified", source: "provider" },
       coreNeed: "PRIVATE_NEED",
       displayText: "PRIVATE_DISPLAY",
       energy: 0.5,
@@ -139,7 +140,10 @@ function validState(): PublicationProjectionState {
 }
 
 function confirmedSnapshot() {
-  return confirmPublicationSnapshot(buildPublicationPreview(signalFixture(), 0), createdAt);
+  // Historical, explicitly confirmed fixture. New previews omit unverified labels.
+  const content = { expandedText: signalFixture().expandedText, authorFreqCode: "FM 11.11",
+    tags: ["关系星云", "夜晚", "等待"], primaryBand: "relationship_nebula" as const };
+  return confirmPublicationSnapshot({ content, digest: digestPublicationContent(content), version: 0 }, createdAt);
 }
 
 function projections(options: { state?: PublicationProjectionState; snapshot?: unknown } = {}) {
@@ -164,14 +168,13 @@ function projections(options: { state?: PublicationProjectionState; snapshot?: u
 }
 
 describe("author publication candidate and confirmation", () => {
-  it("selects the exact body, author FM and three visible existing labels", () => {
+  it("selects the exact body and author FM without unverified psychological labels", () => {
     const preview = buildPublicationPreview(signalFixture(), 0);
     expect(preview).toEqual({
       content: {
         expandedText: signalFixture().expandedText,
         authorFreqCode: "FM 11.11",
-        tags: ["关系星云", "夜晚", "等待"],
-        primaryBand: "relationship_nebula",
+        tags: [],
       },
       digest: expect.stringMatching(/^[a-f0-9]{64}$/u),
       version: 0,
@@ -191,16 +194,16 @@ describe("author publication candidate and confirmation", () => {
     expect(buildPublicationPreview(signal, 0)).toEqual(before);
   });
 
-  it("shows short existing labels without truncating a long label into a new claim", () => {
+  it("omits unverified labels rather than shortening them into a publishable claim", () => {
     const signal = signalFixture();
     signal.fingerprintJson.tags = ["这是一段超过十六个字符且不能被裁剪成另一种结论的标签", "  等待  "];
     const preview = buildPublicationPreview(signal, 0);
-    expect(preview.content.tags).toEqual(["关系星云", "等待"]);
+    expect(preview.content.tags).toEqual([]);
     expect(preview.content.expandedText).toBe(signal.expandedText);
   });
 
   it("uses a stable content digest independent of object property insertion order", () => {
-    const content = buildPublicationPreview(signalFixture(), 0).content;
+    const content = confirmedSnapshot().content;
     expect(digestPublicationContent({
       primaryBand: content.primaryBand,
       tags: [...content.tags],
@@ -232,7 +235,7 @@ describe("author publication candidate and confirmation", () => {
     preview.content.expandedText = "later body";
     preview.content.tags.push("later tag");
     expect(snapshot.content.expandedText).toBe(signalFixture().expandedText);
-    expect(snapshot.content.tags).toEqual(["关系星云", "夜晚", "等待"]);
+    expect(snapshot.content.tags).toEqual([]);
   });
 
   it.each([null, ""])("rejects a missing author identity %j", (authorId) => {

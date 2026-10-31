@@ -69,6 +69,9 @@ export const aiSignalFingerprintSchema = z.object({
   title: z.string().trim().min(1).max(48),
 }).transform((fingerprint) => {
   const frequencyProfile = normalizeSignalFrequencyProfile({
+    // This schema validates a provider response. The service attaches the
+    // actual execution source after parsing; model-supplied metadata is stripped.
+    interpretation: { version: 1, state: "unverified", source: "provider" },
     coreNeed: fingerprint.coreNeed,
     emotionTone: fingerprint.emotionTone,
     fallbackText: [

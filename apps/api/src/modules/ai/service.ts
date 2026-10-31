@@ -4,6 +4,7 @@ import {
   getGenerationExecutionContext, throwIfGenerationStopped,
 } from "../../shared/generation-execution.js";
 import { ruleExecution, type AiExecutionMetadata, type ProviderResult } from "./provider-execution.js";
+import { interpretationFromExecution } from "../signals/interpretation.js";
 import { createAiReviewRecord } from "./repository.js";
 import {
   aiClassificationSchema,
@@ -145,6 +146,7 @@ async function runAi<TOutput>(params: {
   parse: (value: unknown) => TOutput;
   reviewType: string;
   providerCall: () => Promise<ProviderResult<unknown>>;
+  prepareResult?: (result: TOutput, execution: AiExecutionMetadata) => TOutput;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   await assertGenerationActive();
   const rawResult = await params.providerCall();
@@ -157,6 +159,7 @@ async function runAi<TOutput>(params: {
     }
     throw error;
   }
+  if (params.prepareResult !== undefined) result = params.prepareResult(result, rawResult.execution);
   const review = await recordAiReview({
     execution: rawResult.execution,
     inputText: params.inputText,
@@ -180,6 +183,7 @@ async function runAiWithFallback<TOutput>(params: {
   parse: (value: unknown) => TOutput;
   reviewType: string;
   providerCall: () => Promise<ProviderResult<unknown>>;
+  prepareResult?: (result: TOutput, execution: AiExecutionMetadata) => TOutput;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   try {
     return await runAi(params);
@@ -190,10 +194,12 @@ async function runAiWithFallback<TOutput>(params: {
       throw error;
     }
 
-    const result = params.fallbackCall();
     const previous = (error.details as { execution?: AiExecutionMetadata } | undefined)?.execution;
+    const execution = ruleExecution(params.reviewType, previous);
+    const fallback = params.fallbackCall();
+    const result = params.prepareResult === undefined ? fallback : params.prepareResult(fallback, execution);
     const review = await recordAiReview({
-      execution: ruleExecution(params.reviewType, previous),
+      execution,
       inputText: params.inputText,
       output: result,
       reviewType: params.reviewType,
@@ -349,6 +355,7 @@ export async function generateSignalFingerprintWithFallback(
     inputText: body.content,
     parse: (value) => parseAiResult(value, aiSignalFingerprintSchema),
     providerCall: () => signalFingerprintWithProvider(body.content),
+    prepareResult: (result, execution) => ({ ...result, interpretation: interpretationFromExecution(execution) }),
     reviewType: "signal-fingerprint",
     targetId: target?.targetId,
     targetType: target?.targetType,
@@ -417,6 +424,8 @@ export async function generateSignalMaterial(
     inputText: input.content,
     parse: (value) => parseAiResult(value, aiSignalMaterialSchema),
     providerCall: () => signalMaterialWithProvider(input.content),
+    prepareResult: (result, execution) => ({ ...result,
+      fingerprint: { ...result.fingerprint, interpretation: interpretationFromExecution(execution) } }),
     reviewType: "signal-material",
     targetId: target?.targetId,
     targetType: target?.targetType,

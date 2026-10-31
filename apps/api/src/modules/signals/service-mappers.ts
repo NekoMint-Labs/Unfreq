@@ -1,6 +1,7 @@
 import { cosineRelevance } from "./match-scoring.js";
 import { isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
+import { canReferenceSignalInterpretation, unknownInterpretationText } from "./interpretation.js";
 import {
   normalizeSignalFrequencyProfile,
   type SignalFrequencyProfile,
@@ -29,6 +30,7 @@ export function toShortText(value: string, maxLength: number): string {
 
 export function getSignalFrequencyProfile(signal: SignalRecord): SignalFrequencyProfile {
   return normalizeSignalFrequencyProfile({
+    interpretation: signal.fingerprintJson.interpretation,
     coreNeed: signal.coreNeed ?? signal.fingerprintJson.coreNeed ?? signal.fingerprintJson.hiddenNeed,
     emotionTone: signal.emotionTone ?? signal.fingerprintJson.emotionTone,
     fallbackText: [signal.seedText, signal.expandedText].join("\n"),
@@ -44,6 +46,7 @@ export function getSignalFrequencyProfile(signal: SignalRecord): SignalFrequency
 
 export function getFingerprintFrequencyProfile(fingerprint: SignalFingerprint): SignalFrequencyProfile {
   return normalizeSignalFrequencyProfile({
+    interpretation: fingerprint.interpretation,
     coreNeed: fingerprint.coreNeed ?? fingerprint.hiddenNeed,
     emotionTone: fingerprint.emotionTone ?? fingerprint.primaryEmotion,
     fallbackText: [
@@ -91,9 +94,11 @@ function getSignalResponseFingerprint(signal: SignalRecord): SignalFingerprint {
     fingerprint.tags,
     frequencyProfile.resonanceKeywords,
   );
+  const canReference = canReferenceSignalInterpretation(frequencyProfile.interpretation);
 
   return {
     ...fingerprint,
+    interpretation: frequencyProfile.interpretation,
     coreNeed: frequencyProfile.coreNeed,
     displayText: frequencyProfile.displayText,
     energy: normalizeFingerprintScore(fingerprint.energy, 0.5),
@@ -102,27 +107,27 @@ function getSignalResponseFingerprint(signal: SignalRecord): SignalFingerprint {
       fingerprint.frequency,
       signal.authorFreqCode ?? "FM --.--",
     ),
-    hiddenNeed: normalizeFingerprintText(fingerprint.hiddenNeed, frequencyProfile.coreNeed),
+    hiddenNeed: canReference ? normalizeFingerprintText(fingerprint.hiddenNeed, frequencyProfile.coreNeed) : unknownInterpretationText,
     innerConflict: frequencyProfile.innerConflict,
-    narrativeConflict: normalizeFingerprintText(
+    narrativeConflict: canReference ? normalizeFingerprintText(
       fingerprint.narrativeConflict,
       frequencyProfile.innerConflict,
-    ),
+    ) : unknownInterpretationText,
     openness: normalizeFingerprintScore(fingerprint.openness, 0.5),
     primaryBand: frequencyProfile.primaryBand,
-    primaryEmotion: normalizeFingerprintText(
+    primaryEmotion: canReference ? normalizeFingerprintText(
       fingerprint.primaryEmotion,
       frequencyProfile.emotionTone,
-    ),
+    ) : unknownInterpretationText,
     resonanceKeywords: frequencyProfile.resonanceKeywords,
     riskLevel: ["HIGH", "LOW", "MEDIUM"].includes(fingerprint.riskLevel)
       ? fingerprint.riskLevel
       : "LOW",
-    secondaryEmotions: normalizeFingerprintTextList(fingerprint.secondaryEmotions, []),
+    secondaryEmotions: canReference ? normalizeFingerprintTextList(fingerprint.secondaryEmotions, []) : [],
     signalType: normalizeFingerprintText(fingerprint.signalType, frequencyProfile.primaryBand),
     subFeeling: frequencyProfile.subFeeling,
-    tags,
-    theme: normalizeFingerprintText(fingerprint.theme, frequencyProfile.displayText),
+    tags: canReference ? tags : [],
+    theme: canReference ? normalizeFingerprintText(fingerprint.theme, frequencyProfile.displayText) : unknownInterpretationText,
     title: normalizeFingerprintText(fingerprint.title, toShortText(signal.seedText, 24)),
   };
 }

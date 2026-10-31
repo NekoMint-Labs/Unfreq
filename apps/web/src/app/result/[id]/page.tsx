@@ -50,7 +50,7 @@ function OwnerContent({ signal, onboarding, origin }: { signal: OwnerSignalDetai
       <h1 className="my-4 text-2xl">{labels[publication.state]}</h1>
       <p className="signal-seed-whisper whitespace-pre-wrap">{signal.seedText}</p>
       <div className="signal-expanded-reading my-6"><p className="radio-kicker">PRIVATE PREVIEW</p><p className="whitespace-pre-wrap">{signal.expandedText}</p></div>
-      <p>原句、生成正文和完整分析在这里供你私密查看。</p>
+      <p>原句和生成正文在这里供你私密查看。</p>
       <SignalWithdrawButton signalId={signal.id} publicationVersion={publication.version} canWithdraw={publication.canWithdraw && (signal.status === "PUBLISHED" || publication.publishedContent !== undefined)} />
     </section>
     {publication.canPublish && publication.preview ? <section className="signal-archive-section" aria-label="发布预览">
@@ -68,7 +68,7 @@ function OwnerContent({ signal, onboarding, origin }: { signal: OwnerSignalDetai
       <section className="signal-archive-section signal-action-section"><Link className="signal-next-primary" href={galaxyHref({ focus: signal.id, onboarding: onboarding ? "galaxy" : undefined })}>进入星图</Link></section>
       <ShareSignalCardPreview card={{ signalId: signal.id, frequencyCode: publication.publishedContent?.authorFreqCode ?? "Unfreq", expandedText: publication.publishedContent?.expandedText ?? "", imageUrl: `${origin}/api/og/${signal.id}?v=${publication.version}` }} shareUrl={`${origin}/result/${signal.id}`} />
     </> : null}
-    <details className="signal-archive-section"><summary>查看完整分析（私密）</summary><SignalFingerprintPanel fingerprint={signal.fingerprint} /></details>
+    <details className="signal-archive-section"><summary>查看表达记录（私密）</summary><SignalFingerprintPanel fingerprint={signal.fingerprint} /></details>
     {signal.followUpQuestion ? <section className="signal-archive-section"><p className="radio-kicker">NEXT SIGNAL</p><p>{signal.followUpQuestion}</p></section> : null}
     <section className="signal-archive-section flex flex-wrap gap-4">
       <ContinueSignalButton parentSignalId={signal.id} seedText={signal.followUpQuestion} />

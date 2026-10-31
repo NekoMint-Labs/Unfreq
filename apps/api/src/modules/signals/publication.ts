@@ -15,6 +15,7 @@ import type {
   SignalStatus,
 } from "@unfreq/contracts/signals";
 import { signalBandLabels, signalPrimaryBands } from "./frequency-taxonomy.js";
+import { canDisplaySignalInterpretation } from "./interpretation.js";
 import type { SignalRecord } from "./types.js";
 
 const versionSchema = z.number().int().min(0).max(maxSignalPublicationVersion);
@@ -71,7 +72,7 @@ export const signalPublicationSnapshotSchema = z.strictObject({
 export type PublicationPreviewInput = Pick<SignalRecord,
   "authorId" | "authorFreqCode" | "expandedText" |
   "generationStatus" | "primaryBand"
-> & { fingerprintJson: Pick<SignalFingerprint, "primaryBand" | "tags"> };
+> & { fingerprintJson: Pick<SignalFingerprint, "primaryBand" | "tags" | "interpretation"> };
 
 /** Private candidate only. The caller must authenticate the owner and display every field. */
 export function buildPublicationPreview(
@@ -83,17 +84,18 @@ export function buildPublicationPreview(
     throw new Error("Publication preview is unavailable.");
   }
   const primaryBand = signal.primaryBand ?? signal.fingerprintJson.primaryBand;
+  const displayInterpretation = canDisplaySignalInterpretation(signal.fingerprintJson.interpretation);
   // No profile normalizer: it can infer labels from private Seed or analysis.
-  const tags = [...new Set([
+  const tags = displayInterpretation ? [...new Set([
     signalBandLabels[primaryBand],
     ...signal.fingerprintJson.tags.slice(0, 2).map((tag) => tag.trim())
       .filter((tag) => tag.length > 0 && tag.length <= 16),
-  ])];
+  ])] : [];
   const content = signalPublicContentSchema.parse({
     expandedText: signal.expandedText,
     authorFreqCode: signal.authorFreqCode,
     tags,
-    primaryBand,
+    ...(displayInterpretation ? { primaryBand } : {}),
   });
   return signalPublicationPreviewSchema.parse({
     content,

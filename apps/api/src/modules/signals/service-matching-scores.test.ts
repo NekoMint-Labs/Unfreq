@@ -36,6 +36,14 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ results: state.scores }), { status: 200 })));
 });
 describe("E2 score contract through transport and matching", () => {
+  it("does not scope an unknown private query by default psychological labels or award placeholder rules", async () => {
+    state.configured = false;
+    const { interpretation: _legacySource, ...legacy } = fixtureFingerprint;
+    const result = await findSameFrequencyMatches({ ...input, publicQuery: false, fingerprint: legacy });
+    expect(calls.keyword).toHaveBeenCalledWith(expect.any(Number), undefined, expect.objectContaining({ tags: [], band: undefined }));
+    expect(result.matches.map((match) => match.score)).toEqual([50, 40]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("E3 excludes the query author before sending candidate bodies to rerank", async () => {
     state.scores = [{ id: rows[0].id, score: 0.9 }, { id: rows[1].id, score: 0.8 }];
     const result = await findSameFrequencyMatches({ ...input, excludeAuthorIds: [candidate.authorId!] });

@@ -37,7 +37,13 @@ export const createSignalEchoBodySchema = z.object({
 
 export const signalResonanceBodySchema = z.object({});
 
+export const signalInterpretationSchema = z.strictObject({
+  version: z.literal(1), state: z.enum(["unknown", "unverified"]),
+  source: z.enum(["rules", "provider", "unknown"]),
+}).refine((value) => value.state === "unverified" ? value.source === "provider" : value.source !== "provider");
+
 export const signalFingerprintSchema = z.object({
+  interpretation: signalInterpretationSchema.optional(),
   coreNeed: z.string().min(1),
   displayText: z.string().min(1),
   energy: z.number().min(0).max(1),
@@ -49,7 +55,7 @@ export const signalFingerprintSchema = z.object({
   openness: z.number().min(0).max(1),
   primaryEmotion: z.string().min(1),
   primaryBand: z.enum(signalPrimaryBands),
-  resonanceKeywords: z.array(z.string().min(1)).min(1).max(3),
+  resonanceKeywords: z.array(z.string().min(1)).max(3),
   riskLevel: z.enum(["HIGH", "LOW", "MEDIUM"]),
   secondaryEmotions: z.array(z.string().min(1)),
   signalType: z.string().min(1),
@@ -60,12 +66,13 @@ export const signalFingerprintSchema = z.object({
 });
 
 export const signalFrequencyProfileSchema = z.object({
+  interpretation: signalInterpretationSchema.optional(),
   coreNeed: z.string().min(1),
   displayText: z.string().min(1),
   emotionTone: z.string().min(1),
   innerConflict: z.string().min(1),
   primaryBand: z.enum(signalPrimaryBands),
-  resonanceKeywords: z.array(z.string().min(1)).min(1).max(3),
+  resonanceKeywords: z.array(z.string().min(1)).max(3),
   subFeeling: z.enum(signalSubFeelings),
 });
 

@@ -489,8 +489,9 @@ function buildPendingSignalFingerprint(params: {
   const title = toShortText(params.seedText, 24);
 
   return {
+    interpretation: { version: 1, state: "unknown", source: "unknown" },
     coreNeed: "等待信号完成",
-    displayText: "自我镜像 · 自我怀疑",
+    displayText: "等待信号完成",
     energy: 0.5,
     emotionTone: "安静等待",
     frequency: frequencyCode,

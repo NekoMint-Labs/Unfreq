@@ -70,17 +70,26 @@ const isOptional = <TValue>(
   return value === undefined || predicate(value);
 };
 
+const isSignalInterpretation = (value: unknown): boolean =>
+  isRecord(value) && Object.keys(value).length === 3 &&
+  value.version === 1 && isEnumValue(value.state, ["unknown", "unverified"]) &&
+  isEnumValue(value.source, ["rules", "provider", "unknown"]) &&
+  (value.source === "provider" ? value.state === "unverified" : value.state === "unknown");
+
+const isInterpretationKeywords = (value: unknown, interpretation: unknown): boolean =>
+  isStringArray(value) && value.length <= 3 &&
+  (value.length >= 1 || isSignalInterpretation(interpretation));
+
 const isFrequencyProfile = (value: unknown): boolean => {
   return (
     isRecord(value) &&
+    isOptional(value.interpretation, isSignalInterpretation) &&
     isString(value.coreNeed) &&
     isString(value.displayText) &&
     isString(value.emotionTone) &&
     isString(value.innerConflict) &&
     isEnumValue(value.primaryBand, signalPrimaryBands) &&
-    isStringArray(value.resonanceKeywords) &&
-    value.resonanceKeywords.length >= 1 &&
-    value.resonanceKeywords.length <= 3 &&
+    isInterpretationKeywords(value.resonanceKeywords, value.interpretation) &&
     isEnumValue(value.subFeeling, signalSubFeelings)
   );
 };
@@ -88,6 +97,7 @@ const isFrequencyProfile = (value: unknown): boolean => {
 const isSignalFingerprint = (value: unknown): boolean => {
   return (
     isRecord(value) &&
+    isOptional(value.interpretation, isSignalInterpretation) &&
     isString(value.coreNeed) &&
     isString(value.displayText) &&
     isFiniteNumber(value.energy) &&
@@ -103,9 +113,7 @@ const isSignalFingerprint = (value: unknown): boolean => {
     value.openness <= 1 &&
     isString(value.primaryEmotion) &&
     isEnumValue(value.primaryBand, signalPrimaryBands) &&
-    isStringArray(value.resonanceKeywords) &&
-    value.resonanceKeywords.length >= 1 &&
-    value.resonanceKeywords.length <= 3 &&
+    isInterpretationKeywords(value.resonanceKeywords, value.interpretation) &&
     isEnumValue(value.riskLevel, signalRiskLevels) &&
     isStringArray(value.secondaryEmotions) &&
     isString(value.signalType) &&

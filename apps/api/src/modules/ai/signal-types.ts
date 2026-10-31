@@ -6,6 +6,7 @@ export type AiMonthlyRecap = {
 export type AiSignalRiskLevel = "HIGH" | "LOW" | "MEDIUM";
 
 export type AiSignalFingerprint = {
+  interpretation?: import("@unfreq/contracts/signals").SignalInterpretation;
   coreNeed: string;
   displayText: string;
   energy: number;

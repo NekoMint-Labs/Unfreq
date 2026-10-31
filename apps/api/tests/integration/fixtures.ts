@@ -34,6 +34,8 @@ export const fixtureExpansion: AiSignalExpansion = {
 };
 
 export const fixtureFingerprint: AiSignalFingerprint = {
+  // Synthetic provider adapter output, not validated psychological ground truth.
+  interpretation: { version: 1, state: "unverified", source: "provider" },
   coreNeed: "给自己保留短暂停顿",
   displayText: "自我镜像 · 自我接纳",
   energy: 0.3,

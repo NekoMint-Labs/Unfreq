@@ -1,5 +1,6 @@
 import { composeMatchScore, cosineRelevance, matchScoreVersion } from "./match-scoring.js";
 import { parsePublicationSnapshot } from "./publication.js";
+import { canReferenceSignalInterpretation, unknownInterpretationText } from "./interpretation.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   generateEmbedding,
@@ -39,6 +40,9 @@ export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: Sign
   prepared?: { current: SignalFrequencyProfile; candidate: SignalFrequencyProfile }): number {
   const currentProfile = prepared?.current ?? getFingerprintFrequencyProfile(fingerprint);
   const candidateProfile = prepared?.candidate ?? getSignalFrequencyProfile(candidate);
+  // Shared default enum values or neutral placeholders are not similarity.
+  if (!canReferenceSignalInterpretation(fingerprint.interpretation) ||
+      !canReferenceSignalInterpretation(candidate.fingerprintJson.interpretation)) return 0;
   let score = 0;
 
   if (candidateProfile.primaryBand === currentProfile.primaryBand) {
@@ -50,13 +54,13 @@ export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: Sign
   }
 
   if (
-    candidateProfile.emotionTone === currentProfile.emotionTone ||
-    candidate.fingerprintJson.primaryEmotion === fingerprint.primaryEmotion
+    (candidateProfile.emotionTone !== unknownInterpretationText && candidateProfile.emotionTone === currentProfile.emotionTone) ||
+    (fingerprint.primaryEmotion.trim().length > 0 && fingerprint.primaryEmotion !== unknownInterpretationText && candidate.fingerprintJson.primaryEmotion === fingerprint.primaryEmotion)
   ) {
     score += 5;
   }
 
-  if (candidateProfile.coreNeed === currentProfile.coreNeed) {
+  if (currentProfile.coreNeed !== unknownInterpretationText && candidateProfile.coreNeed === currentProfile.coreNeed) {
     score += 5;
   }
 
@@ -192,9 +196,10 @@ export async function findSameFrequencyMatches(input: MatchInput): Promise<{ emb
   await assertGenerationActive();
   const startedAt = performance.now();
   const policy = resolveMatchPolicy(input.policy);
+  const referenceInterpretation = canReferenceSignalInterpretation(input.fingerprint.interpretation);
   const scope: MatchScope = { excludeSignalId: input.excludeSignalId, excludeAuthorIds: input.excludeAuthorIds,
-    corpusIds: input.corpusIds, tags: input.publicQuery ? input.publicTags ?? [] : input.fingerprint.tags,
-    band: input.publicQuery ? input.publicBand : input.fingerprint.primaryBand };
+    corpusIds: input.corpusIds, tags: input.publicQuery ? input.publicTags ?? [] : referenceInterpretation ? input.fingerprint.tags : [],
+    band: input.publicQuery ? input.publicBand : referenceInterpretation ? input.fingerprint.primaryBand : undefined };
   const semantic = await semanticCandidates(input, scope, policy);
   await assertGenerationActive();
   const rules = await listPublishedSignalMatchCandidates(policy.ruleCandidates, scope.excludeSignalId, scope);

@@ -3,6 +3,7 @@ import type {
   SignalPrimaryBand,
   SignalSubFeeling,
 } from "@unfreq/contracts/signals";
+import { canReferenceSignalInterpretation, resolveSignalInterpretation, unknownInterpretationText } from "./interpretation.js";
 
 export const signalPrimaryBands = [
   "self_mirror",
@@ -114,6 +115,7 @@ function isSignalSubFeeling(value: unknown): value is SignalSubFeeling {
 }
 
 export function normalizeSignalFrequencyProfile(input: {
+  interpretation?: unknown;
   coreNeed?: string;
   displayText?: string;
   emotionTone?: string;
@@ -133,12 +135,22 @@ export function normalizeSignalFrequencyProfile(input: {
     : inferSignalSubFeeling(primaryBand, input.fallbackText);
   const resonanceKeywords = normalizeSignalFrequencyKeywords(input.resonanceKeywords);
   const displayText = getSignalFrequencyDisplayText(primaryBand, subFeeling);
+  const interpretation = resolveSignalInterpretation(input.interpretation);
+
+  // Enum values remain compatible with existing storage. They are not a label
+  // or similarity signal when no attributed provider interpretation exists.
+  if (!canReferenceSignalInterpretation(interpretation)) return {
+    interpretation, coreNeed: unknownInterpretationText, displayText: unknownInterpretationText,
+    emotionTone: unknownInterpretationText, innerConflict: unknownInterpretationText,
+    primaryBand, resonanceKeywords: [], subFeeling,
+  };
 
   return {
-    coreNeed: normalizeShortText(input.coreNeed, "希望确认自己被理解"),
+    interpretation,
+    coreNeed: normalizeShortText(input.coreNeed, unknownInterpretationText),
     displayText,
-    emotionTone: normalizeShortText(input.emotionTone, "安静复杂"),
-    innerConflict: normalizeShortText(input.innerConflict, "想继续往前，又怀疑当下的方向"),
+    emotionTone: normalizeShortText(input.emotionTone, unknownInterpretationText),
+    innerConflict: normalizeShortText(input.innerConflict, unknownInterpretationText),
     primaryBand,
     resonanceKeywords,
     subFeeling,
@@ -155,7 +167,7 @@ function normalizeShortText(value: string | undefined, fallback: string): string
 
 function normalizeSignalFrequencyKeywords(value: unknown): string[] {
   if (!Array.isArray(value)) {
-    return ["被理解", "自我确认", "缓慢前行"];
+    return [];
   }
 
   const keywords = value

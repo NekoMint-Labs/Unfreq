@@ -156,6 +156,10 @@ describe("monthly recap service", () => {
       frequency: activeFrequency,
       yearMonth: "2026-04",
     });
+    const input = vi.mocked(summarizeMonthlyRecapWithFallback).mock.calls[0]?.[0].content;
+    expect(input).toContain(monthlyStore.signals[0].seedText);
+    expect(input).toContain(monthlyStore.signals[0].expandedText);
+    expect(input).not.toMatch(/主频段：|共振关键词：|希望被理解|想靠近别人/u);
 
     expect(listMonthlyRecapSignals).toHaveBeenCalledWith({
       endAt: new Date("2026-05-01T00:00:00.000Z"),
