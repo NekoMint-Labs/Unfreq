@@ -11,11 +11,6 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [使用指南](./usage.md)
 - [部署指南](./deployment.md)
 
-## 简介
-
-- [项目原理与论文综述](./project-principles-and-literature-review.md)
-- [实现与答辩说明](./project-implementation-and-defense-guide.md)
-
 ## 部署
 
 - [部署指南](./deployment.md)
@@ -36,6 +31,9 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [F1 身份镜像与每日调度](./implementation/f1-identity-scheduler-20261031.md)
 - [F2 合成恢复、副本追踪与日志](./implementation/f2-recovery-replicas-20261031.md)
 - [F2 后续：任务时序观察](./implementation/f2-generation-observation-20261101.md)
+- [能力与遗留入口清单](./capability-inventory.md)
+- [F3 能力登记与冻结](./implementation/f3-capability-inventory-20261101.md)
+- [参赛事实与证据待办](./competition-evidence.md)
 - [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)
 - [C1 发布确认、撤回与公开读取验收](./implementation/c1-publication-20261030.md)
 - [C2 普通频率举报闭环](./implementation/c2-reporting-20261030.md)

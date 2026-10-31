@@ -20,13 +20,15 @@ tags:
 - It creates a `signals` row with `status="DRAFT"` and `generationStatus="RECEIVED"`, then schedules generation for the same row. The background path moves the same row through `EXPANDING → MATCHING → WRITING → COMPLETED`, with `FAILED` terminal on failure.
 - `seedText` is trimmed, 5–200 chars. `parentSignalId` is optional and must point to a signal visible to the current frequency.
 - `POST /api/signals/generate` is not registered; it returns `404` through route absence.
-- The current runner is process-local: persisted status survives refresh and link reopening, but cross-process restart recovery needs an explicit worker/queue task.
+- New pending rows are managed by the PostgreSQL-backed generation worker. Persistent claim/attempt/owner/lease/deadline checks support restart recovery and reject late writes. Dispatched attempts with an uncertain result are not blindly replayed; historical NULL-attempt pending rows remain outside automatic management. See [generation operations](../../docs/implementation/b1-generation-operations.md).
 
 ## SIG-002 Risk, preview, and publish
 
 - After completion: low/medium risk stays `DRAFT` as a private owner preview; high risk becomes `REVIEWING`.
-- Owner publish is `POST /api/signals/:id/publish` → `200 { signal: SignalDetail }`. It publishes only a completed `DRAFT` owned by the current active frequency; publishing an already-`PUBLISHED` owned signal is idempotent.
-- Publish without session → 401; non-active frequency → 403; missing/non-owned → 404; before completion or `REVIEWING` → 409 `CONFLICT`.
+- `GET /api/signals/:id/publication-preview` gives the authenticated active owner the current `{ content, digest, version }`. The candidate contains only the body, FM alias, and preview-visible labels; raw Seed and full analysis remain private.
+- Owner publish is `POST /api/signals/:id/publish` with `{ expectedVersion, digest }` → `200 { signal: OwnerSignalDetail }`. A transaction rechecks the authenticated owner, account/moderation/generation state, version, and exact current preview before recording an `AUTHOR_CONFIRMED` snapshot. Reconfirming the same current snapshot can be a no-op; a stale digest/version conflicts. Legacy `PUBLISHED` and withdrawn rows require fresh explicit confirmation and cannot bypass moderation.
+- Publish without session → 401; non-active frequency → 403; missing/non-owned → 404; stale preview/version, unfinished generation, or restricted state → 409 `CONFLICT`.
+- `POST /api/signals/:id/withdraw` with `{ expectedVersion }` is available to an active or muted owner. It advances the publication version, removes public eligibility, and returns `{ withdrawal: { id, withdrawn: true, publicationVersion } }`. It retains owner-private content and history; it is not physical deletion. Republish requires a fresh preview and explicit confirmation.
 - Generation failure keeps `status="DRAFT"`, sets `generationStatus="FAILED"`, shows the owner a generic failure, and lets them create a new signal with the same seed. Failed rows are not public.
 
 ## SIG-003 Detail visibility
@@ -36,24 +38,24 @@ tags:
 | Row state | Owner | Non-owner / anonymous |
 | --- | --- | --- |
 | Generating | `SignalGenerationDetail` (200) | 404 `NOT_FOUND` |
-| Completed `DRAFT` (preview) | `SignalPreviewDetail` (200) | 404 `NOT_FOUND` |
-| `PUBLISHED` | `SignalDetail` (200) | `SignalDetail` (200) |
-| `REVIEWING` | `SignalDetail` (200) | `ReviewingSignalRestrictedDetail` (200) |
+| Completed private, withdrawn, or unconfirmed row | `OwnerSignalDetail`, `visibility=PRIVATE_OWNER` (200) | 404 `NOT_FOUND` |
+| Confirmed, completed, non-withdrawn `PUBLISHED` | `OwnerSignalDetail` (200) | `PublicSignalDetail`, `visibility=PUBLIC` (200) |
+| Non-withdrawn `REVIEWING` | `OwnerSignalDetail` after completion; generation detail while unfinished (200) | `ReviewingSignalRestrictedDetail` (200) |
 | `HIDDEN` / `DELETED` / unknown | 404 `NOT_FOUND` | 404 `NOT_FOUND` |
 
-- Owner match is by `frequencyId`/`authorId` against the authenticated frequency.
+- Owner match is by `authorId ?? frequencyId` against the authenticated non-banned frequency. Owner responses include current publication actions; unfinished responses remain generation details. A withdrawn reviewing row remains invisible to non-owners.
 - `ReviewingSignalRestrictedDetail` carries only `id`, `status: REVIEWING`, `visibility: REVIEW_RESTRICTED`, and timestamps. It must not include `seedText`, `expandedText`, `rawInput`, `fingerprint`, `program`, matches, audio, save, resonance, or share-card content.
 - Reviewing is **not** 404: clients must be able to show a stable "temporarily not public" state.
-- Public result, random, match, galaxy, save, resonance, and share-card surfaces treat generating rows and private previews as invisible.
+- Public result, Hall/random, match, galaxy, save, resonance, audio, metadata, and share-card surfaces require current public eligibility and use only the confirmed snapshot whitelist. Neither raw Seed nor full fingerprint/program is part of `PublicSignalDetail`. Version/visibility is rechecked after asynchronous work; stale artifacts cannot restore withdrawn content.
 - Web result pages must forward the incoming cookie when server-rendering `/result/:id`, otherwise the owner is treated as anonymous.
 
 ## SIG-004 Matching and embedding
 
 - Same-frequency matching is optional during creation; a matching failure degrades to an empty `matches` array and no `matchSignalId` after completion — it must never abort creation.
-- Matching uses the `expandedText` embedding, stores embedding metadata with the vector, isolates recall by `embedding_version`, and blends embedding similarity with the fixed frequency profile. Reranker disabled/failure keeps embedding-distance ordering.
-- `source` on match DTOs is `PUBLISHED`, `SEEDED`, or `FALLBACK`; seeded matches may be shown but must never be stored as human signals or as `matchSignalId`.
-- Embedding writes are queued once after completion. Pending placeholder text must not be embedded; completed previews may have embeddings, but public match reads still filter to `PUBLISHED`.
-- Embedding/reranker provider failure keeps signal creation successful (keyword/seed fallback).
+- Matching merges semantic and rule candidates, isolates vectors by the recorded embedding space, and uses the normalized score contract. Incomplete/invalid reranker batches fall back as a whole. Candidates must be currently confirmed public, human-initiated, and owned; the originating author, current visitor, system AI, and seed/demo candidates are excluded. Weak results remain empty rather than being filled with examples. See [E2](../../docs/implementation/e2-rerank-scores-20261030.md) and [E3](../../docs/implementation/e3-match-recall-20261030.md).
+- The compatibility source enum still includes `PUBLISHED | SEEDED | FALLBACK`; current public discovery emits only eligible `PUBLISHED` matches. Enum membership is not permission to restore seeded discovery.
+- Creation/explicit write jobs can persist embeddings after completion; pending placeholders must not be embedded. Public GET matching uses the confirmed body and an existing compatible vector when available, performs no Provider dispatch or backfill, and rechecks candidate publication versions before returning.
+- Embedding/reranker failure degrades to eligible rule candidates or an empty result; it does not authorize fake matches or publicize private rows.
 
 ## SIG-005 Audio
 

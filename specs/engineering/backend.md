@@ -33,8 +33,8 @@ apps/api/src/shared       shared helpers and the AppError type
 - PostgreSQL via Drizzle: `apps/api/src/db/schema.ts` (tables), `db/migrations` (checked-in Drizzle migrations), `db/vector.ts` (pgvector handling). Migrations are applied by the API container on deploy.
 - Repositories take an explicit DB client, use parameterized Drizzle query builders, and never expose raw row types across the API boundary.
 - Schema types are backend-internal: `Date`, nullable columns, storage keys, and raw JSON columns must not leak into `packages/contracts` or UI props.
-- Relationships: `frequencies` (canonical identity) with the legacy `users` mirror still used by parts of auth/admin; `signals` owned by `signals.author_id` during the migration; `signal_resonances` unique on `(signal_id, actor_key)`; `signal_saves` unique on `(frequency_id, signal_id)`; `monthly_recaps` upserted by `(frequency_id, year_month)`; `theme_radio_days` filtered by active window.
-- Hidden/deleted/draft visibility filtering happens in SQL, not by filtering fetched rows in application code.
+- Relationships: `users` is authoritative for authentication and permissions; `frequencies` is the same-UUID frequency mirror. Account, credential, and permission writes update the mirror in the same transaction; frequency-only activity fields remain on `frequencies`. `signals.author_id` records ownership; `signal_resonances` is unique on `(signal_id, actor_key)`, `signal_saves` on `(frequency_id, signal_id)`, and `monthly_recaps` on `(frequency_id, year_month)`.
+- Public SQL first requires completed `PUBLISHED` rows, no withdrawal, a positive publication version, and an `AUTHOR_CONFIRMED` snapshot. Runtime projection validates the snapshot and its digest, exposes only its whitelist, and rechecks visibility/version after asynchronous work. A historical `PUBLISHED` value alone is never public eligibility.
 
 ## BEE-003 Validation and config
 
@@ -45,8 +45,8 @@ apps/api/src/shared       shared helpers and the AppError type
 
 ## BEE-004 Async work
 
-- Signal generation status is persisted in the database; the current runner is process-local scheduling. Page refresh and link reopening recover from persisted status, but a process restart may lose in-flight work — a durable worker/queue (for example BullMQ over the existing Redis) is the intended upgrade, not a silent assumption of delivery.
-- In-process timers must be cleared on Fastify `onClose` and skipped under `NODE_ENV=test`, and must stay inside a replaceable scheduler module.
+- Managed signal generation uses the PostgreSQL-backed worker: claim, attempt identity, owner, lease, phase, and deadline fence progress and final writes. On restart the worker scans persisted tasks; legacy rows with NULL attempt metadata remain unmanaged. Recovery distinguishes work not dispatched from dispatched attempts with an uncertain outcome; it must not blindly repeat a Provider call. See [generation operations](../../docs/implementation/b1-generation-operations.md).
+- The daily system-AI scheduler is disabled by default. When explicitly enabled, it uses a business time zone, a persistent single-day batch claim, and fixed signal/dispatch budgets. Scheduler, generation, and audio workers stop and drain in Fastify `preClose` while database connections remain available. Tests use explicit factories/configuration rather than assuming every timer runs under `NODE_ENV=test`.
 - Redis holds session, cache, and queue state only — primary data must survive Redis loss.
 
 ## BEE-005 Admin writes

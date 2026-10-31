@@ -14,7 +14,7 @@ The SQL uses fixed rows and conflict updates, but it does not record author conf
 
 ## AI Modes
 
-Local demo works without external AI credentials. Keep `AI_BASE_URL=` and `AI_MODEL=local-fallback`; the API generates deterministic signal fingerprints and radio programs.
+Local demo works without external AI credentials. Keep `AI_BASE_URL=` and `AI_MODEL=local-fallback`; the API produces deterministic rule fallbacks. Identify these as fallback results; they do not demonstrate model quality, psychological assessment, or a two-voice radio program.
 
 A provider demo needs separately authorized credentials, usage limits, and validation. Configure `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` in `.env` and follow the deployment procedure for the API container. Local fallback or synthetic browser tests do not verify provider quality.
 
@@ -38,6 +38,12 @@ Use one of these on the homepage signal composer:
 6. Open `/galaxy` and its legend. Selectable stars are confirmed public expressions; background stars are decorative. Positions are artistic, so distance does not measure semantic similarity. Links show rule candidates from this sample after visual selection, not personal relationships. Explain total, returned, and drawn counts, then open an expression's association note. Candidate count is not drawn link count or a probability; brightness and size also mix resonance, depth, and decoration.
 7. Open `/me` to show my frequency, signal dots, and return-visit resonance summary.
 8. Open `/offline` or toggle browser offline mode after first load to show the fallback page.
+
+## Capability Boundary
+
+The current page flow covers registration/login, seed intake, private preview, author-confirmed publication/withdrawal, public reading, resonance, saves, reports, galaxy, and the owner's history. Show only controls actually available on these pages; optional audio playback is not the unused two-voice program component.
+
+Theme radio, Hall, echoes, image upload, and two-voice programs have no current page entry. Automatic persona interactions have no production caller. Daily AI content generation is a separate admin capability whose scheduler is disabled by default; generated/system examples do not become public by setting a status. Do not include these capabilities in the public demo or run their APIs, import fixtures, or enable the scheduler to make the demo appear populated. See the [capability inventory](../docs/capability-inventory.md) for API, storage, permission, and freeze details.
 
 ## Demo Accounts
 
