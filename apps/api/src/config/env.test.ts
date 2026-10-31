@@ -44,6 +44,22 @@ afterEach(() => {
 });
 
 describe("API environment validation", () => {
+  it("disables AI scheduling by default and declares bounded business-time defaults", async () => {
+    const imported = await importEnv({ AI_SIGNAL_SCHEDULER_ENABLED: undefined, AI_SIGNAL_SCHEDULER_TIME_ZONE: undefined,
+      AI_SIGNAL_SCHEDULER_TIME: undefined, AI_SIGNAL_SCHEDULER_COUNT: undefined, AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: undefined,
+      AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: undefined });
+    expect(imported.env).toMatchObject({ aiSignalSchedulerEnabled: false, aiSignalSchedulerTimeZone: "Asia/Shanghai",
+      aiSignalSchedulerTime: "03:00", aiSignalSchedulerCount: 1, aiSignalSchedulerDailySignalBudget: 1,
+      aiSignalSchedulerDailyDispatchBudget: 30 });
+  });
+
+  it("rejects ambiguous scheduler time zones, trigger times and over-budget counts", async () => {
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_TIME_ZONE: "not-a-timezone" })).rejects.toThrow(/TIME_ZONE/u);
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_TIME: "24:00" })).rejects.toThrow(/SCHEDULER_TIME/u);
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_COUNT: "2", AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: "1" })).rejects.toThrow(/daily signal budget/u);
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: "0" })).rejects.toThrow(/DAILY_DISPATCH_BUDGET/u);
+  });
+
   it("accepts non-placeholder production deployment values", async () => {
     const imported = await importEnv();
     expect(imported).toMatchObject({

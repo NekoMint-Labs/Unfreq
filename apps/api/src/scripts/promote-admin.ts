@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { closeDatabaseConnection, db } from "../db/client.js";
-import { frequencies, users } from "../db/schema.js";
+import { users } from "../db/schema.js";
+import { syncFrequencyMirror } from "../modules/auth/identity-mirror.js";
 
 type PromoteAdminLookupTarget =
   | {
@@ -201,31 +202,7 @@ async function promoteAdmin(target: PromoteAdminLookupTarget): Promise<PromoteAd
       throw new Error("User disappeared before promotion.");
     }
 
-    await transaction
-      .insert(frequencies)
-      .values({
-        code: user.freqCode,
-        createdAt: user.createdAt,
-        frequencyName: user.frequencyName,
-        id: user.id,
-        isGuest: user.isGuest,
-        passwordHash: user.passwordHash,
-        role: "ADMIN",
-        status: "ACTIVE",
-        updatedAt,
-      })
-      .onConflictDoUpdate({
-        target: frequencies.id,
-        set: {
-          code: user.freqCode,
-          frequencyName: user.frequencyName,
-          isGuest: user.isGuest,
-          passwordHash: user.passwordHash,
-          role: "ADMIN",
-          status: "ACTIVE",
-          updatedAt,
-        },
-      });
+    await syncFrequencyMirror(transaction, user.id);
 
     return user;
   });

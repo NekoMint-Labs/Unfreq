@@ -13,6 +13,9 @@ import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtim
 type ManagedEnvironment = { databaseUrl: string; redisUrl: string; runId: string };
 type IntegrationSql = ReturnType<typeof postgres>;
 type CoreModules = {
+  adminRepository: typeof import("../../src/modules/admin/repository.js");
+  authRepository: typeof import("../../src/modules/auth/repository.js");
+  identityAudit: typeof import("../../src/modules/auth/identity-audit.js");
   matching: typeof import("../../src/modules/signals/service-matching.js");
   embedding: typeof import("../../src/modules/ai/embedding.js");
   reranker: typeof import("../../src/modules/ai/reranker.js");
@@ -27,6 +30,8 @@ type CoreModules = {
   audioStorage: typeof import("../../src/modules/signals/audio-storage.js");
 };
 const coreModulePaths: Record<keyof CoreModules, string> = {
+  adminRepository: "modules/admin/repository.js",
+  authRepository: "modules/auth/repository.js", identityAudit: "modules/auth/identity-audit.js",
   matching: "modules/signals/service-matching.js", embedding: "modules/ai/embedding.js",
   reranker: "modules/ai/reranker.js", providerConfig: "modules/ai/provider-config.js",
   app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
@@ -109,6 +114,11 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     // Fault-driver fixtures keep the scanner off; normal API integration opts
     // into the same production worker with wholly synthetic timing/capacity.
     SIGNAL_GENERATION_WORKER_ENABLED: input.generationWorkerEnabled === true ? "true" : "false",
+    AI_SIGNAL_SCHEDULER_ENABLED: "false",
+    AI_SIGNAL_SCHEDULER_TIME_ZONE: "Asia/Shanghai", AI_SIGNAL_SCHEDULER_TIME: "03:00",
+    AI_SIGNAL_SCHEDULER_COUNT: "1", AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: "1",
+    AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: "30", AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS: "60000",
+    AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS: "180000", AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS: "10000",
     SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50",
     SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",
     SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",

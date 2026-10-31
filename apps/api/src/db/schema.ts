@@ -745,3 +745,33 @@ export const aiReviews = pgTable(
     index("ai_reviews_target_type_target_id_idx").on(table.targetType, table.targetId),
   ],
 );
+
+export const aiSignalSchedulerBatches = pgTable("ai_signal_scheduler_batches", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  jobKey: varchar("job_key", { length: 48 }).notNull(),
+  businessDate: date("business_date").notNull(),
+  timeZone: varchar("time_zone", { length: 80 }).notNull(),
+  scheduledTime: varchar("scheduled_time", { length: 5 }).notNull(),
+  ownerToken: uuid("owner_token").notNull(),
+  status: varchar("status", { length: 12 }).default("RUNNING").notNull(),
+  requestedCount: integer("requested_count").notNull(),
+  signalBudget: integer("signal_budget").notNull(),
+  dispatchBudget: integer("dispatch_budget").notNull(),
+  dispatchCount: integer("dispatch_count").default(0).notNull(),
+  acceptedCount: integer("accepted_count").default(0).notNull(),
+  rejectedCount: integer("rejected_count").default(0).notNull(),
+  generationAttempts: integer("generation_attempts").default(0).notNull(),
+  resultSignalIds: jsonb("result_signal_ids").$type<string[]>().default([]).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+  deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+  firstDispatchAt: timestamp("first_dispatch_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failureCode: varchar("failure_code", { length: 32 }),
+}, (table) => [
+  uniqueIndex("ai_signal_scheduler_job_day_unique").on(table.jobKey, table.businessDate),
+  uniqueIndex("ai_signal_scheduler_owner_unique").on(table.ownerToken),
+  check("ai_signal_scheduler_status_check", sql`${table.status} in ('RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')`),
+  check("ai_signal_scheduler_budget_check", sql`${table.requestedCount} between 1 and 10 and ${table.signalBudget} between 1 and 10 and ${table.requestedCount} <= ${table.signalBudget} and ${table.dispatchBudget} between 1 and 500 and ${table.dispatchCount} between 0 and ${table.dispatchBudget}`),
+  check("ai_signal_scheduler_progress_check", sql`${table.acceptedCount} >= 0 and ${table.rejectedCount} >= 0 and ${table.acceptedCount} + ${table.rejectedCount} <= ${table.requestedCount} and ${table.generationAttempts} >= 0 and jsonb_typeof(${table.resultSignalIds}) = 'array'`),
+  check("ai_signal_scheduler_terminal_check", sql`(${table.status} = 'RUNNING' and ${table.completedAt} is null) or (${table.status} <> 'RUNNING' and ${table.completedAt} is not null)`),
+]);

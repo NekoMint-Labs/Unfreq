@@ -1,4 +1,5 @@
 import type { EmbeddingLogger } from "../ai/embedding.js";
+import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   analyzeSignalIntentWithFallback,
   generateSignalContentWithFallback,
@@ -48,6 +49,7 @@ async function createGeneratedSignal(params: {
   source: SignalSource;
   syncEmbedding?: boolean;
 }): Promise<SignalDetail> {
+  await assertGenerationActive();
   const fingerprintResult = await generateSignalFingerprintWithFallback({
     content: params.rawInput,
   });
@@ -90,6 +92,7 @@ async function createGeneratedSignal(params: {
     match: primaryMatch,
     rawInput: params.rawInput,
   });
+  await assertGenerationActive();
   const signal = await createSignalDraft({
     expandedText: expansion.expandedText,
     fingerprint,
@@ -104,6 +107,7 @@ async function createGeneratedSignal(params: {
     source: params.source,
     status: "PUBLISHED",
   });
+  await assertGenerationActive();
   const positionedSignal = await writeInitialSignalGalaxyPosition({
     embeddingVersion: matchResult.embedding?.version,
     logger: params.logger,
@@ -118,6 +122,7 @@ async function createGeneratedSignal(params: {
         signal: positionedSignal,
       });
     } catch (error) {
+      throwIfGenerationStopped(error);
       params.logger?.warn(
         {
           action: "signal.embedding.write",
@@ -145,10 +150,12 @@ async function createGeneratedSignal(params: {
 async function generateSignalForPersona(params: {
   logger?: EmbeddingLogger;
   persona: SignalPersona;
+  syncEmbedding?: boolean;
 }): Promise<SignalGenerationAttempt> {
   let attempts = 0;
 
   for (let attempt = 1; attempt <= aiGenerationMaxAttempts; attempt += 1) {
+    await assertGenerationActive();
     attempts += 1;
     const contentResult = await generateSignalContentWithFallback(params.persona);
     const qualityResult = await scoreSignalQualityWithFallback({
@@ -178,6 +185,7 @@ async function generateSignalForPersona(params: {
           quality: qualityResult.result,
           rawInput: contentResult.result.rawInput,
           source: "ai_generated",
+          syncEmbedding: params.syncEmbedding,
         }),
       },
     };
@@ -189,29 +197,42 @@ async function generateSignalForPersona(params: {
 }
 
 export async function generateAiSignals(params: {
+  businessDate?: string;
   count?: number;
   logger?: EmbeddingLogger;
+  syncEmbedding?: boolean;
+  onProgress?: (summary: AiSignalGenerationSummary) => Promise<void>;
 } = {}): Promise<AiSignalGenerationSummary> {
   const count = Math.min(Math.max(params.count ?? randomInt(5, 10), 1), 10);
   const results: AiGeneratedSignalResult[] = [];
   let attempts = 0;
   let rejected = 0;
 
-  for (const persona of pickPersonas(count, new Date().getDate())) {
+  if (params.businessDate !== undefined && (!/^\d{4}-\d{2}-\d{2}$/u.test(params.businessDate) ||
+      new Date(`${params.businessDate}T00:00:00Z`).toISOString().slice(0, 10) !== params.businessDate)) {
+    throw new Error("Invalid AI signal business date.");
+  }
+  const personaOffset = params.businessDate === undefined ? new Date().getDate() : Number(params.businessDate.slice(-2));
+  for (const persona of pickPersonas(count, personaOffset)) {
+    await assertGenerationActive();
     const attempt = await generateSignalForPersona({
       logger: params.logger,
       persona,
+      syncEmbedding: params.syncEmbedding,
     });
 
     attempts += attempt.attempts;
 
     if (attempt.result === undefined) {
       rejected += 1;
+      await params.onProgress?.({ accepted: results.length, attempts, rejected, results });
       continue;
     }
 
     results.push(attempt.result);
+    await params.onProgress?.({ accepted: results.length, attempts, rejected, results });
   }
+  await assertGenerationActive();
 
   params.logger?.info(
     {

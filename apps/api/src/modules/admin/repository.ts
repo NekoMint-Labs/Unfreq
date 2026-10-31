@@ -1,5 +1,6 @@
 import { and, count, desc, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import { db } from "../../db/client.js";
+import { syncFrequencyMirror } from "../auth/identity-mirror.js";
 import {
   adminActions,
   aiReviews,
@@ -246,13 +247,7 @@ export async function updateAdminUserStatus(params: {
         id: users.id,
       });
 
-    await tx
-      .update(frequencies)
-      .set({
-        status: params.status,
-        updatedAt: new Date(),
-      })
-      .where(eq(frequencies.id, params.id));
+    if (updatedUsers.length > 0) await syncFrequencyMirror(tx, params.id);
 
     return updatedUsers;
   });
@@ -319,26 +314,22 @@ export async function updateAdminFrequencyStatus(params: {
 }): Promise<AdminFrequencyRecord | undefined> {
   const now = new Date();
   const [updatedRow] = await db.transaction(async (tx) => {
-    const updatedFrequencies = await tx
-      .update(frequencies)
-      .set({
-        status: params.status,
-        updatedAt: now,
-      })
-      .where(eq(frequencies.id, params.id))
-      .returning({
-        id: frequencies.id,
-      });
-
-    await tx
+    // Keep the same users -> frequencies lock order as registration and
+    // credential changes. A historical orphan is reported, not legitimized.
+    const updatedUsers = await tx
       .update(users)
       .set({
         status: params.status,
         updatedAt: now,
       })
-      .where(eq(users.id, params.id));
+      .where(eq(users.id, params.id))
+      .returning({
+        id: users.id,
+      });
 
-    return updatedFrequencies;
+    if (updatedUsers.length > 0) await syncFrequencyMirror(tx, params.id);
+
+    return updatedUsers;
   });
 
   if (updatedRow === undefined) {

@@ -17,6 +17,7 @@
     "src/**/*.ts",
     "tests/integration/generation-process-fixture.ts",
     "tests/integration/abuse-process-fixture.ts",
+    "tests/integration/f1-scheduler-process-fixture.ts",
     "tests/integration/generation-test-controls.ts",
     "tests/integration/fixtures.ts",
     "../../scripts/integration-runtime.mjs"

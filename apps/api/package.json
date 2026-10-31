@@ -11,6 +11,7 @@
     "embeddings:backfill": "node dist/scripts/backfill-embeddings.js",
     "faithfulness:evaluate": "node dist/scripts/evaluate-faithfulness.js",
     "galaxy:backfill": "node dist/scripts/backfill-galaxy-positions.js",
+    "identity:audit": "node dist/scripts/audit-identity-mirrors.js",
     "lint": "eslint .",
     "matches:evaluate": "node dist/scripts/evaluate-matches.js",
     "migrate": "drizzle-kit migrate",

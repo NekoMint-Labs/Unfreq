@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 // runs in the coordinator and is emitted by tsc into the child's runtime tree.
 export const runtimeEntryRelative = "apps/api/tests/integration/generation-process-fixture.js";
 export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRelative,
-  abuse: "apps/api/tests/integration/abuse-process-fixture.js" });
+  abuse: "apps/api/tests/integration/abuse-process-fixture.js",
+  scheduler: "apps/api/tests/integration/f1-scheduler-process-fixture.js" });
 const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
+  "modules/auth/repository", "modules/auth/identity-audit", "modules/signals/scheduler", "modules/signals/service-generated",
+  "modules/auth/identity-mirror", "modules/admin/repository",
+  "modules/signals/scheduler-repository", "modules/signals/scheduler-time", "modules/signals/scheduler-types",
   "modules/ai/service", "modules/ai/repository", "modules/ai/provider-execution", "modules/ai/embedding-space", "modules/signals/service-embedding", "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
   "modules/ai/provider", "modules/ai/provider-prompts", "modules/ai/schemas", "modules/ai/expansion-review-rules", "modules/ai/signal-quality-evaluator", "modules/admin/ai-evaluation",
   "modules/signals/service-creation", "modules/ai/reranker-adapter", "modules/signals/match-scoring", "modules/signals/match-policy", "modules/signals/match-evaluation", "modules/frontend-diagnostics/routes", "db/schema",
@@ -21,6 +25,7 @@ const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-contr
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
   runtimeEntryRelatives.abuse,
+  runtimeEntryRelatives.scheduler,
   "apps/api/tests/integration/generation-test-controls.js",
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
@@ -38,6 +43,9 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/src/modules/signals/generation-worker.ts",
   "scripts/integration-runtime.mjs",
   "apps/api/tests/integration/abuse-process-fixture.ts",
+  "apps/api/tests/integration/f1-scheduler-process-fixture.ts",
+  "apps/api/src/db/migrations/0026_f1_ai_signal_scheduler.sql",
+  "apps/api/src/db/migrations/meta/_journal.json",
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.ts`),
 ]);
 const sourcePaths = runtimeSourcePaths;
@@ -116,7 +124,7 @@ export async function verifyIntegrationRuntime({ repositoryRoot, runId, runtimeD
       marker.ownershipToken !== ownershipToken || !Number.isSafeInteger(marker.ownerPid) || marker.ownerPid <= 0 ||
       !samePath(marker.sourceRoot, root) || !samePath(marker.runtimeDirectory, directory) ||
       marker.entryRelative !== runtimeEntryRelative || !marker.entryRelatives ||
-      Object.keys(marker.entryRelatives).length !== 2 ||
+      Object.keys(marker.entryRelatives).length !== Object.keys(runtimeEntryRelatives).length ||
       Object.entries(runtimeEntryRelatives).some(([name, value]) => marker.entryRelatives[name] !== value)) fail();
   const files = await hashes(directory, runtimeArtifactPaths);
   equalHashes(files, marker.files, runtimeArtifactPaths);

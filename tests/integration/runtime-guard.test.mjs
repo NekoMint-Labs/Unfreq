@@ -52,12 +52,14 @@ test("an owned compiled ESM entry validates in a fresh plain Node PID", async (t
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "owned-runtime-verified");
-  const abuse = await verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime, entry: "abuse" });
-  const second = spawnSync(process.execPath, [abuse.entryPath], { windowsHide: true, encoding: "utf8", timeout: 5_000,
-    env: { RUNTIME_RUN: runId, RUNTIME_DIR: runtime.runtimeDirectory, RUNTIME_TOKEN: runtime.ownershipToken,
-      ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}) } });
-  assert.equal(second.status, 0, second.stderr);
-  assert.equal(second.stdout.trim(), "owned-runtime-verified");
+  for (const entry of ["abuse", "scheduler"]) {
+    const owned = await verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime, entry });
+    const child = spawnSync(process.execPath, [owned.entryPath], { windowsHide: true, encoding: "utf8", timeout: 5_000,
+      env: { RUNTIME_RUN: runId, RUNTIME_DIR: runtime.runtimeDirectory, RUNTIME_TOKEN: runtime.ownershipToken,
+        ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}) } });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout.trim(), "owned-runtime-verified");
+  }
   await assert.rejects(verifyIntegrationRuntime({ repositoryRoot: f.root, ...runtime, entry: "arbitrary" }));
 });
 
@@ -84,6 +86,14 @@ test("changed entry, current input and ownership marker cannot be adopted", asyn
   await writeFile(source, "// synthetic compile input\n");
   const markerPath = path.join(f.runDirectory, "runtime-marker.json");
   const marker = JSON.parse(await readFile(markerPath, "utf8"));
+  marker.entryRelatives.extra = runtimeEntryRelatives.scheduler;
+  await writeFile(markerPath, JSON.stringify(marker));
+  await assert.rejects(check());
+  delete marker.entryRelatives.extra;
+  marker.entryRelatives.scheduler = runtimeEntryRelatives.abuse;
+  await writeFile(markerPath, JSON.stringify(marker));
+  await assert.rejects(check());
+  marker.entryRelatives.scheduler = runtimeEntryRelatives.scheduler;
   marker.sourceRoot = path.join(f.root, "other");
   await writeFile(markerPath, JSON.stringify(marker));
   await assert.rejects(check());

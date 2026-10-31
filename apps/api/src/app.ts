@@ -18,7 +18,7 @@ import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
 import { apiLogRedactionPaths } from "./shared/log-redaction.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
-import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
+import { createAiSignalScheduler, type AiSignalSchedulerOptions, type AiSignalScheduler } from "./modules/signals/scheduler.js";
 import { createSignalGenerationWorker, type GenerationWorkerOptions, type SignalGenerationWorker } from "./modules/signals/generation-worker.js";
 import { createSignalAudioWorker, type SignalAudioWorkerOptions, type SignalAudioWorker } from "./modules/signals/audio-worker.js";
 import { adminThemeRadioRoutes, themeRadioRoutes } from "./modules/theme-radio/routes.js";
@@ -27,6 +27,7 @@ type BuildAppOptions = {
   logger?: FastifyServerOptions<RawServerDefault>["logger"];
   generationWorkerFactory?: (options: GenerationWorkerOptions) => SignalGenerationWorker;
   audioWorkerFactory?: (options: SignalAudioWorkerOptions) => SignalAudioWorker;
+  aiSignalSchedulerFactory?: (options: AiSignalSchedulerOptions) => AiSignalScheduler;
   onGenerationFatal?: () => void | Promise<void>;
   onAudioFatal?: () => void | Promise<void>;
 };
@@ -73,14 +74,17 @@ export async function buildApp(options: BuildAppOptions = {}) {
       return fatal === undefined ? app.close() : fatal();
     },
   });
-  let stopAiSignalScheduler: (() => void) | undefined;
+  const aiSignalScheduler = (options.aiSignalSchedulerFactory ?? createAiSignalScheduler)({
+    logger: app.log,
+    forceCloseApplicationDatabase: () => closeDatabaseConnection({ timeoutSeconds: 0 }),
+    onFatal: () => options.onGenerationFatal === undefined ? app.close() : options.onGenerationFatal(),
+  });
 
-  app.addHook("onReady", async () => { generationWorker.start(); });
+  app.addHook("onReady", async () => { generationWorker.start(); aiSignalScheduler.start(); });
   // Stop consumers while PostgreSQL is still open. The preClose stage precedes
   // the existing plugin onClose hooks, including Redis and the primary pool.
   app.addHook("preClose", async () => {
-    stopAiSignalScheduler?.();
-    const stopped = await Promise.allSettled([generationWorker.stop(), audioWorker.stop()]);
+    const stopped = await Promise.allSettled([aiSignalScheduler.stop(), generationWorker.stop(), audioWorker.stop()]);
     const failed = stopped.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   });
@@ -89,10 +93,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
     await closeAbuseControl();
     await closeDatabaseConnection();
   });
-
-  if (!env.isTest) {
-    stopAiSignalScheduler = startAiSignalScheduler(app.log);
-  }
 
   await app.register(cors, {
     credentials: true,

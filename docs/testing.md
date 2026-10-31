@@ -27,7 +27,7 @@ npm run api:integration
 2. 生成随机 `unfreq-it-<run id>` 项目名，使用 `tests/integration/compose.yaml`；显式空 env 文件，绝不读取根生产 Compose 或项目 `.env`。
 3. 启动全新的 pgvector / Redis 容器，只绑定 `127.0.0.1` 的随机非默认端口。数据放在临时存储，不复用既有数据库、网络或命名数据卷。测试镜像已固定 digest。
 4. 测试端再次核对运行标记、合成数据库名 / 身份与本地端口，拒绝对已有表的数据库进行首次迁移。执行真实 Drizzle migrations，不使用 `drizzle-kit push`。
-5. 禁用 scheduler 和实际 Provider 配置，HTTP fetch 只允许精确的本地桩 origin；尝试其他 HTTP 目标会失败并记为测试错误。
+5. 普通链路关闭每日 scheduler 和实际 Provider 配置；F1 专项仅在自己的新建 case 数据库显式启用受控 scheduler。HTTP fetch 只允许精确的本地桩 origin，尝试其他 HTTP 目标会失败并记为测试错误。
 6. 等待合成生成任务和数据库副作用排空，关闭应用、连接池、桩服务；检查容器项目 / 服务标签后，只清理本次随机项目。结束后复核该项目没有残留容器。
 
 命令不能指定已有数据库 URL、复用生产项目名或切换到生产 Compose。运行日志会显示证据目录：
@@ -99,6 +99,12 @@ node --test tests/evaluation/faithfulness-cli.test.mjs
 ```
 
 这项 CLI 回归只使用合成捕获与合成评分，检查两份评分表配对、缺失评分、证据篡改、JSON 键顺序和禁止覆盖，不能当作实际盲评。默认 API 单测另覆盖冻结 60 条输入、分母、失败记录与模式复核；生产 Web 套件覆盖后台 Demo 标识、旧数据隐藏、管理员限制、桌面及 390px。
+
+## F1 身份与调度集成
+
+同一个 `npm run api:integration` 包含身份第二写触发器故障、微秒时间精度、后台状态镜像与只读差异审计。F1 scheduler 的七项专项使用独立新库、真实编译 Node 子进程和生产 app 接线，只固定业务时钟与配置，不替换生成函数或仓储。用例覆盖双 PID 竞争、业务日切换、外发后死亡、正常取消排空、SQL 失败、派发预算耗尽和过期完成/错误 owner 拒绝。
+
+运行标记新增 scheduler 入口，并验证全部已知入口路径、源码和产物哈希。结果、Provider 请求事件和子进程证据只保存在被忽略的 `test-results/`。合成 Provider 的质量分是夹具，不是模型质量指标。
 
 ## CI
 

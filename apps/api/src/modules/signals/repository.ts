@@ -1075,7 +1075,6 @@ export async function touchFrequencyLastSeenAt(params: {
     .update(frequencies)
     .set({
       lastSeenAt: params.seenAt,
-      updatedAt: params.seenAt,
     })
     .where(eq(frequencies.id, params.frequencyId));
 }

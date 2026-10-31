@@ -90,6 +90,45 @@ async function register(): Promise<Session> {
   };
 }
 
+async function rejectIdentityMirrorWrites() {
+  await h.sql.unsafe(`create function f1_reject_identity_mirror() returns trigger language plpgsql as $$
+    begin raise exception 'F1_SYNTHETIC_MIRROR_FAILURE'; end; $$`);
+  await h.sql.unsafe(`create trigger f1_reject_identity_mirror before insert or update on frequencies
+    for each row execute function f1_reject_identity_mirror()`);
+}
+
+async function restoreIdentityMirrorWrites() {
+  await h.sql.unsafe("drop trigger if exists f1_reject_identity_mirror on frequencies");
+  await h.sql.unsafe("drop function if exists f1_reject_identity_mirror()");
+}
+
+async function unusedIdentityCodes(count: number): Promise<string[]> {
+  const rows = await h.sql<{ code: string }[]>`with candidates as (
+    select n, 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as code
+    from generate_series(0, 9999) as series(n)
+  ) select c.code from candidates c
+    where not exists (select 1 from users u where u.freq_code = c.code)
+      and not exists (select 1 from frequencies f where f.code = c.code)
+    order by c.n limit ${count}`;
+  expect(rows).toHaveLength(count);
+  return rows.map((row) => row.code);
+}
+
+async function expectIdentityMirrorFailure(work: Promise<unknown>): Promise<void> {
+  try { await work; }
+  catch (error) {
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const record = current as { message?: unknown; cause?: unknown };
+      if (record.message === "F1_SYNTHETIC_MIRROR_FAILURE") return;
+      current = record.cause;
+    }
+  }
+  throw new Error("Expected the synthetic second mirror-write failure.");
+}
+
 async function createPending(): Promise<string> {
   const response = await request("POST", "/api/signals", author.cookie, { seedText: fixtureSeed });
   expect(response.statusCode).toBe(201);
@@ -342,6 +381,202 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const loggedInMe = await request("GET", "/api/me", sessionCookie(login));
     expect(loggedInMe.statusCode).toBe(200);
     expect(loggedInMe.json()).toMatchObject({ data: { frequency: { id: author.id } } });
+  });
+
+  it("F1 marking echoes seen advances only the activity watermark and preserves identity timestamps", async () => {
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const baseline = await auditIdentityMirrors(200);
+    expect(baseline.truncated).toBe(false);
+    expect(baseline.differences.filter((item) => item.id === author.id)).toEqual([]);
+    const [before] = await h.sql<{ user_time: string; mirror_time: string; last_seen: string | null }[]>`
+      select u.updated_at::text as user_time, f.updated_at::text as mirror_time, f.last_seen_at::text as last_seen
+      from users u join frequencies f on u.id = f.id where u.id = ${author.id}`;
+    try {
+      expect((await request("POST", "/api/me/echo-summary/seen", author.cookie, {})).statusCode).toBe(200);
+      const [after] = await h.sql<{ user_preserved: boolean; mirror_preserved: boolean; same_time: boolean; advanced: boolean; seen_ms: string }[]>`
+        select u.updated_at = ${before.user_time}::timestamptz as user_preserved,
+          f.updated_at = ${before.mirror_time}::timestamptz as mirror_preserved,
+          u.updated_at = f.updated_at as same_time,
+          f.last_seen_at > coalesce(${before.last_seen}::timestamptz, '-infinity'::timestamptz) as advanced,
+          (extract(epoch from f.last_seen_at) * 1000)::text as seen_ms
+        from users u join frequencies f on u.id = f.id where u.id = ${author.id}`;
+      expect(after).toMatchObject({ user_preserved: true, mirror_preserved: true, same_time: true, advanced: true });
+      const summary = await request("GET", "/api/me/echo-summary", author.cookie);
+      expect(summary.statusCode).toBe(200);
+      const seenMs = Number(after.seen_ms);
+      expect(Number.isFinite(seenMs)).toBe(true);
+      expect(Date.parse(summary.json().data.summary.since)).toBe(seenMs);
+      expect((await auditIdentityMirrors(200)).counts).toEqual(baseline.counts);
+    } finally {
+      await h.sql`update frequencies set last_seen_at = ${before.last_seen}::timestamptz,
+        updated_at = ${before.mirror_time}::timestamptz where id = ${author.id}`;
+    }
+  });
+
+  it("F1 rolls back every registration when the real second identity write fails", async () => {
+    const repository = await h.loadModule("authRepository");
+    const suffix = randomUUID().slice(0, 8);
+    const codes = await unusedIdentityCodes(3);
+    const emailCode = codes[0]!;
+    const guestCode = codes[1]!;
+    const passwordCode = codes[2]!;
+    const [before] = await h.sql`select (select count(*)::int from users) as users,
+      (select count(*)::int from frequencies) as frequencies`;
+    await rejectIdentityMirrorWrites();
+    try {
+      await expectIdentityMirrorFailure(repository.createUser({ email: `f1-${suffix}@integration.invalid`, freqCode: emailCode }));
+      await expectIdentityMirrorFailure(repository.createGuestUser({ freqCode: guestCode }));
+      await expectIdentityMirrorFailure(repository.createPasswordFrequencyUser({ freqCode: passwordCode, passwordHash: "F1_SYNTHETIC_HASH" }));
+      const response = await request("POST", "/api/auth/register", undefined, { password: `f1-password-${randomUUID()}` });
+      expect(response.statusCode).toBeGreaterThanOrEqual(500);
+      expect(response.statusCode).toBeLessThan(600);
+      expect(response.body).not.toMatch(/F1_SYNTHETIC_MIRROR_FAILURE|passwordHash|password_hash|stack/iu);
+      const [after] = await h.sql`select (select count(*)::int from users) as users,
+        (select count(*)::int from frequencies) as frequencies`;
+      expect(after).toEqual(before);
+    } finally {
+      await restoreIdentityMirrorWrites();
+    }
+    const [late] = await h.sql`select count(*)::int as n from users where freq_code in (${emailCode}, ${guestCode}, ${passwordCode})`;
+    expect(late.n).toBe(0);
+  });
+
+  it("F1 preserves credentials and the existing-email branch on a mirror failure, including microseconds", async () => {
+    const repository = await h.loadModule("authRepository");
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const suffix = randomUUID().slice(0, 8);
+    const email = `f1-existing-${suffix}@integration.invalid`;
+    const codes = await unusedIdentityCodes(3);
+    const createdIds: string[] = [];
+    try {
+      const existing = await repository.createUser({ email, freqCode: codes[0]! });
+      createdIds.push(existing.id);
+      const guest = await repository.createGuestUser({ freqCode: codes[1]! });
+      createdIds.push(guest.id);
+      await h.sql`update frequencies set last_seen_at = timestamptz '2026-01-02 03:04:05.123+00',
+        device_hash = 'F1_DEVICE_KEEP_CANARY' where id = ${guest.id}`;
+      await h.sql`update users set created_at = timestamp '2026-01-02 03:04:05.123456',
+        updated_at = timestamp '2026-01-03 04:05:06.654321' where id = ${existing.id}`;
+      await repository.createUser({ email, freqCode: codes[2]! });
+      const [precision] = await h.sql`select u.created_at = f.created_at and u.updated_at = f.updated_at as exact,
+        to_char(u.created_at, 'US') = '123456' and to_char(u.updated_at, 'US') = '654321' as microseconds
+        from users u join frequencies f on u.id = f.id where u.id = ${existing.id}`;
+      expect(precision).toEqual({ exact: true, microseconds: true });
+      await h.sql`update frequencies set frequency_name = 'F1_SYNTHETIC_DRIFT' where id = ${existing.id}`;
+      await rejectIdentityMirrorWrites();
+      try {
+        await expectIdentityMirrorFailure(repository.updateUserFrequencyCredentials({ userId: guest.id,
+          frequencyName: `f1-name-${suffix}`, passwordHash: "F1_NEW_HASH_CANARY" }));
+        await expectIdentityMirrorFailure(repository.createUser({ email, freqCode: codes[2]! }));
+        const [unchanged] = await h.sql`select u.frequency_name is null and f.frequency_name is null
+          and u.password_hash is null and f.password_hash is null and u.is_guest and f.is_guest as unchanged
+          from users u join frequencies f on u.id = f.id where u.id = ${guest.id}`;
+        expect(unchanged.unchanged).toBe(true);
+        const [drift] = await h.sql`select f.frequency_name = 'F1_SYNTHETIC_DRIFT' as preserved,
+          u.freq_code = ${existing.freqCode} as authoritative from users u join frequencies f on u.id = f.id
+          where u.id = ${existing.id}`;
+        expect(drift).toEqual({ preserved: true, authoritative: true });
+      } finally {
+        await restoreIdentityMirrorWrites();
+      }
+      const repaired = await repository.createUser({ email, freqCode: codes[2]! });
+      expect(repaired.id).toBe(existing.id);
+      await repository.updateUserFrequencyCredentials({ userId: guest.id,
+        frequencyName: `f1-name-${suffix}`, passwordHash: "F1_NEW_HASH_CANARY" });
+      const [observations] = await h.sql`select last_seen_at = timestamptz '2026-01-02 03:04:05.123+00'
+        and device_hash = 'F1_DEVICE_KEEP_CANARY' as preserved from frequencies where id = ${guest.id}`;
+      expect(observations.preserved).toBe(true);
+      const audit = await auditIdentityMirrors(200);
+      expect(audit.truncated).toBe(false);
+      expect(audit.differences.filter((item) => [existing.id, guest.id].includes(item.id))).toEqual([]);
+    } finally {
+      await restoreIdentityMirrorWrites();
+      for (const id of createdIds) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
+  });
+
+  it("F1 keeps both administrator status paths atomic and refuses to activate an orphan mirror", async () => {
+    const { createGuestUser } = await h.loadModule("authRepository");
+    const adminRepository = await h.loadModule("adminRepository");
+    const codes = await unusedIdentityCodes(2);
+    const createdIds: string[] = [];
+    const orphanId = randomUUID();
+    try {
+      const target = await createGuestUser({ freqCode: codes[0]! });
+      createdIds.push(target.id);
+      await rejectIdentityMirrorWrites();
+      try {
+        await expectIdentityMirrorFailure(adminRepository.updateAdminUserStatus({ id: target.id, status: "BANNED" }));
+        await expectIdentityMirrorFailure(adminRepository.updateAdminFrequencyStatus({ id: target.id, status: "MUTED" }));
+        const [unchanged] = await h.sql`select u.status = 'ACTIVE' and f.status = 'ACTIVE' as active,
+          u.updated_at = f.updated_at as same_time from users u join frequencies f on u.id = f.id where u.id = ${target.id}`;
+        expect(unchanged).toEqual({ active: true, same_time: true });
+      } finally {
+        await restoreIdentityMirrorWrites();
+      }
+      await adminRepository.updateAdminUserStatus({ id: target.id, status: "MUTED" });
+      const [muted] = await h.sql`select u.status = 'MUTED' and f.status = 'MUTED' as muted,
+        u.updated_at = f.updated_at as same_time, u.role = f.role as same_role
+        from users u join frequencies f on u.id = f.id where u.id = ${target.id}`;
+      expect(muted).toEqual({ muted: true, same_time: true, same_role: true });
+      await adminRepository.updateAdminFrequencyStatus({ id: target.id, status: "ACTIVE" });
+      await h.sql`insert into frequencies (id, code, status) values (${orphanId}, ${codes[1]!}, 'BANNED')`;
+      expect(await adminRepository.updateAdminFrequencyStatus({ id: orphanId, status: "ACTIVE" })).toBeUndefined();
+      expect(await adminRepository.updateAdminUserStatus({ id: orphanId, status: "ACTIVE" })).toBeUndefined();
+      const [orphan] = await h.sql`select status = 'BANNED' as unchanged,
+        not exists (select 1 from users where id = ${orphanId}) as no_user from frequencies where id = ${orphanId}`;
+      expect(orphan).toEqual({ unchanged: true, no_user: true });
+    } finally {
+      await restoreIdentityMirrorWrites();
+      for (const id of [...createdIds, orphanId]) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
+  });
+
+  it("F1 read-only auditing distinguishes missing, orphaned and different mirrors without returning their values", async () => {
+    const repository = await h.loadModule("authRepository");
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const baseline = await auditIdentityMirrors();
+    const codes = await unusedIdentityCodes(3);
+    const createdIds: string[] = [];
+    const orphanId = randomUUID();
+    try {
+      const missing = await repository.createGuestUser({ freqCode: codes[0]! });
+      createdIds.push(missing.id);
+      const different = await repository.createGuestUser({ freqCode: codes[1]! });
+      createdIds.push(different.id);
+      await h.sql`delete from frequencies where id = ${missing.id}`;
+      await h.sql`insert into frequencies (id, code) values (${orphanId}, ${codes[2]!})`;
+      await h.sql`update frequencies set role = 'ADMIN', password_hash = 'F1_HASH_AUDIT_CANARY',
+        frequency_name = 'F1_NAME_AUDIT_CANARY', updated_at = updated_at + interval '1 microsecond'
+        where id = ${different.id}`;
+      const result = await auditIdentityMirrors(200);
+      expect(result).toMatchObject({ authority: "users", readOnly: true, counts: {
+        users: baseline.counts.users + 2, frequencies: baseline.counts.frequencies + 2,
+        matching: baseline.counts.matching, missingMirror: baseline.counts.missingMirror + 1,
+        orphanMirror: baseline.counts.orphanMirror + 1, fieldMismatch: baseline.counts.fieldMismatch + 1,
+      } });
+      expect(result.differences).toEqual(expect.arrayContaining([
+        { id: missing.id, kind: "MISSING_FREQUENCY", fields: [] },
+        { id: orphanId, kind: "ORPHAN_FREQUENCY", fields: [] },
+        { id: different.id, kind: "FIELD_MISMATCH", fields: expect.arrayContaining(["role", "passwordHash", "frequencyName", "updatedAt"]) },
+      ]));
+      expect(JSON.stringify(result)).not.toMatch(/F1_HASH_AUDIT_CANARY|F1_NAME_AUDIT_CANARY/u);
+      const limited = await auditIdentityMirrors(1);
+      expect(limited.differences).toHaveLength(1);
+      expect(limited.truncated).toBe(true);
+      expect((await auditIdentityMirrors()).counts).toEqual(result.counts);
+    } finally {
+      for (const id of [...createdIds, orphanId]) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
   });
 
   it("stores expiring Redis challenges without response code disclosure and enforces cooldown, attempt limits, and one-time verification", async () => {
