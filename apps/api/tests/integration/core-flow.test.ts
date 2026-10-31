@@ -2,7 +2,7 @@ import { matchingCases, matchingCaptures, frozenMatchingReport, runFrozenMatchin
 import { embeddingSpaceKey } from "../../src/modules/ai/embedding-space.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { buildPublicationPreview, confirmPublicationSnapshot } from "../../src/modules/signals/publication.js";
+import { buildPublicationPreview, confirmPublicationSnapshot, digestPublicationContent } from "../../src/modules/signals/publication.js";
 import { signalPrimaryBands, signalBandLabels } from "../../src/modules/signals/frequency-taxonomy.js";
 import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -1051,10 +1051,11 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
       expect(await publicationRowHash(id)).toBe(before);
       expect(Object.keys(preview).sort()).toEqual(["content", "digest", "version"]);
-      expect(Object.keys(preview.content).sort()).toEqual(["authorFreqCode", "expandedText", "primaryBand", "tags"]);
+      // E4 keeps unverified private labels outside every new public candidate.
+      expect(Object.keys(preview.content).sort()).toEqual(["authorFreqCode", "expandedText", "tags"]);
       expect(preview).toMatchObject({ version: 0, content: {
         expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
-        primaryBand: "self_mirror", tags: ["自我镜像", "练习", "停顿"],
+        tags: [],
       } });
       expect(preview.digest).toMatch(/^[a-f0-9]{64}$/u);
       const confirm = (overrides: Partial<{ actorId: string; expectedVersion: number; digest: string }> = {}) =>
@@ -1163,7 +1164,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
-  it("rejects stale digests after body, approved-label or canonical FM changes and restores the fixture account", async () => {
+  it("rejects stale body or canonical FM digests while private label changes leave the public candidate unchanged", async () => {
     const repo = await h.loadModule("publicationRepository");
     const fixtureAuthor = await register();
     const [account] = await h.sql<{ freq_code: string }[]>`select freq_code from users where id = ${fixtureAuthor.id}`;
@@ -1185,7 +1186,13 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         await h.sql`update signals set expanded_text = ${`${fixtureExpansion.expandedText} 合成正文修订。`} where id = ${id}`;
         await rejectOld();
         await h.sql`update signals set fingerprint_json = jsonb_set(fingerprint_json, '{tags}', '["新的合成标签","窗边"]'::jsonb) where id = ${id}`;
-        await rejectOld();
+        // These are private, unverified labels under E4, so changing them must
+        // neither alter the public digest nor become a newly approved claim.
+        const beforePrivateLabelRead = await publicationRowHash(id);
+        expect(await read()).toEqual(preview);
+        expect(preview.content.tags).toEqual([]);
+        expect(preview.content).not.toHaveProperty("primaryBand");
+        expect(await publicationRowHash(id)).toBe(beforePrivateLabelRead);
         const [unused] = await h.sql<{ freq_code: string }[]>`
           select candidate.freq_code from (
             select 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as freq_code
@@ -1201,7 +1208,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expect((await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`)[0]).toEqual(mirrorBefore);
         expect(await repo.confirmOwnedSignalPublication({ id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest }))
           .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
-            snapshot: { content: { authorFreqCode: unused.freq_code, tags: ["自我镜像", "新的合成标签", "窗边"] } } });
+            snapshot: { content: { authorFreqCode: unused.freq_code, tags: [] } } });
       });
     }, async () => { await h.sql`update users set freq_code = ${account.freq_code} where id = ${fixtureAuthor.id}`; });
     expect((await h.sql`select freq_code from users where id = ${fixtureAuthor.id}`)[0])
@@ -1381,13 +1388,17 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         const band = signalPrimaryBands[index % signalPrimaryBands.length];
         const body = `D1_PUBLIC_${index} ` + fixtureExpansion.expandedText;
         const fingerprint = { ...fixtureFingerprint, primaryBand: band, tags: [signalBandLabels[band]] };
-        const preview = buildPublicationPreview({ authorId: owner.id, authorFreqCode: owner.frequencyCode,
-          expandedText: body, generationStatus: "COMPLETED", primaryBand: band, fingerprintJson: fingerprint }, 0);
+        // Preserve D1's historical band-filter coverage with explicit prior
+        // author confirmation; current E4 previews never manufacture a band.
+        const content = { expandedText: body, authorFreqCode: owner.frequencyCode,
+          tags: [signalBandLabels[band]], primaryBand: band };
+        const historicalSnapshot = confirmPublicationSnapshot({ content, digest: digestPublicationContent(content), version: 0 },
+          new Date("2026-10-30T00:00:00Z"));
         const id = randomUUID(); track(id);
         return { id, author_id: owner.id, frequency_id: owner.id, raw_input: "D1_SYNTHETIC_PRIVATE_SEED",
           seed_text: "D1_SYNTHETIC_PRIVATE_SEED", expanded_text: body,
           fingerprint_json: JSON.stringify(fingerprint), program_json: "{}", galaxy_position: '{"x":0,"y":0,"z":0}',
-          publication_snapshot: JSON.stringify(confirmPublicationSnapshot(preview, new Date("2026-10-30T00:00:00Z"))),
+          publication_snapshot: JSON.stringify(historicalSnapshot),
           publication_version: 1, status: "PUBLISHED", generation_status: "COMPLETED", primary_band: band,
           created_at: new Date(Date.UTC(2030, 0, 1, 0, 0, index)).toISOString() };
       });
@@ -1748,6 +1759,134 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const reviews = await h.sql`select target_id,execution_json->'operation' as operation from ai_reviews where target_type='SIGNAL' and target_id=${publicControlId}`;
     expect(reviews.length).toBeGreaterThan(0);
     for (const review of reviews) expect(review.operation).toMatchObject({ schemaVersion: 1, kind: "signal-generation", signalId: publicControlId, attemptId: expect.any(String) });
+  });
+
+  it("E4 neutralizes new rule and legacy owner interpretations without clearing moderation risk or rewriting stored fingerprints", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const current of [
+        { source: "rules", riskLevel: "LOW", status: "DRAFT" },
+        { source: "unknown", riskLevel: "HIGH", status: "REVIEWING" },
+      ] as const) {
+        const row = await createWithdrawalFixture(track, current.status);
+        const { interpretation: _syntheticProviderSource, ...legacyFingerprint } = fixtureFingerprint;
+        const privateMarker = `E4_PRIVATE_${current.source.toUpperCase()}`;
+        const storedFingerprint = { ...legacyFingerprint, riskLevel: current.riskLevel,
+          coreNeed: privateMarker, hiddenNeed: privateMarker, innerConflict: privateMarker,
+          narrativeConflict: privateMarker, emotionTone: privateMarker, primaryEmotion: privateMarker,
+          secondaryEmotions: [privateMarker], tags: [privateMarker], resonanceKeywords: [privateMarker], theme: privateMarker,
+          ...(current.source === "rules" ? { interpretation: { version: 1, state: "unknown", source: "rules" } } : {}),
+        };
+        // Explicit synthetic persisted shapes: a row with rules attribution and
+        // an older row without provenance. Neither is relabelled as a provider.
+        await h.sql`update signals set fingerprint_json = ${JSON.stringify(storedFingerprint)}::jsonb where id = ${row.id}`;
+        const before = await publicationRowHash(row.id);
+        const response = await request("GET", `/api/signals/${row.id}`, author.cookie);
+        expect(response.statusCode).toBe(200);
+        const own = response.json().data.signal;
+        expect(own).toMatchObject({ visibility: "PRIVATE_OWNER", status: current.status,
+          seedText: fixtureSeed, expandedText: fixtureExpansion.expandedText });
+        expect(own.fingerprint).toMatchObject({ interpretation: { version: 1, state: "unknown", source: current.source },
+          riskLevel: current.riskLevel, tags: [], resonanceKeywords: [], secondaryEmotions: [] });
+        expect(own.frequencyProfile).toMatchObject({ interpretation: own.fingerprint.interpretation, resonanceKeywords: [] });
+        for (const key of ["coreNeed", "displayText", "emotionTone", "innerConflict"] as const) {
+          expect(own.frequencyProfile[key]).toBe("暂不作心理解读");
+        }
+        for (const key of ["coreNeed", "displayText", "hiddenNeed", "innerConflict", "narrativeConflict", "primaryEmotion", "theme"] as const) {
+          expect(own.fingerprint[key]).toBe("暂不作心理解读");
+        }
+        expect(JSON.stringify({ fingerprint: own.fingerprint, frequencyProfile: own.frequencyProfile })).not.toContain(privateMarker);
+        expect(await publicationRowHash(row.id)).toBe(before);
+        if (current.status === "REVIEWING") {
+          expectError(await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie), 409, "CONFLICT");
+          const restricted = await request("GET", `/api/signals/${row.id}`);
+          expect(restricted.statusCode).toBe(200);
+          expect(restricted.json().data.signal).toMatchObject({ id: row.id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED" });
+          for (const key of ["fingerprint", "frequencyProfile", "seedText", "expandedText"]) expect(restricted.json().data.signal).not.toHaveProperty(key);
+        } else {
+          expectError(await request("GET", `/api/signals/${row.id}`, reader.cookie), 404, "NOT_FOUND");
+        }
+        const [persisted] = await h.sql`select fingerprint_json from signals where id = ${row.id}`;
+        expect(persisted.fingerprint_json).toEqual(storedFingerprint);
+        expect(await publicationRowHash(row.id)).toBe(before);
+      }
+    });
+  });
+
+  it("E4 confirms unlabeled HTTP previews with stale-digest and owner fences while preserving historical confirmed labels", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const row = await createWithdrawalFixture(track);
+      const privateMarker = "E4_PRIVATE_PUBLICATION_ANALYSIS";
+      const { interpretation: _syntheticProviderSource, ...legacyFingerprint } = fixtureFingerprint;
+      await h.sql`update signals set raw_input = ${privateMarker}, seed_text = ${privateMarker},
+        fingerprint_json = ${JSON.stringify({ ...legacyFingerprint, coreNeed: privateMarker, tags: [privateMarker] })}::jsonb where id = ${row.id}`;
+      const beforePreview = await publicationRowHash(row.id);
+      const initialResponse = await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie);
+      expect(initialResponse.statusCode).toBe(200);
+      const initial = initialResponse.json().data.preview;
+      expect(initial).toMatchObject({ version: 0, content: { expandedText: fixtureExpansion.expandedText,
+        authorFreqCode: author.frequencyCode, tags: [] } });
+      expect(Object.keys(initial.content).sort()).toEqual(["authorFreqCode", "expandedText", "tags"]);
+      expect(initial.digest).toMatch(/^[a-f0-9]{64}$/u);
+      expect(await publicationRowHash(row.id)).toBe(beforePreview);
+      const initialCommand = { expectedVersion: initial.version, digest: initial.digest };
+      expectError(await request("GET", `/api/signals/${row.id}/publication-preview`), 401, "UNAUTHORIZED");
+      expectError(await request("GET", `/api/signals/${row.id}/publication-preview`, reader.cookie), 404, "NOT_FOUND");
+      expectError(await request("POST", `/api/signals/${row.id}/publish`, reader.cookie, initialCommand), 404, "NOT_FOUND");
+      expect(await publicationRowHash(row.id)).toBe(beforePreview);
+      const revisedBody = `${fixtureExpansion.expandedText}这是本轮修订过的合成正文。`;
+      await h.sql`update signals set expanded_text = ${revisedBody} where id = ${row.id}`;
+      const beforeStaleConfirmation = await publicationRowHash(row.id);
+      expectError(await request("POST", `/api/signals/${row.id}/publish`, author.cookie, initialCommand), 409, "CONFLICT");
+      expect(await publicationRowHash(row.id)).toBe(beforeStaleConfirmation);
+      const refreshedResponse = await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie);
+      expect(refreshedResponse.statusCode).toBe(200);
+      const refreshed = refreshedResponse.json().data.preview;
+      expect(refreshed.version).toBe(0);
+      expect(refreshed.digest).not.toBe(initial.digest);
+      expect(refreshed.content).toEqual({ expandedText: revisedBody, authorFreqCode: author.frequencyCode, tags: [] });
+      const confirmation = await request("POST", `/api/signals/${row.id}/publish`, author.cookie,
+        { expectedVersion: refreshed.version, digest: refreshed.digest });
+      expect(confirmation.statusCode).toBe(200);
+      const publicResponse = await request("GET", `/api/signals/${row.id}`);
+      expect(publicResponse.statusCode).toBe(200);
+      expect(publicResponse.json().data.signal).toMatchObject({ id: row.id, visibility: "PUBLIC", publicationVersion: 1,
+        expandedText: revisedBody, authorFreqCode: author.frequencyCode, tags: [] });
+      for (const key of ["primaryBand", "seedText", "rawInput", "fingerprint", "frequencyProfile", "program", "frequencyId", "guestKey"]) {
+        expect(publicResponse.json().data.signal).not.toHaveProperty(key);
+      }
+      expect(publicResponse.body).not.toContain(privateMarker);
+      const [confirmed] = await h.sql`select publication_snapshot, publication_version from signals where id = ${row.id}`;
+      expect(confirmed).toMatchObject({ publication_version: 1, publication_snapshot: {
+        kind: "AUTHOR_CONFIRMED", digest: refreshed.digest, content: refreshed.content } });
+
+      // This is an explicit historical author confirmation, not a current
+      // preview and not evidence of a real provider or validated classification.
+      const historical = await createWithdrawalFixture(track, "PUBLISHED");
+      const historicalContent = { expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
+        tags: ["关系星云", "历史已确认标签"], primaryBand: "relationship_nebula" as const };
+      const historicalSnapshot = confirmPublicationSnapshot({ content: historicalContent,
+        digest: digestPublicationContent(historicalContent), version: 0 }, new Date("2026-10-30T00:00:00Z"));
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify(legacyFingerprint)}::jsonb,
+        publication_snapshot = ${JSON.stringify(historicalSnapshot)}::jsonb, publication_version = 1 where id = ${historical.id}`;
+      const historicalBefore = await publicationRowHash(historical.id);
+      const historicalOwn = await request("GET", `/api/signals/${historical.id}`, author.cookie);
+      expect(historicalOwn.statusCode).toBe(200);
+      expect(historicalOwn.json().data.signal.fingerprint.interpretation).toEqual({ version: 1, state: "unknown", source: "unknown" });
+      const historicalPreview = await request("GET", `/api/signals/${historical.id}/publication-preview`, author.cookie);
+      expect(historicalPreview.statusCode).toBe(200);
+      expect(historicalPreview.json().data.preview.content).toEqual({ expandedText: fixtureExpansion.expandedText,
+        authorFreqCode: author.frequencyCode, tags: [] });
+      expect(historicalPreview.json().data.preview.digest).not.toBe(historicalSnapshot.digest);
+      const historicalPublic = await request("GET", `/api/signals/${historical.id}`);
+      expect(historicalPublic.statusCode).toBe(200);
+      expect(historicalPublic.json().data.signal).toMatchObject({ ...historicalContent, publicationVersion: 1, visibility: "PUBLIC" });
+      const galaxy = await request("GET", `/api/signals/galaxy?focus=${historical.id}`);
+      expect(galaxy.statusCode).toBe(200);
+      expect(galaxy.json().data.points).toEqual(expect.arrayContaining([expect.objectContaining({ id: historical.id, ...historicalContent })]));
+      const [historicalAfter] = await h.sql`select publication_snapshot, publication_version from signals where id = ${historical.id}`;
+      expect(historicalAfter).toEqual({ publication_snapshot: historicalSnapshot, publication_version: 1 });
+      expect(await publicationRowHash(historical.id)).toBe(historicalBefore);
+    });
   });
 
   it.each(matchingCases)("E3 frozen real-code synthetic evaluation: $id", async (current) => {
