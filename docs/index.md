@@ -33,6 +33,8 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [F2 后续：任务时序观察](./implementation/f2-generation-observation-20261101.md)
 - [能力与遗留入口清单](./capability-inventory.md)
 - [F3 能力登记与冻结](./implementation/f3-capability-inventory-20261101.md)
+- [依赖分组维护与回退](./dependency-maintenance.md)
+- [F4 依赖评估与 API 安全维护](./implementation/f4-dependency-maintenance-20261101.md)
 - [参赛事实与证据待办](./competition-evidence.md)
 - [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)
 - [C1 发布确认、撤回与公开读取验收](./implementation/c1-publication-20261030.md)

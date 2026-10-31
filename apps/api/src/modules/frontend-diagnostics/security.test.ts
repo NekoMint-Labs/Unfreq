@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
 import { frontendDiagnosticRoutes } from "./routes.js";
@@ -13,7 +13,7 @@ const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 async function fixture() {
   const logs: string[] = [];
-  const app = Fastify({ disableRequestLogging: true, logger: { level: "warn", stream: { write: (line: string) => { logs.push(line); } } } });
+  const app = Fastify({ logController: new LogController({ disableRequestLogging: true }), logger: { level: "warn", stream: { write: (line: string) => { logs.push(line); } } } });
   apps.push(app);
   await app.register(frontendDiagnosticRoutes, { prefix: "/api/frontend-diagnostics" });
   return { app, logs };
