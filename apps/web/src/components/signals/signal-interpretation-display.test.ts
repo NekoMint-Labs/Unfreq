@@ -1,9 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { MySignalSummary, SignalFingerprint, SignalInterpretation } from "@unfreq/contracts";
+import type { MonthlyRecap, MySignalSummary, SignalFingerprint, SignalInterpretation } from "@unfreq/contracts";
 import { SignalFingerprintPanel } from "./SignalFingerprintPanel";
 import { FrequencyBandSummary } from "../my-frequency/FrequencyBandSummary";
+import { MonthlyRecapEntry, MonthlyRecapSourceNote } from "../my-frequency/MonthlyRecapEntry";
 import { getTopFrequencyProfiles } from "../my-frequency/my-frequency-utils";
 import { canDisplaySignalInterpretation } from "../../lib/signal-interpretation";
 
@@ -48,5 +49,27 @@ describe("unvalidated psychological interpretation is not displayed", () => {
     expect(getTopFrequencyProfiles(signals)).toEqual([]);
     expect(renderToStaticMarkup(createElement(FrequencyBandSummary, { signals }))).toBe("");
     expect(JSON.stringify(signals)).toBe(before);
+  });
+
+  it("marks saved recaps as automatic and unverified while preserving their text", () => {
+    const recap: MonthlyRecap = { id: "synthetic-recap", frequencyId: "synthetic-frequency", yearMonth: "2026-10",
+      createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z", generatedAt: "2026-11-01T00:00:00Z",
+      signalCount: 3, totalResonanceCount: 2, summary: "这是保留原样的历史回顾正文。", themeWords: ["历史主题词"] };
+    const before = JSON.stringify(recap);
+    const markup = renderToStaticMarkup(createElement(MonthlyRecapEntry, { recap }));
+    expect(markup).toContain(recap.summary);
+    expect(markup).toContain(recap.themeWords[0]);
+    expect(markup).toContain("自动整理的回顾，可能有误，请对照原文。");
+    expect(markup).not.toContain("真实回顾");
+    expect(markup).not.toContain("实际模型生成");
+    expect(JSON.stringify(recap)).toBe(before);
+    // The detail page renders the same note beside its saved summary.
+    expect(renderToStaticMarkup(createElement(MonthlyRecapSourceNote))).toContain("自动整理的回顾，可能有误，请对照原文。");
+  });
+
+  it("does not promise a verified recap before any has been generated", () => {
+    const markup = renderToStaticMarkup(createElement(MonthlyRecapEntry));
+    expect(markup).toContain("至少需要 3 条");
+    expect(markup).not.toContain("真实回顾");
   });
 });

@@ -1,6 +1,14 @@
 import Link from "next/link";
 import type { MonthlyRecap } from "@unfreq/contracts";
 
+export function MonthlyRecapSourceNote() {
+  return (
+    <p className="text-sm leading-7 text-[color:var(--text-secondary)]">
+      自动整理的回顾，可能有误，请对照原文。
+    </p>
+  );
+}
+
 export function MonthlyRecapEntry({
   isUnavailable = false,
   recap,
@@ -26,7 +34,7 @@ export function MonthlyRecapEntry({
         <p className="radio-kicker">MONTHLY RECAP</p>
         <h2 className="my-frequency-section-title">还没有月度回顾</h2>
         <p className="mt-3 text-sm leading-7 text-[color:var(--text-secondary)]">
-          上月有 3 条以上信号后，系统会沉淀一份真实回顾。
+          回顾会整理符合条件的上月表达，至少需要 3 条。
         </p>
       </section>
     );
@@ -48,6 +56,7 @@ export function MonthlyRecapEntry({
       <p className="font-serif text-base leading-[1.8] text-[color:var(--text-primary)]">
         {recap.summary}
       </p>
+      <MonthlyRecapSourceNote />
       <div className="flex flex-wrap gap-2">
         {recap.themeWords.map((word) => (
           <span className="radio-tag" key={word}>
