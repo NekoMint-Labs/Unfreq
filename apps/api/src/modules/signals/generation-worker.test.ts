@@ -130,6 +130,26 @@ afterEach(async () => {
 });
 
 describe("generation worker controller", () => {
+  it("assigns each durable claim its own signal and attempt audit context", async () => {
+    const h = setup();
+    const claims = [claim(1), claim(2)];
+    h.queued.push(...claims);
+    const seen: unknown[] = [];
+    h.execute.mockImplementation(async () => {
+      const current = getGenerationExecutionContext();
+      seen.push(current?.auditContext);
+      await Promise.resolve();
+      expect(getGenerationExecutionContext()).toBe(current);
+      return output;
+    });
+    h.worker.start();
+    await flush();
+    expect(seen).toEqual(expect.arrayContaining(claims.map((owned) => ({ schemaVersion: 1,
+      kind: "signal-generation", signalId: owned.signalId, attemptId: owned.attemptId }))));
+    expect(seen).toHaveLength(2);
+    expect(getGenerationExecutionContext()).toBeUndefined();
+  });
+
   it("serializes repeated wake calls while one scan is waiting on a repository claim", async () => {
     const h = setup();
     const heldClaim = controlled<GenerationClaim[]>([]);

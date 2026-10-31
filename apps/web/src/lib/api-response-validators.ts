@@ -163,7 +163,7 @@ const isPublicationActions = (value: unknown): boolean => isRecord(value) &&
 const isMatchScoreProvenance = (value: unknown): boolean => isRecord(value) &&
   exactKeys(value, ["version", "scale", "method", "reason"]) && value.version === "match-score-v1" && value.scale === "zero_to_hundred" &&
   isEnumValue(value.method, ["rules", "cosine", "reranker"]) &&
-  isEnumValue(value.reason, ["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed"]);
+  isEnumValue(value.reason, ["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed", "read_only"]);
 const isSignalMatchSummary = (value: unknown): boolean => isPublicContent(value) &&
   exactKeys(value, [...publicContentKeys, "id", "score", "source", "resonanceCount", "publicationVersion"], [...publicContentOptionalKeys, "contentSource", "scoreProvenance"]) &&
   isOptional(value.contentSource, (source) => isEnumValue(source, signalSources)) && isOptional(value.scoreProvenance, isMatchScoreProvenance) &&

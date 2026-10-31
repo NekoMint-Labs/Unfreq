@@ -1,4 +1,5 @@
 import { closeDatabaseConnection } from "../db/client.js";
+import { safeErrorType } from "../shared/log-redaction.js";
 import { embeddingBackfillPlan, parseBackfillOptions } from "../modules/ai/embedding-backfill-plan.js";
 import { resolveEmbeddingProviderConfigs } from "../modules/ai/provider-config.js";
 import {
@@ -39,11 +40,7 @@ const logger: BackfillLogger = {
 };
 
 function toReason(error: unknown): string {
-  if (error instanceof Error) {
-    return error.name;
-  }
-
-  return "unknown";
+  return safeErrorType(error);
 }
 
 async function backfillEmbeddings(options: ReturnType<typeof parseBackfillOptions>): Promise<BackfillStats> {

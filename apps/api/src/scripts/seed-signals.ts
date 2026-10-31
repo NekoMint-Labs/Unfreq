@@ -1,4 +1,5 @@
 import { closeDatabaseConnection } from "../db/client.js";
+import { safeErrorType } from "../shared/log-redaction.js";
 import { seedSignalLibrary } from "../modules/signals/service.js";
 
 type ScriptLogger = {
@@ -20,11 +21,7 @@ const logger: ScriptLogger = {
 };
 
 function toReason(error: unknown): string {
-  if (error instanceof Error) {
-    return error.name;
-  }
-
-  return "unknown";
+  return safeErrorType(error);
 }
 
 try {

@@ -3,7 +3,7 @@ import Fastify, { type FastifyServerOptions, type RawServerDefault } from "fasti
 import { env } from "./config/env.js";
 import { closeDatabaseConnection } from "./db/client.js";
 import { adminRoutes } from "./modules/admin/routes.js";
-import { authRoutes, frequencyRoutes, meRoutes } from "./modules/auth/routes.js";
+import { authRoutes, frequencyRoutes, meRoutes, type AuthRoutesOptions } from "./modules/auth/routes.js";
 import { frontendDiagnosticRoutes } from "./modules/frontend-diagnostics/routes.js";
 import { healthRoutes } from "./modules/health/routes.js";
 import { imageRoutes } from "./modules/images/routes.js";
@@ -25,6 +25,7 @@ import { adminThemeRadioRoutes, themeRadioRoutes } from "./modules/theme-radio/r
 
 type BuildAppOptions = {
   logger?: FastifyServerOptions<RawServerDefault>["logger"];
+  testLoginChallengeDelivery?: AuthRoutesOptions["testLoginChallengeDelivery"];
   generationWorkerFactory?: (options: GenerationWorkerOptions) => SignalGenerationWorker;
   audioWorkerFactory?: (options: SignalAudioWorkerOptions) => SignalAudioWorker;
   aiSignalSchedulerFactory?: (options: AiSignalSchedulerOptions) => AiSignalScheduler;
@@ -104,7 +105,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(authPlugin);
 
   await app.register(healthRoutes);
-  await app.register(authRoutes, { prefix: "/api/auth" });
+  await app.register(authRoutes, { prefix: "/api/auth", testLoginChallengeDelivery: options.testLoginChallengeDelivery });
   await app.register(frequencyRoutes, { prefix: "/api/frequencies" });
   await app.register(meRoutes, { prefix: "/api" });
   await app.register(frontendDiagnosticRoutes, { prefix: "/api/frontend-diagnostics" });

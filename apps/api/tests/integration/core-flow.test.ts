@@ -1672,6 +1672,84 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     }
   });
 
+  it("F2 traces explicit database/media replicas without returning content or mutating the inventory", async () => {
+    const [{ auditSignalReplicas }, { writeSignalAudio, removeSignalAudio }] = await Promise.all([h.loadModule("replicaAudit"), h.loadModule("audioStorage")]);
+    const id = randomUUID(); const related = randomUUID(); const review = randomUUID(); const unlinked = randomUUID();
+    const recap = randomUUID(); const save = randomUUID(); const resonance = randomUUID(); const echo = randomUUID();
+    const report = randomUUID(); const action = randomUUID(); const batch = randomUUID(); const attempt = randomUUID();
+    const marker = "F2_SYNTHETIC_PRIVATE_REPLICA_CANARY"; const key = `${id}.mp3`;
+    try {
+      await h.sql`insert into signals (id,author_id,frequency_id,raw_input,seed_text,expanded_text,fingerprint_json,program_json,audio_storage_key)
+        values (${id},${author.id},${author.id},${marker},${marker},${marker},'{}','{}',${key})`;
+      await h.sql`insert into signals (id,raw_input,seed_text,expanded_text,fingerprint_json,program_json,match_signal_id,parent_signal_id)
+        values (${related},${marker},${marker},${marker},'{}',${JSON.stringify({ rightSignalSummary: marker })}::jsonb,${id},${id})`;
+      await writeSignalAudio(key, Buffer.from(marker));
+      await h.sql`insert into ai_reviews (id,input_text,output_json,model,provider,review_type,status,target_type,target_id,execution_json)
+        values (${review},${marker},${JSON.stringify({ text: marker })}::jsonb,'synthetic','synthetic','F2','PASSED','SIGNAL',${id},
+        ${JSON.stringify({ operation: { schemaVersion: 1, kind: "signal-generation", signalId: id, attemptId: attempt } })}::jsonb)`;
+      await h.sql`insert into ai_reviews (id,input_text,output_json,model,provider,review_type,status)
+        values (${unlinked},${marker},'{}','synthetic','synthetic','F2','PASSED')`;
+      await h.sql`insert into monthly_recaps (id,frequency_id,year_month,signal_count,total_resonance_count,summary,theme_words,top_signal_id)
+        values (${recap},${author.id},'2099-12',1,0,${marker},ARRAY[${marker}],${id})`;
+      await h.sql`insert into signal_saves (id,frequency_id,signal_id) values (${save},${author.id},${id})`;
+      await h.sql`insert into signal_resonances (id,actor_key,signal_id) values (${resonance},${marker},${id})`;
+      await h.sql`insert into signal_echoes (id,signal_id,content) values (${echo},${id},${marker})`;
+      await h.sql`insert into reports (id,reporter_id,target_type,target_id,reason) values (${report},${author.id},'SIGNAL',${id},${marker})`;
+      await h.sql`insert into admin_actions (id,admin_id,target_type,target_id,action,details) values (${action},${admin.id},'SIGNAL',${id},'F2_SYNTHETIC',${JSON.stringify({ text: marker })}::jsonb)`;
+      await h.sql`insert into ai_signal_scheduler_batches (id,job_key,business_date,time_zone,scheduled_time,owner_token,requested_count,signal_budget,dispatch_budget,deadline_at,result_signal_ids)
+        values (${batch},'f2-synthetic-replica','2099-12-01','Asia/Shanghai','03:00',${attempt},1,1,1,clock_timestamp()+interval '1 hour',${JSON.stringify([id])}::jsonb)`;
+      const [before] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${id}`;
+      const inventory = await auditSignalReplicas(id, 50);
+      expect(inventory).toMatchObject({ signalId: id, readOnly: true, signal: { publicEligible: false }, truncated: false,
+        audio: [{ channel: "main", state: "PRESENT" }, { channel: "left", state: "NOT_REFERENCED" }, { channel: "right", state: "NOT_REFERENCED" }] });
+      for (const count of Object.values(inventory.counts)) expect(count).toBe(1);
+      expect(inventory.samples).toHaveLength(12);
+      expect(inventory.unattributedAiReviewCount).toBeGreaterThanOrEqual(1);
+      const truncated = await auditSignalReplicas(id, 1);
+      expect(truncated.samples).toHaveLength(1); expect(truncated.truncated).toBe(true); expect(truncated.counts).toEqual(inventory.counts);
+      const serialized = JSON.stringify(inventory);
+      expect(serialized).not.toContain(marker); expect(serialized).not.toContain(key); expect(serialized).not.toContain("storageKey");
+      const [after] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${id}`;
+      expect(after).toEqual(before);
+      expect((await auditSignalReplicas(randomUUID())).signal).toBeNull();
+    } finally {
+      await h.sql`delete from ai_signal_scheduler_batches where id=${batch}`;
+      await h.sql`delete from admin_actions where id=${action}`; await h.sql`delete from reports where id=${report}`;
+      await h.sql`delete from signal_echoes where id=${echo}`; await h.sql`delete from signal_resonances where id=${resonance}`;
+      await h.sql`delete from signal_saves where id=${save}`; await h.sql`delete from monthly_recaps where id=${recap}`;
+      await h.sql`delete from ai_reviews where id in (${review},${unlinked})`;
+      await h.sql`delete from signals where id=${related}`; await h.sql`delete from signals where id=${id}`;
+      await removeSignalAudio(key);
+    }
+  });
+
+  it("F2 public, owner, matches and galaxy GETs do not dispatch providers or persist missing vectors/positions", async () => {
+    const [original] = await h.sql`select embedding::text as vector,galaxy_position::text as position from signals where id=${publicControlId}`;
+    try {
+      await h.sql`update signals set embedding=null,galaxy_position=null where id=${publicControlId}`;
+      const [before] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${publicControlId}`;
+      const countReviews = async () => Number((await h.sql`select count(*)::text as count from ai_reviews where target_type='SIGNAL' and target_id=${publicControlId}`)[0]?.count);
+      const reviewsBefore = await countReviews(); const dispatchesBefore = h.provider.requestEvents.length;
+      for (const [url, cookie] of [[`/api/signals/${publicControlId}`, undefined], [`/api/signals/${publicControlId}`, author.cookie],
+        [`/api/signals/${publicControlId}/matches`, reader.cookie], ["/api/signals/galaxy", undefined]] as const) {
+        expect((await request("GET", url, cookie)).statusCode).toBe(200);
+      }
+      // Observe beyond the old microtask/IIFE write's normal completion window.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const [after] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${publicControlId}`;
+      expect(after).toEqual(before); expect(await countReviews()).toBe(reviewsBefore);
+      expect(h.provider.requestEvents.length).toBe(dispatchesBefore);
+    } finally {
+      await h.sql`update signals set embedding=${original.vector}::vector,galaxy_position=${original.position}::jsonb where id=${publicControlId}`;
+    }
+  });
+
+  it("F2 associates newly generated AI reviews with the real signal and worker attempt", async () => {
+    const reviews = await h.sql`select target_id,execution_json->'operation' as operation from ai_reviews where target_type='SIGNAL' and target_id=${publicControlId}`;
+    expect(reviews.length).toBeGreaterThan(0);
+    for (const review of reviews) expect(review.operation).toMatchObject({ schemaVersion: 1, kind: "signal-generation", signalId: publicControlId, attemptId: expect.any(String) });
+  });
+
   it.each(matchingCases)("E3 frozen real-code synthetic evaluation: $id", async (current) => {
     await runFrozenMatchingCase(h, current, author, reader, admin, request);
     if (matchingCaptures.every((strategy) => strategy.runs.length === matchingCases.length)) {

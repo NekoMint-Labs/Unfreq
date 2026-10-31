@@ -55,6 +55,50 @@ beforeEach(() => {
 });
 
 describe("matching cancellation does not become an ordinary degradation", () => {
+  it("serves a read-only query with rules without checking or dispatching providers", async () => {
+    const { distance: _distance, ...ruleCandidate } = candidate;
+    calls.keyword.mockResolvedValue([ruleCandidate]);
+    const info = vi.fn();
+    const result = await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true,
+      logger: { info, warn: vi.fn(), error: vi.fn() } });
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].scoreProvenance).toMatchObject({ method: "rules", reason: "read_only" });
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.semantic).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith({ action: "signal.match.read_only", providerDispatches: 0,
+      persisted: false, storedVectorUsed: false }, expect.any(String));
+    expect(JSON.stringify(info.mock.calls)).not.toContain(input.rawInput);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(input.expandedText);
+  });
+
+  it("reuses an existing same-space vector for a read-only query without reranking", async () => {
+    const storedEmbedding = { embedding: [0.1, 0.2, 0.3], dimensions: 3, model: "synthetic", provider: "synthetic", version: `es1:${"a".repeat(64)}` };
+    const result = await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true, storedEmbedding });
+    expect(calls.semantic).toHaveBeenCalledWith(storedEmbedding.embedding, 12, undefined, storedEmbedding, expect.any(Object));
+    expect(result.matches[0].scoreProvenance).toMatchObject({ method: "cosine", reason: "read_only" });
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { version: "legacy-v1", dimensions: 3, embedding: [0.1, 0.2, 0.3] },
+    { version: `es1:${"a".repeat(64)}`, dimensions: 2, embedding: [0.1, 0.2, 0.3] },
+    { version: `es1:${"a".repeat(64)}`, dimensions: 3, embedding: [0.1, Number.POSITIVE_INFINITY, 0.3] },
+  ])("does not query or regenerate an unusable stored vector $version/$dimensions", async (vector) => {
+    await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true,
+      storedEmbedding: { ...vector, model: "synthetic", provider: "synthetic" } });
+    expect(calls.semantic).not.toHaveBeenCalled();
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+
   it("does not replace an embedding control error with keyword matching", async () => {
     const { ctx } = execution();
     const stopped = new GenerationExecutionStopped("obsolete");

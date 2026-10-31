@@ -54,7 +54,7 @@ export type SignalMatchScoreProvenance = {
   version: "match-score-v1";
   scale: "zero_to_hundred";
   method: "rules" | "cosine" | "reranker";
-  reason: "rules_only" | "reranker_complete" | "reranker_not_configured" | "reranker_failed";
+  reason: "rules_only" | "reranker_complete" | "reranker_not_configured" | "reranker_failed" | "read_only";
 };
 
 export type PublicSignalMatchSummary = SignalPublicContent & {

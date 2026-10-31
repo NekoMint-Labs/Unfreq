@@ -19,6 +19,7 @@ import { maxMatchCount } from "./service-constants.js";
 import { isMatchEligible, matchPolicyVersion, resolveMatchPolicy, type MatchPolicy, type MatchScope } from "./match-policy.js";
 import type { AiExecutionMetadata } from "../ai/provider-execution.js";
 import { buildSignalEmbeddingText } from "./service-embedding.js";
+import { isEmbeddingSpaceKey } from "../ai/embedding-space.js";
 import { toSafeErrorReason } from "./service-errors.js";
 import {
   getFingerprintFrequencyProfile,
@@ -73,18 +74,25 @@ export type MatchInput = {
   corpusIds?: readonly string[]; publicTags?: readonly string[]; publicBand?: SignalFingerprint["primaryBand"];
   expandedText: string; fingerprint: SignalFingerprint; logger?: EmbeddingLogger;
   rawInput: string; publicQuery?: boolean; policy?: MatchPolicy;
+  readOnly?: boolean; storedEmbedding?: EmbeddingResult;
 };
 
 async function semanticCandidates(input: MatchInput, scope: MatchScope, policy: MatchPolicy): Promise<{ embedding?: EmbeddingResult; candidates: SignalSemanticMatchRecord[] }> {
   let embedding: EmbeddingResult | undefined;
   try {
     await assertGenerationActive();
-    const configured = await isEmbeddingProviderConfigured();
-    await assertGenerationActive();
-    if (!configured) return { candidates: [] };
-    embedding = await generateEmbedding(buildSignalEmbeddingText(input), {
-      logger: input.logger, purpose: input.publicQuery ? "public-detail" : "creation",
-    });
+    if (input.readOnly) {
+      embedding = input.storedEmbedding;
+      if (embedding === undefined || !isEmbeddingSpaceKey(embedding.version) || embedding.dimensions !== embedding.embedding.length ||
+          embedding.dimensions < 1 || !embedding.embedding.every(Number.isFinite)) return { candidates: [] };
+    } else {
+      const configured = await isEmbeddingProviderConfigured();
+      await assertGenerationActive();
+      if (!configured) return { candidates: [] };
+      embedding = await generateEmbedding(buildSignalEmbeddingText(input), {
+        logger: input.logger, purpose: input.publicQuery ? "public-detail" : "creation",
+      });
+    }
     await assertGenerationActive();
     const rows = await listPublishedSemanticSignalMatchCandidates(embedding.embedding, policy.semanticCandidates, scope.excludeSignalId, embedding, scope);
     await assertGenerationActive();
@@ -130,16 +138,17 @@ async function rankCandidates(pool: MatchCandidate[], input: MatchInput, scope: 
   let execution: AiExecutionMetadata | undefined;
   let inputCharacters = 0;
   const score = (entry: MatchCandidate, retrieval: number | undefined,
-    reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed"): SignalMatchSummary => ({
+    reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed" | "read_only"): SignalMatchSummary => ({
     ...(entry.distance === undefined ? toMatchSummary(entry.signal, 0) : toSemanticMatchSummary({ ...entry.signal, distance: entry.distance })),
     score: composeMatchScore(retrieval, scoreSignalMatch(input.fingerprint, entry.signal)),
     scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred",
       method: reason === "reranker_complete" ? "reranker" : entry.distance === undefined ? "rules" : "cosine",
-      reason: reason !== "reranker_complete" && entry.distance === undefined && reason !== "reranker_failed" ? "rules_only" : reason },
+      reason: reason !== "reranker_complete" && entry.distance === undefined && reason !== "reranker_failed" && reason !== "read_only" ? "rules_only" : reason },
   });
-  const fallback = (reason: "reranker_not_configured" | "reranker_failed") => active.map((entry) =>
+  const fallback = (reason: "reranker_not_configured" | "reranker_failed" | "read_only") => active.map((entry) =>
     score(entry, entry.distance === undefined ? undefined : cosineRelevance(entry.distance), reason));
   if (active.length === 0) return { matches: [], inputCharacters };
+  if (input.readOnly) return { matches: fallback("read_only"), inputCharacters };
   try {
     const configured = await isRerankerProviderConfigured();
     await assertGenerationActive();
@@ -192,6 +201,8 @@ export async function findSameFrequencyMatches(input: MatchInput): Promise<{ emb
   await assertGenerationActive();
   const pool = mergeCandidates(semantic.candidates, rules, scope);
   const ranked = await rankCandidates(pool, input, scope, policy);
+  if (input.readOnly) input.logger?.info({ action: "signal.match.read_only", providerDispatches: 0,
+    persisted: false, storedVectorUsed: semantic.embedding !== undefined }, "public matching read without provider dispatch or backfill");
   await assertGenerationActive();
   // Recheck the whole pool before selecting the final positions. Withdrawn top
   // candidates may leave fewer results; weak candidates are never added to fill three.

@@ -27,7 +27,17 @@ describe("E3 final public projection policy fence", () => {
   it("passes authenticated viewer scope through the /matches service entry and preserves safe source metadata", async () => {
     const matches = await getSignalMatches(parent.id, undefined, viewer);
     expect(calls.match).toHaveBeenCalledWith(expect.objectContaining({ excludeAuthorIds: [parent.authorId, viewer.id] }));
+    expect(calls.match).toHaveBeenCalledWith(expect.objectContaining({ publicQuery: true, readOnly: true }));
     expect(matches[0]).toMatchObject({ id: candidate.id, contentSource: "human" });
     expect(matches[0]).not.toHaveProperty("authorId");
+  });
+  it("keeps anonymous detail reads provider-free and rejects vectors of unconfirmed edits", async () => {
+    const changed = { ...parent, expandedText: "PRIVATE-unconfirmed-edit", embedding: [0.1, 0.2, 0.3], embeddingDimensions: 3,
+      embeddingModel: "synthetic", embeddingProvider: "synthetic", embeddingVersion: `es1:${"a".repeat(64)}` };
+    calls.find.mockResolvedValue(changed);
+    calls.recheck.mockResolvedValue([changed, candidate]);
+    await getSignalDetailForFrequency(parent.id, undefined);
+    expect(calls.match).toHaveBeenCalledWith(expect.objectContaining({ publicQuery: true, readOnly: true, storedEmbedding: undefined }));
+    expect(calls.match.mock.calls[0][0].expandedText).not.toBe(changed.expandedText);
   });
 });

@@ -106,6 +106,14 @@ node --test tests/evaluation/faithfulness-cli.test.mjs
 
 运行标记新增 scheduler 入口，并验证全部已知入口路径、源码和产物哈希。结果、Provider 请求事件和子进程证据只保存在被忽略的 `test-results/`。合成 Provider 的质量分是夹具，不是模型质量指标。
 
+## F2 合成恢复与副本
+
+F2 同一隔离套件还运行真实部署脚本的合成 pg_dump/gzip → 空库 psql 恢复，验证损坏压缩包零写入、SQL 错误整次回滚、非空目标拒绝、媒体/config 字节、原密钥解密、pgvector 和 API 主路径。备份后新增记录应缺失，较新撤回状态在开放隔离读取前重放；检查点、RPO 观测和本机 RTO 写入该轮 f2-recovery/recovery-report.json。Linux 容器专项验证 700/600 权限，Windows noacl 不作为权限证明。Redis AOF、真实媒体质量、目标服务器和第三方处理未验收。
+
+F2 的真实 SQL 另验证十二类副本引用、样本截断、媒体元数据和不输出私密内容；GET 详情/matches/Galaxy 前后对比数据库与本地 Provider 请求事件，确认不派发或回填。新审计的 signal/attempt 关联由真实 worker 验证。源码、脚本及 Linux fixture 纳入本轮来源指纹。
+
+`npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；默认完整集成命令仍覆盖八个文件。固定 --generation-checkpoints 参数仅供九项原有任务重启诊断，不替代完整门禁。
+
 ## CI
 
 现有 API、Web、部署脚本任务保留。Web 单测已并入 `web:check`，不再额外重复执行。新增独立 `Isolated API integration` job，运行同一个托管集成命令；不需要仓库 secrets 或收费 AI。

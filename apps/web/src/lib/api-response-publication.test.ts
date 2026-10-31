@@ -29,6 +29,12 @@ describe("public publication contracts", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { signal: { ...signal, matches: [modern] } }, meta: { requestId: "synthetic" } }))));
     expect((await getPublicSignal(signal.id))?.matches[0]).toMatchObject(modern);
   });
+  it.each(["cosine", "rules"])("accepts read-only %s score provenance through the API client", async (method) => {
+    const readOnly = { ...match, score: method === "cosine" ? 90 : 40, contentSource: "human",
+      scoreProvenance: { version: "match-score-v1", scale: "zero_to_hundred", method, reason: "read_only" } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { signal: { ...signal, matches: [readOnly] } }, meta: { requestId: "synthetic" } }))));
+    expect((await getPublicSignal(signal.id))?.matches[0]).toMatchObject(readOnly);
+  });
   it("validates coverage counts and pins against the same public sample", () => {
     const coverage = { totalEligibleCount: 520, returnedCount: 1, sampleLimit: 80, samplingVersion: "recent-band-v1", filters: {}, focusStatus: "none" };
     const response = { generatedAt: signal.createdAt, points: [point], coverage };

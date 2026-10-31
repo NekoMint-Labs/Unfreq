@@ -99,7 +99,11 @@ export async function frequencyRoutes(app: FastifyInstance) {
   });
 }
 
-export async function authRoutes(app: FastifyInstance) {
+export type AuthRoutesOptions = {
+  testLoginChallengeDelivery?: (delivery: { code: string; emailHash: string }) => void;
+};
+
+export async function authRoutes(app: FastifyInstance, options: AuthRoutesOptions = {}) {
   app.post("/guest", async () => {
     throw new AppError("FORBIDDEN", "Guest frequency creation is disabled.");
   });
@@ -139,14 +143,13 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const result = await requestLoginChallenge(app.redis, parsedBody.data.email);
+    // Synthetic tests may observe this in memory without turning logs into a
+    // credential delivery channel. Never invoke it in development/production.
+    if (env.isTest) options.testLoginChallengeDelivery?.({ code: result.localDelivery.code, emailHash: result.localDelivery.emailHash });
 
     request.log.info(
       {
         action: "auth.login.challenge.request",
-        ...(!env.isProduction && env.authLoginDeliveryMode === "local-log" ? {
-          email: result.localDelivery.maskedEmail,
-          loginChallengeCode: result.localDelivery.code,
-        } : {}),
         loginChallengeMode: result.delivery.mode,
         loginChallengeRequestId: request.id,
         requestId: request.id,

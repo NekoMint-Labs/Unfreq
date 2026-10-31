@@ -100,6 +100,7 @@ export function createAiSignalScheduler(options: AiSignalSchedulerOptions = {}):
       checkAbort();
       const summary = await runWithGenerationExecution({
         attemptId: owned.ownerToken, signal: abort.signal, assertActive,
+        auditContext: { schemaVersion: 1, kind: "scheduler-batch", batchId: owned.id, attemptId: owned.ownerToken },
         async beforeDispatch() {
           checkAbort();
           const reserved = await repository.reserveDispatch(owned);

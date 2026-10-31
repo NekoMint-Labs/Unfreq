@@ -2,6 +2,7 @@ import { env } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { closeDatabaseConnection } from "./db/client.js";
 import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
+import { safeErrorType } from "./shared/log-redaction.js";
 
 let shutdownPromise: Promise<void> | undefined;
 
@@ -48,6 +49,6 @@ try {
     port: env.apiPort,
   });
 } catch (error) {
-  app.log.error({ err: error }, "api server failed to start");
+  app.log.error({ action: "api.start.failed", errorType: safeErrorType(error) }, "api server failed to start");
   await shutdown("LISTEN_FAILED", 1);
 }

@@ -12,6 +12,7 @@
     "faithfulness:evaluate": "node dist/scripts/evaluate-faithfulness.js",
     "galaxy:backfill": "node dist/scripts/backfill-galaxy-positions.js",
     "identity:audit": "node dist/scripts/audit-identity-mirrors.js",
+    "replicas:audit": "node dist/scripts/audit-signal-replicas.js",
     "lint": "eslint .",
     "matches:evaluate": "node dist/scripts/evaluate-matches.js",
     "migrate": "drizzle-kit migrate",

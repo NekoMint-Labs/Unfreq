@@ -3,8 +3,13 @@ import { throwIfAbuseStopped } from "./abuse-errors.js";
 
 export type GenerationExecutionStopReason = "obsolete" | "deadline" | "shutdown" | "storage-uncertain" | "aborted";
 export type GenerationDispatchKind = "chat" | "embedding" | "reranker";
+/** Trusted operation IDs only; never put Seed, provider payloads or secrets here. */
+export type GenerationAuditOperation =
+  | { schemaVersion: 1; kind: "signal-generation"; signalId: string; attemptId: string }
+  | { schemaVersion: 1; kind: "scheduler-batch"; batchId: string; attemptId: string };
 export type GenerationExecutionContext = {
   attemptId: string;
+  auditContext?: GenerationAuditOperation;
   signal: AbortSignal;
   assertActive(): Promise<void>;
   beforeDispatch(meta: { kind: GenerationDispatchKind; stage: string }): Promise<void>;

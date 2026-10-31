@@ -61,6 +61,12 @@ F1 的 0026 迁移只增加每日批次账本。注册、凭证和权限镜像�
 
 默认关闭宽限期与 Compose 的 40 秒 `stop_grace_period` 相容；提高 scheduler/生成或数据库关闭预算时一并提高部署宽限期。回退前先停止并排空调度，保留账本。F1 前版本默认自动调度且没有新开关，不能只设置新变量就直接恢复旧版多副本调度。
 
+## F2 日志与只读匹配
+
+F2 新增分数来源理由 read_only，部署时先更新兼容的 Web 校验或同步更新 API/Web。浏览公开/作者详情和 matches 不再自动派发 Provider，缺少有效存量向量时使用规则或返回空；显式生成/backfill 仍受原预算控制。
+
+五个 Compose 服务默认 json-file 轮转为每文件 10m、最多 3 份，可由 UNFREQ_LOG_MAX_SIZE / UNFREQ_LOG_MAX_FILES 调整。这是容量配置，不代表按天数的保留政策，也不会修改已运行容器或外部收集器。备份恢复保护及开放条件见[运维手册](./operations.md)；本地演练不能代替发布环境验收。
+
 ## 反代配置
 
 Nginx Proxy Manager 转发到：

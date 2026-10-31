@@ -1,4 +1,5 @@
 import { closeDatabaseConnection } from "../db/client.js";
+import { safeErrorType } from "../shared/log-redaction.js";
 import {
   listSignalsMissingGalaxyPosition,
   writeSignalGalaxyPositionIfMissing,
@@ -45,11 +46,7 @@ function parseLimit(argv: string[]): number {
 }
 
 function toReason(error: unknown): string {
-  if (error instanceof Error) {
-    return error.name;
-  }
-
-  return "unknown";
+  return safeErrorType(error);
 }
 
 async function backfillGalaxyPositions(limit: number): Promise<BackfillStats> {

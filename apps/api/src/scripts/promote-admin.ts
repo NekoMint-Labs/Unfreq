@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { closeDatabaseConnection, db } from "../db/client.js";
 import { users } from "../db/schema.js";
 import { syncFrequencyMirror } from "../modules/auth/identity-mirror.js";
+import { safeErrorType } from "../shared/log-redaction.js";
 
 type PromoteAdminLookupTarget =
   | {
@@ -137,14 +138,6 @@ function parsePromoteAdminTarget(argv: string[]): PromoteAdminTarget {
   return entries[0]!;
 }
 
-function toReason(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return "unknown";
-}
-
 async function findUserByTarget(target: PromoteAdminLookupTarget) {
   if (target.type === "email") {
     const [user] = await db.select().from(users).where(eq(users.email, target.value)).limit(1);
@@ -251,7 +244,7 @@ try {
   logger.error(
     {
       action: "admin.promote.failed",
-      reason: toReason(error),
+      errorType: safeErrorType(error),
     },
     "admin promotion failed",
   );

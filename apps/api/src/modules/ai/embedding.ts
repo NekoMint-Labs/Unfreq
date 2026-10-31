@@ -2,6 +2,7 @@ import { env } from "../../config/env.js";
 import { embeddingSpaceKey, signalEmbeddingTemplateVersion } from "./embedding-space.js";
 import { safeProviderAccounting, type AiExecutionMetadata } from "./provider-execution.js";
 import { AppError } from "../../shared/errors.js";
+import { safeErrorType } from "../../shared/log-redaction.js";
 import {
   assertGenerationActive,
   beforeGenerationDispatch,
@@ -82,11 +83,7 @@ function toErrorReason(error: unknown): string {
     return error.code;
   }
 
-  if (error instanceof Error) {
-    return error.name;
-  }
-
-  return "unknown";
+  return safeErrorType(error);
 }
 
 function extractEmbedding(payload: EmbeddingPayload): unknown {

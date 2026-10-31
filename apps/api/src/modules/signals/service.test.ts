@@ -1544,6 +1544,9 @@ describe("signal service AI generation", () => {
   });
 
   it("returns stable finite galaxy points and marks current frequency signals", async () => {
+    vi.mocked(writeSignalGalaxyPositionIfMissing).mockClear();
+    vi.mocked(writeSignalEmbeddingIfMissing).mockClear();
+    vi.mocked(generateEmbedding).mockClear();
     const mySignal = buildCandidate({
       id: "00000000-0000-4000-8000-000000000701",
       primaryEmotion: "孤独",
@@ -1582,10 +1585,9 @@ describe("signal service AI generation", () => {
     expect(galaxy.themeOptions).toEqual(["关系星云"]);
     expect(listPublishedGalaxyThemes).toHaveBeenCalledWith(12);
     expect(Number.isFinite(galaxy.points[0]?.position.x)).toBe(true);
-    expect(writeSignalGalaxyPositionIfMissing).toHaveBeenCalledWith({
-      id: "00000000-0000-4000-8000-000000000701",
-      position: galaxy.points[0]?.position,
-    });
+    expect(writeSignalGalaxyPositionIfMissing).not.toHaveBeenCalled();
+    expect(writeSignalEmbeddingIfMissing).not.toHaveBeenCalled();
+    expect(generateEmbedding).not.toHaveBeenCalled();
   });
 
   it("keeps galaxy match ids inside the returned point set", async () => {

@@ -160,7 +160,7 @@ const positionSchema = z.strictObject({ x: z.number(), y: z.number(), z: z.numbe
 const matchScoreProvenanceSchema = z.strictObject({
   version: z.literal("match-score-v1"), scale: z.literal("zero_to_hundred"),
   method: z.enum(["rules", "cosine", "reranker"]),
-  reason: z.enum(["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed"]),
+  reason: z.enum(["rules_only", "reranker_complete", "reranker_not_configured", "reranker_failed", "read_only"]),
 });
 export const publicMatchSchema = z.strictObject({
   contentSource: sourceSchema.optional(),

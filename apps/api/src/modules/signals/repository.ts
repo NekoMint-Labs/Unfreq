@@ -448,8 +448,10 @@ export async function listPublishedSignalMatchCandidates(
   const tags = [...new Set(scope.tags ?? [])].filter((tag) => tag.length > 0 && tag.length <= 16).slice(0, 3);
   // Recall ordering uses only confirmed labels, not private Seed/profile text.
   // This chooses a pool; E2 remains the only final scoring definition.
-  const sameBand = scope.band === undefined ? sql`0` : sql`case when ${signals.publicationSnapshot}->'content'->>'primaryBand' = ${scope.band} then 1 else 0 end`;
-  const overlap = tags.length === 0 ? sql`0` : sql`(select count(*) from jsonb_array_elements_text(
+  // A bare integer in ORDER BY is a select-list position in PostgreSQL.
+  // Cast constant fallbacks so valid unlabeled publications remain readable.
+  const sameBand = scope.band === undefined ? sql`0::integer` : sql`case when ${signals.publicationSnapshot}->'content'->>'primaryBand' = ${scope.band} then 1 else 0 end`;
+  const overlap = tags.length === 0 ? sql`0::integer` : sql`(select count(*) from jsonb_array_elements_text(
     case when jsonb_typeof(${signals.publicationSnapshot}->'content'->'tags') = 'array'
     then ${signals.publicationSnapshot}->'content'->'tags' else '[]'::jsonb end) as label(value)
     where label.value = any(array[${sql.join(tags.map((tag) => sql`${tag}`), sql`, `)}]::text[]))`;

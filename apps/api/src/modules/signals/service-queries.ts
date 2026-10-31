@@ -6,9 +6,8 @@ import { findPublishedSignalById, findRandomPublishedSignal, findSignalResultByI
   getFrequencyLastSeenAt, listPublishedGalaxyThemes, listPublishedGalaxySignals, listPublishedSignals, listSavedSignalsForFrequency,
   readMySignalHistory, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
 import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSignalsLimit, maxMatchCount } from "./service-constants.js";
-import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
 import { findSameFrequencyMatches, scoreSignalMatch } from "./service-matching.js";
-import { buildStableGalaxyPosition, isFiniteGalaxyPosition, toMySignalSummary,
+import { buildStableGalaxyPosition, toMySignalSummary,
   toSignalGenerationDetail, toSignalDetail, getFingerprintFrequencyProfile, getSignalFrequencyProfile } from "./service-mappers.js";
 import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
 import { isPublicSignal, publicationProjection } from "./publication-policy.js";
@@ -31,7 +30,7 @@ export async function getSignalHall(): Promise<PublicSignalDetail[]> {
 }
 
 export async function getSignalGalaxy(frequency: AuthenticatedFrequency | undefined,
-  query: SignalGalaxyQuery = {}, logger?: EmbeddingLogger): Promise<GalaxyResult> {
+  query: SignalGalaxyQuery = {}, _logger?: EmbeddingLogger): Promise<GalaxyResult> {
   const [sample, themeOptions] = await Promise.all([listPublishedGalaxySignals({ band: query.band, limit: galaxyLimit, theme: query.theme,
     focus: query.focus, frequencyId: frequency?.id }), listPublishedGalaxyThemes(galaxyThemeOptionLimit)]);
   const currentRows = await recheckPublicSignals(sample.signals);
@@ -44,7 +43,6 @@ export async function getSignalGalaxy(frequency: AuthenticatedFrequency | undefi
   const candidateProfiles = new Map(current.map((signal) => [signal.id, getSignalFrequencyProfile(signal)]));
   const points = current.flatMap((signal) => {
     const position = buildStableGalaxyPosition(signal);
-    if (!isFiniteGalaxyPosition(signal.galaxyPosition)) queueSignalGalaxyPositionWrite({ logger, position, signal });
     const matchIds = current.filter((item) => item.id !== signal.id)
       .map((item) => ({ id: item.id, score: scoreSignalMatch(signal.fingerprintJson, item,
         { current: fingerprintProfiles.get(signal.id)!, candidate: candidateProfiles.get(item.id)! }) }))
@@ -139,12 +137,19 @@ export async function getMyEchoSummary(
 async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency, logger?: EmbeddingLogger): Promise<PublicSignalDetail> {
   if (!isPublicSignal(signal)) throw notFound();
   const snapshot = parsePublicationSnapshot(signal.publicationSnapshot)!;
+  // Only a vector of the currently confirmed body is usable for a public
+  // read. Missing/legacy vectors stay missing until an explicit write job.
+  const storedEmbedding = snapshot.content.expandedText === signal.expandedText && signal.embedding !== null &&
+    signal.embeddingDimensions !== null && signal.embeddingModel !== null && signal.embeddingProvider !== null && signal.embeddingVersion !== null
+    ? { embedding: signal.embedding, dimensions: signal.embeddingDimensions, model: signal.embeddingModel,
+      provider: signal.embeddingProvider, version: signal.embeddingVersion } : undefined;
   const matchScope: MatchScope = { excludeSignalId: signal.id,
     excludeAuthorIds: [...new Set([signal.authorId ?? signal.frequencyId, frequency?.id].filter((id): id is string => id !== null && id !== undefined))] };
   const result = await findSameFrequencyMatches({ excludeSignalId: signal.id,
     excludeAuthorIds: matchScope.excludeAuthorIds,
     publicTags: snapshot.content.tags, publicBand: snapshot.content.primaryBand,
-    logger, publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
+    logger, publicQuery: true, readOnly: true, storedEmbedding,
+    expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
   const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
   const candidates = result.matches.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
   // Parent and every match are rechecked together after provider/save awaits.

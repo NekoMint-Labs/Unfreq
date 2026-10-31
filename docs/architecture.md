@@ -197,6 +197,8 @@ users 是账号认证和权限的权威源，frequencies 承载内容归属和�
 
 `identity:audit` 用一条只读查询统计缺失、孤立和字段差异，输出有限 UUID 与字段名，不输出字段值或自动修复。limit 只限制差异样本数量，总量仍按完整数据统计。运维命令与处置边界见 [F1 实施记录](./implementation/f1-identity-scheduler-20261031.md)。
 
+`replicas:audit` 按 signalId 只读统计显式副本关联和关联音频的文件状态，说明旧无目标审计、无版本摘要、非 top 月报、独立图片及日志/备份/第三方的盲区。用户 worker 的审计附 signal/attempt，系统调度附 batch/attempt，不推定历史血缘或自动清理；见 [F2 实施记录](./implementation/f2-recovery-replicas-20261031.md)。
+
 ## 信号生成与状态流转
 
 信号创建不是同步等待 AI 完成。前端提交 seed 后，后端先创建 pending signal，返回稳定 id，然后页面进入 transmitting 状态并轮询。
@@ -221,6 +223,8 @@ POST /api/signals
 启用时若已过当天触发时间，会补当天一次；不会补过去日期。崩溃后结果未知的 RUNNING、已失败或取消的批次都不自动重放。当日可能因此少生成，已有远端费用也不能仅由本地状态判断。关闭时停止领取、取消在途请求并等待工作排空；进程 watchdog 的预算覆盖启用的 scheduler 和生成 worker 中较长的关闭宽限期。提高预算时还需同步提高 Compose 的 stop_grace_period。
 
 `/health` 供进程存活探针使用，`/health/deep` 检查 PostgreSQL 和 Redis 就绪状态。Compose 的 API 探针使用 `/health`，部署 smoke 同时检查两者，依赖暂时故障不会因深健康探针而触发应用重启风暴。
+
+星图和详情/matches GET 不触发 Provider 或后台回填。位置缺失时只计算稳定投影，匹配读取可复用的已确认正文向量或规则候选，保留现有分数门槛和空结果。创建和显式管理脚本仍负责生成与回填。只读分数理由为 read_only，需 API/Web 兼容版本同步。
 
 ## 部署：Docker Compose + Caddy + Nginx Proxy Manager
 

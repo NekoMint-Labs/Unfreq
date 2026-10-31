@@ -4,8 +4,15 @@ x-healthcheck-defaults: &healthcheck-defaults
   timeout: 3s
   retries: 10
 
+x-logging-defaults: &logging-defaults
+  driver: json-file
+  options:
+    max-size: "${UNFREQ_LOG_MAX_SIZE:-10m}"
+    max-file: "${UNFREQ_LOG_MAX_FILES:-3}"
+
 services:
   proxy:
+    logging: *logging-defaults
     image: caddy:2-alpine
     depends_on:
       api:
@@ -30,6 +37,7 @@ services:
       start_period: 10s
 
   web:
+    logging: *logging-defaults
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -51,6 +59,7 @@ services:
     restart: unless-stopped
 
   api:
+    logging: *logging-defaults
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -79,6 +88,7 @@ services:
     restart: unless-stopped
 
   postgres:
+    logging: *logging-defaults
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: unfreq
@@ -94,6 +104,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   redis:
+    logging: *logging-defaults
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     networks:

@@ -36,3 +36,9 @@ test("integration runner refuses TCP Docker endpoints before doing work", () => 
 test("integration runner refuses UNC-style npipe instead of mistaking the scheme for locality", () => {
   rejectedBeforeDocker([], "npipe:////127.0.0.1/pipe/docker_engine", /Remote Docker hosts are not allowed/);
 });
+
+test("fixed recovery scope keeps the remote Docker and arbitrary-argument fences", () => {
+  rejectedBeforeDocker(["--f2-recovery"], "tcp://127.0.0.1:9", /Remote Docker hosts are not allowed/);
+  rejectedBeforeDocker(["--generation-checkpoints"], "tcp://127.0.0.1:9", /Remote Docker hosts are not allowed/);
+  rejectedBeforeDocker(["--f2-recovery", "tests/other.test.ts"], "tcp://127.0.0.1:9", /accepts no external URLs/);
+});

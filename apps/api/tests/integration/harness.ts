@@ -16,6 +16,7 @@ type CoreModules = {
   adminRepository: typeof import("../../src/modules/admin/repository.js");
   authRepository: typeof import("../../src/modules/auth/repository.js");
   identityAudit: typeof import("../../src/modules/auth/identity-audit.js");
+  replicaAudit: typeof import("../../src/modules/signals/replica-audit.js");
   matching: typeof import("../../src/modules/signals/service-matching.js");
   embedding: typeof import("../../src/modules/ai/embedding.js");
   reranker: typeof import("../../src/modules/ai/reranker.js");
@@ -32,6 +33,7 @@ type CoreModules = {
 const coreModulePaths: Record<keyof CoreModules, string> = {
   adminRepository: "modules/admin/repository.js",
   authRepository: "modules/auth/repository.js", identityAudit: "modules/auth/identity-audit.js",
+  replicaAudit: "modules/signals/replica-audit.js",
   matching: "modules/signals/service-matching.js", embedding: "modules/ai/embedding.js",
   reranker: "modules/ai/reranker.js", providerConfig: "modules/ai/provider-config.js",
   app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
@@ -230,16 +232,10 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
         generationWorker = createSignalGenerationWorker(options);
         return generationWorker;
       },
-      logger: { level: "info", stream: { write(line: string) {
-      // Observe only this synthetic local delivery channel in bounded memory.
-      // Do not replace randomness/services or emit codes to stdout/files/HTTP.
-      try {
-        const entry = JSON.parse(line) as { action?: unknown; loginChallengeCode?: unknown };
-        if (entry.action === "auth.login.challenge.request" && typeof entry.loginChallengeCode === "string" && /^\d{6}$/u.test(entry.loginChallengeCode)) {
-          lastLocalLoginCode = entry.loginChallengeCode;
-        }
-      } catch { /* Non-delivery log lines are deliberately discarded. */ }
-    } } } });
+      // Test-only delivery stays in memory, outside the application logger.
+      testLoginChallengeDelivery(delivery) { lastLocalLoginCode = delivery.code; },
+      logger: false,
+    });
     await recordCoreSetupPhase("app-build-complete");
     app.addHook("onSend", async (request, reply, payload) => {
       if (request.method === "POST" && /^\/api\/signals\/?$/u.test(request.url) && reply.statusCode >= 200 && reply.statusCode < 300 && typeof payload === "string") {

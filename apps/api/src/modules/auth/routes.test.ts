@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import Fastify, { type FastifyInstance } from "fastify";
 import { buildApp } from "../../app.js";
 import type { AuthUserRecord } from "./types.js";
 import { AppError } from "../../shared/errors.js";
@@ -9,6 +9,13 @@ const abuseMock = vi.hoisted(() => ({
   consume: vi.fn(), reserve: vi.fn(),
   tokens: [] as Array<{ commit: ReturnType<typeof vi.fn>; refund: ReturnType<typeof vi.fn> }>,
 }));
+beforeAll(async () => {
+  // Warm Fastify's cold internals outside the unchanged 5s behavior budget.
+  const setup = Fastify({ logger: false });
+  setup.get("/setup", () => ({ ok: true }));
+  try { await setup.ready(); await setup.inject({ method: "GET", url: "/setup" }); }
+  finally { await setup.close(); }
+});
 vi.mock("../../shared/abuse-control.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../shared/abuse-control.js")>(), getAbuseGuard: () => abuseMock,
 }));
@@ -618,6 +625,28 @@ describe("auth routes", () => {
       },
     });
     expect(response.json().data.localDelivery).toBeUndefined();
+  });
+
+  it("delivers a synthetic test challenge in memory without logging code, email or request body", async () => {
+    const logs: string[] = [];
+    const deliveries: { code: string; emailHash: string }[] = [];
+    const testApp = await buildApp({
+      logger: { level: "info", stream: { write(line: string) { logs.push(line); } } },
+      testLoginChallengeDelivery: (delivery) => { deliveries.push(delivery); },
+    });
+    app = testApp;
+    const email = "synthetic-private-login@example.com";
+    const response = await testApp.inject({ method: "POST", url: "/api/auth/login", payload: { email } });
+    expect(response.statusCode).toBe(200);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toEqual({ code: response.json().data.delivery.code, emailHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u) });
+    const issued = logs.map((line) => JSON.parse(line)).find((entry) => entry.action === "auth.login.challenge.request");
+    expect(issued).toMatchObject({ loginChallengeMode: "local-log", requestId: expect.any(String) });
+    expect(issued).not.toHaveProperty("loginChallengeCode");
+    expect(issued).not.toHaveProperty("email");
+    expect(logs.join("")).not.toContain(deliveries[0].code);
+    expect(logs.join("")).not.toContain(email);
+    expect(logs.join("")).not.toContain("synthetic-private-login");
   });
 
   it("creates a new frequency identity after code verification and reuses it later", async () => {

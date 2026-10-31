@@ -149,16 +149,20 @@ export async function runFrozenMatchingCase(h: IntegrationHarness, current: Matc
       const response = await request("GET", `/api/signals/${queryId}${suffix}`, reader.cookie);
       expect(response.statusCode).toBe(200);
       const matches = suffix ? response.json().data.matches : response.json().data.signal.matches;
-      if (current.id === "no-suitable-match") expect(matches).toEqual([]);
+      // The older rule-only case needs the explicit reranker to exceed 80.
+      // A GET now refuses that paid dispatch and retains the same threshold.
+      if (["no-suitable-match", "older-rule-only"].includes(current.id)) expect(matches).toEqual([]);
       else expect(matches.length).toBeGreaterThan(0);
       for (const match of matches) {
         expect(match.contentSource).toBe("human"); expect(match.score).toBeGreaterThanOrEqual(80);
         expect(match.scoreProvenance.version).toBe("match-score-v1");
+        expect(match.scoreProvenance.reason).toBe("read_only");
         expect(current.candidates.some((candidate) => candidate.id === match.id && eligible(candidate))).toBe(true);
         for (const key of ["rawInput", "seedText", "frequencyProfile", "authorId"]) expect(match).not.toHaveProperty(key);
       }
     }
     const verification = h.provider.matchDispatches.slice(verificationStart);
+    expect(verification).toEqual([]);
     verificationMeters.push({ queryId: current.id, embeddingCalls: verification.filter((row) => row.kind === "embedding").length,
       rerankerCalls: verification.filter((row) => row.kind === "reranker").length,
       requestBytes: verification.reduce((sum, row) => sum + row.requestBytes, 0) });

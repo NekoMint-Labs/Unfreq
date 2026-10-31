@@ -101,16 +101,22 @@ async function recordAiReview(params: {
 } & AiReviewTarget) {
   await assertGenerationActive();
   try {
+    // The managed operation is assigned by the worker, never inferred from
+    // input text. Old or unscoped calls keep their explicit target/unknown state.
+    const operation = getGenerationExecutionContext()?.auditContext;
+    const execution = operation === undefined ? params.execution : { ...params.execution, operation };
+    const implicitSignalId = params.targetId === undefined && params.targetType === undefined &&
+      operation?.kind === "signal-generation" ? operation.signalId : undefined;
     const review = await createAiReviewRecord({
-      execution: params.execution,
+      execution,
       inputText: params.inputText,
       model: params.execution.model,
       outputJson: toOutputJson(params.output),
       provider: params.execution.provider,
       reviewType: params.reviewType,
       status: params.status,
-      targetId: params.targetId,
-      targetType: params.targetType,
+      targetId: params.targetId ?? implicitSignalId,
+      targetType: params.targetType ?? (implicitSignalId === undefined ? undefined : "SIGNAL"),
     });
     await assertGenerationActive();
     return review;

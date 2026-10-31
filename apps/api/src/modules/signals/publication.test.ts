@@ -423,6 +423,8 @@ describe("public whitelist projections", () => {
     const match = projectPublicMatch({ ...base, score: 90, scoreProvenance });
     expect(match).toMatchObject({ score: 90, scoreProvenance });
     expect(projectPublicSignal({ ...base, matches: match ? [match] : [] })?.matches[0]?.scoreProvenance).toEqual(scoreProvenance);
+    const readOnlyProvenance = { ...scoreProvenance, reason: "read_only" } as const;
+    expect(projectPublicMatch({ ...base, score: 90, scoreProvenance: readOnlyProvenance })?.scoreProvenance).toEqual(readOnlyProvenance);
     expect(JSON.stringify(match)).not.toContain("PRIVATE_");
     for (const score of [-1, 101, 250, NaN, Infinity]) expect(projectPublicMatch({ ...base, score })).toBeUndefined();
     expect(projectPublicMatch({ ...base, score: 90, scoreProvenance: { ...scoreProvenance, secret: "PRIVATE_MODEL" } as typeof scoreProvenance })?.scoreProvenance).toBeUndefined();
