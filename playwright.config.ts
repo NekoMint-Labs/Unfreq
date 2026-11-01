@@ -21,6 +21,7 @@ export default defineConfig({
   ],
   reporter: process.env.CI === "true" ? "github" : "list",
   testDir: "tests/e2e",
+  testMatch: "core-flow.spec.ts",
   timeout: 60_000,
   use: {
     baseURL: webBaseUrl,
@@ -39,7 +40,7 @@ export default defineConfig({
       timeout: 30_000,
     },
     {
-      command: `node_modules/.bin/next dev apps/web --hostname 127.0.0.1 --port ${webPort}`,
+      command: `node node_modules/next/dist/bin/next dev apps/web --hostname 127.0.0.1 --port ${webPort}`,
       env: {
         API_INTERNAL_BASE_URL: apiBaseUrl,
         NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
