@@ -47,3 +47,7 @@
 #2 随后将原 A2 的两项提交重放到该 main，新 Head 为 `3d3dd6ca34dd16d1337d996b8c9b654a77f4ed5b`。range-diff 两项均相同，29 个 A2 文件 blob 不变；两 Cookie 文件与 main 一致。旧/新 A2 完整 diff 的 SHA-256 同为 `eb0802ce03804ccb4dcbfde999f9f243e9abad61a4f59673bfe152089cf53db4`。重排通过精确旧 SHA 的 lease 推送，PR Base 改为 main。
 
 [新 Head 的四项 CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41300135826)全部成功；#2 已转为 Ready for review 并请求独立审批，[接续回复](https://github.com/NekoMint-Labs/Unfreq/pull/2#issuecomment-6557099739)已发布。#2 尚未合并，因此 #6 Ruleset 设置和 #3 的下一轮基线协调仍保留前置条件。v4 候选没有混入 #2。
+
+后续维护者于北京时间 19:25:19 将获批的 #2 squash 合入 main `c80fef65fa9f18a71305569ed5b1ee5e76a7fe61`。#3 的四项文档提交随后重放到该 main，新 Head 为 `39462e716ce4a7837c3519385e8580d06cd0dad6`；八份文档 blob 与完整 delta 均不变，delta SHA-256 为 `02a3e882db0664c632d647d50504c5741650c14f950862b5c7f5ce90636eac1d`。新 Head 的[四项 CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41303531980)成功，已转为 Ready 并请求独立批准，[回复](https://github.com/NekoMint-Labs/Unfreq/pull/3#issuecomment-6557621170)已发布。此前的未合并说明仍保留为阶段记录。
+
+维护者随后设置 #6；[只读验收记录](./ruleset-integration-20261101.md)确认四项检查已在默认分支实际生效，其他可读取配置不变，issue 已关闭。#7 的 v4 候选则在真实 FIN/恢复门禁失败，见[负向评估](./postgres-v4-20261101.md)；未将其升级或补丁删除混入当前实现。
