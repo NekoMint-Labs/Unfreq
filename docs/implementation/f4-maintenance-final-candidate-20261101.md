@@ -1,6 +1,6 @@
 # F4：剩余依赖维护与独立验证候选
 
-日期：2026-11-01。代码基线 `baf41d32609bdfa144a05f192672938759a54795`，候选工作目录为 `test-results/f4-transitive-20261101/`，固定提交 `54cafe5b7668c2e736f2c865e3e115788fa3c8e4`。最终 D 候选已完成干净安装、完整检查和真实 PG/Redis 集成，113 项全部通过；首轮 Linux 镜像在应用构建完成后遇到 Docker 引擎中断，镜像浏览器尚未执行。以下成绩均来自 D 锁及本轮来源，不沿用历史成绩。
+日期：2026-11-01。代码基线 `baf41d32609bdfa144a05f192672938759a54795`，候选工作目录为 `test-results/f4-transitive-20261101/`，固定提交 `54cafe5b7668c2e736f2c865e3e115788fa3c8e4`。最终D已完成干净安装、完整检查、真实PG/Redis集成113/113、新锁完整Linux Web原生/停止/38项浏览器，以及使用精确校验缓存的Linux API开发/生产依赖阶段及探针。网络/引擎失败与缓存准备单列，完整官方audit仍未完成。以下成绩均来自D锁及本轮来源，不沿用历史成绩。
 
 ## 范围与当前状态
 
@@ -68,7 +68,8 @@ ORM `0.45.4` / kit `0.31.11` 可另做同支补丁维护，但不能宣称清除
 | tsx 与 postgres 真实行为 | 两下界的 `.mts` / `.cts` 输入均经 tsx 4.22.0 实际执行，结果与 Node 版本正确。默认 1300ms FIN 诊断分别 76ms / 16ms 结算，客户端/服务端均关闭、无自有 socket；诊断仍保留 `acceptancePassed: false`，不替代应用全套。实际旧驱动 EOF 19/19 成绩来自下述完整集成 |
 | 完整 `npm run check` | 退出 0；工具 77/77、API 767/767、Web 192/192，lint、类型检查、API 构建和 Next webpack 生产构建均通过；101 份输入与 D 锁前后不变 |
 | 最终源下真实 PG/Redis 集成 | `run-2UaXsq`，8 个文件 113/113，failed / pending / todo 均 0；退出 0、未中断、cleaned=true。101 来源 / 83 产物及四文件补丁最终读回相同，自有容器 / 网络 / 卷均为空。覆盖新的 404 期望、原 EOF 预算和来源冻结，不继承旧轮次 |
-| 最终 Linux Web 镜像、平台二进制、停止/清理、38 项镜像浏览器与真实 OG 图片查看 | 干净 `54cafe5` 的首轮实际完成 deps / prod-deps 安装及 Next 生产构建；OCI传输阶段遇到Engine RPC EOF，未产生成品验收成绩，原生探针及38项浏览器未执行。原manifest退出1、cleaned=false；独立来源读回通过，清理与新一轮完整验收接续处理，见下文 |
+| 最终 Linux Web 镜像、平台二进制、停止/清理、38 项镜像浏览器与真实 OG 图片查看 | `a705d3c8ad0fb78f8072b4f2` 38/38通过，失败/跳过/flaky/重试均0，exit0、cleaned=true；实际Linux SWC/sharp/contracts及7项禁带路径通过，direct SIGTERM143/runtime0且无OOM，158来源/冻结副本及12夹具读回一致，自有资源与metadata为空；本轮真实中文和emoji PNG已查看。首轮失败保留，见下文 |
+| Linux API开发/生产依赖安装、旧补丁与TypeScript实际执行 | `5b4c30926677f92094f282ce` 两个阶段及探针通过，exit0、cleaned=true；只预填两份完整SRI校验的原锁字体tarball缓存，原npm参数/ENV/postinstall及失败退出码不变。postgres3.4.9补丁0 applied/4 verified、真实ESM/CJS、tsx4.22.0的.mts/.cts与esbuild0.28.2原生转换通过；没有启动API runner、数据库或应用请求 |
 | 最终锁官方完整审计 | 未完成；已有超时记录，不阻塞其他实际验证 |
 
 主要证据为 `stage-D/npm-ci-run.json`、`npm-ls-all-clean-summary.json`、`native-current-final.json`、`node-boundaries.json`、`check-run.json`、`integration-run.json` 与 `final-verification.json`。完整来源快照为 `source-before-check.json`；集成自身的 manifest、Vitest JSON 和 runtime marker 位于本候选 `test-results/integration/run-2UaXsq/`。最终读回之后才更新本记录的验收文字，运行输入没有随之改动。
@@ -79,9 +80,21 @@ ORM `0.45.4` / kit `0.31.11` 可另做同支补丁维护，但不能宣称清除
 
 独立 API 依赖验证使用同一干净提交、D锁和固定官方 Node index。`1ec4c43551734db178439213` 与 `21b253cf771576543faed120` 两轮均在真实 `npm ci --prefer-offline` 阶段分别约326.6秒、300.1秒出现 `ECONNRESET / network aborted`，尚未执行探针或 prod-deps，不能记作API镜像通过。两轮来源、冻结副本与工具读回相同，manifest和独立读回均确认自有builder容器、状态卷清零。构建输出保留于 `test-results/api-dependency-images-20261101/runs/`；内部npm调试日志随自有缓存卷清理未保留，不能据最后一个成功HTTP请求猜失败包。
 
+第三轮 `fd74b47074a51917ad645644` 仅增加失败时输出本次npm debuglog并返回原退出码的诊断包装，原参数和安装链保持。npm10.9.9/Node22.23.4在约314.1秒出现TLS连接abort，audit bulk已200；未完成计时器只剩两份5.2.9的Noto字体，但日志未将具体socket唯一关联某个包。完整2805行debug和原构建输出保留，不能把两个未完成候选写成已确定的故障URL。原exit1、来源读回和自有资源清理结果分别保留。
+
+据此从主机npm缓存按D锁完整SHA512-SRI流式取出两份官方tarball：noto-serif-sc 86,839,021字节、noto-sans-sc 73,833,077字节，另核SHA256与长度，不联网、不解包、不执行包内容。派生验证Dockerfile仅在两个原npm ci之前各加一条 `network=none` 的只读bind/cache预填RUN，用目标npm自带cacache完整SRI/size验证写入，再byDigest读回；原registry、ENV、npm ci参数、postinstall、诊断退出码和探针字节保持。预填及探针离线，不代表中间原npm安装也断网。两条新增RUN可精确剥离回原诊断版本，所有种子、工具和冻结副本纳入哈希门禁，没有导入完整用户缓存或修改仓库Dockerfile。
+
+最终 `run-5b4c30926677f92094f282ce-vKS76H` 实际通过deps 306.8秒、prod-deps 35.5秒及各自探针；其中真实npm安装分别218.9秒/544包、25.77秒/184包，阶段耗时与安装耗时不混写。两次目标npm10.9.9/cacache19.0.1预填marker均匹配本run/role和两完整SRI，两次原postinstall各applied4/verified4；随后postgres幂等补丁0/4、ESM/CJS、tsx ESM/CJS TypeScript执行、近层esbuild原生转换均通过。manifest于14:45:31 UTC记exit0、cleaned=true，SHA-256为 `0c7c6160bafd78134a20d6fe7199e0deb7b9ead269ae4879cfa4811b1eaeca4d`。最终独立10来源/11工具种子/23冻结输入逐哈希匹配，精确自有容器、卷、应用资源及网络均0，metadata缺席；`independent-readback.json`另存该run目录。此前三次失败不覆盖，不能把本轮写成未使用缓存的冷网络验收或完整API runner镜像验收。
+
 Web首轮 `8dae8b6cc8b6ea82826babb9` 从干净 `54cafe5` 冻结158份Docker输入和12份验证输入，source tree为 `f8d286b2eb6d03def265a9648d378515dd373598405a6b2fb3610faa6c5c440b`。真实deps安装147.9秒，随后prod-deps、Next构建和OCI层导出完成；sending tarball阶段Engine RPC EOF。Docker Desktop状态读回为stopping，docker-desktop WSL实例Stopped；原manifest保留exit1和cleaned=false，builder discovery/readback因服务不可用超时。独立只读核对158份来源、158份冻结副本、12份夹具及原manifest均匹配，不把这个补充读回写回原manifest的sourceVerified字段。
 
 用户随后明确允许恢复全局Docker。官方start/restart未恢复后，只读日志定位后台启动时无法移除 `sailor-ingest.sock`（Windows1920）；单socket为0字节AF_UNIX重解析文件，父目录及祖先没有重解析跳转，后台进程已退出。单文件改名仍失败；核对run目录仅有四个0字节socket后，将 `%LOCALAPPDATA%/Docker/run` 在同目录改名保留为 `run.stale-20261101T132600Z`，创建空run目录，再启动服务。没有删除旧目录、修改ACL、settings、VHD或数据卷。系统此前另有虚拟内存不足事件，不能据此把Docker停止或socket故障的根因判定为已解决。服务恢复、本轮精确资源清理及最终镜像验收的结果继续另记。
+
+随后日志又定位到仅有一个0字节AF_UNIX `engine.sock` 的 `%LOCALAPPDATA%/docker-secrets-engine` 运行时目录；将其完整改名保留后，前一失败启动遗留的两个socket也另存为新的run备份。只停止路径/PID/精确UTC创建时间确认的本次失败启动及错误报告进程，未停止WSL服务。两处运行时均为空后，Docker恢复健康29.7.2。独立恢复脚本严格核对原builder完整ID、镜像、2GiB/3GiB限额、唯一挂载和卷指纹，清理后精确容器/卷/应用容器/网络均0，私有metadata不存在；另写 `recovery-cleanup-independent-2026-11-01T13-49-48-451Z-03514cf8.json`，原manifest及cleaned=false未覆盖。158来源、158冻结副本和12夹具均读回通过。
+
+用户释放内存后，14:04 UTC读回Windows物理可用约5.2GiB、提交可用约6.2GiB，再以同一干净54cafe5运行最终Web镜像。`run-a705d3c8ad0fb78f8072b4f2-HYMei7` 于14:19:14 UTC退出0、cleaned=true，38个测试全部passed且无重试。实际image inspect ID为 `sha256:9011b450dcec3a5a28161964f6e8b5cb9581b0f3577a3a415cd76e0bb674f08b`，revision及sourceTree f8d286b2…与本轮一致；Node22.23.4、BUILD_ID `b4SqipPRKz_3l7gf2myPe`。原生探针与库存一致，外部fetch计数0只覆盖该探针的既定边界，不外推所有系统网络出口。
+
+14:38 UTC独立逐项核对158来源、158冻结副本、12夹具源及6复制夹具哈希；exact run/builder label与精确名称查询确认容器、网络、卷和私有metadata均为空。direct停止143、runtime停止0，均非OOM。root另已实际查看本轮1200×630中文和emoji PNG：标题、正文、页脚完整，长文按分享卡片规则省略；emoji/稀字使用明确标注的`[?]`占位，没有把完整emoji字体覆盖写成通过。Windows宿主Chromium访问Linux服务的范围保持，不构成Linux浏览器、物理设备或生产验收。
 
 ## 主工作区的同源安装与产物刷新
 

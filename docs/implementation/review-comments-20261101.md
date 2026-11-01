@@ -67,3 +67,13 @@
 文档明确默认Caddy会丢弃不受信任的传入XFF，仅配置API CIDR无法恢复已丢弃的访客地址；给出真实生效配置、逐跳地址、双客户端、伪造头和副本一致性的目标环境验收步骤，没有把应用层桩测试当作NPM→Caddy→API实测。共享Redis/DB、namespace、HMAC、策略、fail-closed、缓存音频、owned socket drain及未知PENDING/F1边界均保留。
 
 三份远端文件逐字读回一致，提交差异确为三份文档；[新Head四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41308905465)全部成功，真实集成65/65。#5仍Draft并堆叠#4，[处理回复](https://github.com/NekoMint-Labs/Unfreq/pull/5#issuecomment-6558259986)已读回；父分支整合、最终基线协调及对应新Head检查仍待前置条件，未继承旧绿灯作为合并资格。
+
+## 接续：A3 已合并，B1/B2 已协调并送审
+
+维护者于13:44:02 UTC正式批准#3精确Head `39462e716ce4a7837c3519385e8580d06cd0dad6`（review `5728345726`），13:44:14 UTC合入main `3e145a3c742db761ff6b89108362f280e9c5787c`。此前等待#3的说明是阶段记录，前提现已满足。
+
+#4的11项提交随后在独立分支重放到该main，新Head `b11d5cb6f796de4ea92b14a61800fdcac39e67c0`。range-diff全部相同，56个B1变更路径blob不变，完整old/new delta SHA-256同为 `96f4c9f6ecd3a5998a879c4f23786a0a2bbe8a27503b67036390fec7a5dc93f9`。两Cookie修正与main相同，A3七份文档逐字保留，索引仅原B1两条新增链接，无人工冲突处理。以精确旧Head lease更新#4自己的head分支，Base协调为main，未更新main或#5的head。
+
+[新PR事件CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41314637247)四项全绿，工具14/API268/Web38、真实47/47，新交错回归通过。实际checkout为合并测试引用 `288af810deef3b0d430f4cec18f28891bf09f6dc`，其父为main和b11，tree与b11完全相同；没有把合并引用和Head SHA混写。下载日志确认PG/Redis/网络移除。#4已Ready并请求`onedotmint`独立复核，[协调回复](https://github.com/NekoMint-Labs/Unfreq/pull/4#issuecomment-6559151092)已读回，尚无正式批准或合并。
+
+用户再次要求检查新评论后，实时核对open全集仅#4/#5/#7，没有新增他人顶层评论、正式review或inline thread。#5继续Draft并堆叠#4；其基线协调及新Head检查仍待#4获准合并，不提前重排或继承旧成绩。
