@@ -778,6 +778,39 @@ describe("admin routes", () => {
     );
   });
 
+  it("keeps reviewing signals behind the authorized admin interface", async () => {
+    const testApp = await buildApp();
+    app = testApp;
+    vi.mocked(getAdminSignalSummaries).mockResolvedValueOnce({
+      hasNextPage: false,
+      items: [{ ...adminSignalSummary, status: "REVIEWING" }],
+      limit: 50,
+      total: 1,
+    });
+
+    for (const [token, status] of [[undefined, 401], ["user-token", 403]] as const) {
+      const denied = await testApp.inject({
+        headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+        method: "GET",
+        url: "/api/admin/signals?status=REVIEWING",
+      });
+      expect(denied.statusCode).toBe(status);
+      expect(denied.json()).not.toHaveProperty("data");
+    }
+    expect(vi.mocked(getAdminSignalSummaries)).not.toHaveBeenCalled();
+
+    const allowed = await testApp.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "GET",
+      url: "/api/admin/signals?status=REVIEWING",
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().data.signals.items).toMatchObject([
+      { id: adminSignalSummary.id, status: "REVIEWING" },
+    ]);
+    expect(vi.mocked(getAdminSignalSummaries)).toHaveBeenCalledWith({ status: "REVIEWING" });
+  });
+
   it("lists and updates resonance signals", async () => {
     const testApp = await buildApp();
     app = testApp;

@@ -61,7 +61,7 @@ test("FM login establishes a cookie that survives SSR navigation and reload", as
   await page.getByLabel("密码", { exact: true }).press("Enter");
   await expect(page).toHaveURL(/\/me$/);
   await expect(page.getByRole("heading", { name: "航行日志" })).toBeVisible();
-  const cookie = (await context.cookies()).find((entry) => entry.name === "unfreq_runtime_session");
+  const cookie = (await context.cookies()).find((entry) => entry.name === "unfreq_session");
   expect(cookie?.httpOnly).toBe(true);
   await page.reload();
   await expect(page.getByRole("heading", { name: "航行日志" })).toBeVisible();

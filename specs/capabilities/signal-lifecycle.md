@@ -40,13 +40,14 @@ tags:
 | Generating | `SignalGenerationDetail` (200) | 404 `NOT_FOUND` |
 | Completed private, withdrawn, or unconfirmed row | `OwnerSignalDetail`, `visibility=PRIVATE_OWNER` (200) | 404 `NOT_FOUND` |
 | Confirmed, completed, non-withdrawn `PUBLISHED` | `OwnerSignalDetail` (200) | `PublicSignalDetail`, `visibility=PUBLIC` (200) |
-| Non-withdrawn `REVIEWING` | `OwnerSignalDetail` after completion; generation detail while unfinished (200) | `ReviewingSignalRestrictedDetail` (200) |
+| `REVIEWING`, with or without withdrawal | `OwnerSignalDetail` after completion; generation detail while unfinished (200) | 404 `NOT_FOUND`, with no existence/review metadata |
 | `HIDDEN` / `DELETED` / unknown | 404 `NOT_FOUND` | 404 `NOT_FOUND` |
 
-- Owner match is by `authorId ?? frequencyId` against the authenticated non-banned frequency. Owner responses include current publication actions; unfinished responses remain generation details. A withdrawn reviewing row remains invisible to non-owners.
-- `ReviewingSignalRestrictedDetail` carries only `id`, `status: REVIEWING`, `visibility: REVIEW_RESTRICTED`, and timestamps. It must not include `seedText`, `expandedText`, `rawInput`, `fingerprint`, `program`, matches, audio, save, resonance, or share-card content.
-- Reviewing is **not** 404: clients must be able to show a stable "temporarily not public" state.
+- Owner match is by `authorId ?? frequencyId` against the authenticated non-banned frequency. Owner responses include current publication actions; unfinished responses remain generation details. Every reviewing row is invisible to non-owners.
+- **Historical observation:** the A2 baseline returned `ReviewingSignalRestrictedDetail` (200) with id, review status, `REVIEW_RESTRICTED` and timestamps. This is not the approved target; the legacy DTO/client compatibility branch does not authorize continued public exposure.
+- REVIEWING is 404 for anonymous visitors and every non-owner, without target id, status, timestamps, existence or review metadata. Owners may see their own review status. Administrators use appropriately authorized internal interfaces; their role does not bypass ordinary public-detail restrictions. The [C1 supplemental fix](../../docs/implementation/c1-reviewing-20261101.md) records local route validation and remaining verification limits; it is separate from docs-only PR #3 and does not establish production deployment.
 - Public result, Hall/random, match, galaxy, save, resonance, audio, metadata, and share-card surfaces require current public eligibility and use only the confirmed snapshot whitelist. Neither raw Seed nor full fingerprint/program is part of `PublicSignalDetail`. Version/visibility is rechecked after asynchronous work; stale artifacts cannot restore withdrawn content.
+- Each public response shape must allow only author-confirmed final text, FM display code, explicitly approved display tags, and minimal functional metadata. Original `seedText/rawInput`, complete analysis/fingerprint/frequency profile, sensitive inferred attributes, and internal `frequencyId/guestKey` must not escape via program, shareQuote, summaries, matching, discovery, SSR/metadata or media. Semantic matching and Galaxy classification stay server-side. See [A3 public-response rules](../../docs/data-lifecycle.md#决定-2作者点击发布时究竟同意公开哪些内容); E4's newer preview restrictions and historical confirmed snapshots retain their separate contracts.
 - Web result pages must forward the incoming cookie when server-rendering `/result/:id`, otherwise the owner is treated as anonymous.
 
 ## SIG-004 Matching and embedding
@@ -67,5 +68,5 @@ tags:
 ## Non-goals
 
 - No synchronous wait for AI completion before responding to emission.
-- No public exposure of `DRAFT`, `HIDDEN`, `DELETED`, generating, or preview rows.
+- No public exposure of `DRAFT`, `REVIEWING`, `HIDDEN`, `DELETED`, generating, or preview rows.
 - No risk-radar, translation, or program DTOs from `POST /api/signals`.
