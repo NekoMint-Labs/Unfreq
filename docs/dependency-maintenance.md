@@ -104,4 +104,4 @@ npm 10.9.7 对两补丁候选及 esbuild 候选的原始重写均丢失了基线
 
 全平台虚拟树检查仍返回 1，已单独保留结果，不能写成全部通过。基线可选开发包 `@tailwindcss/oxide-wasm32-wasi 4.3.0`（`cpu: [wasm32]`）要求 `@napi-rs/wasm-runtime ^1.1.4`，却解析到根 `0.2.12`；该问题未由本轮引入。Rolldown 的同类包已有自己的 `1.1.4`，unrs 的 `^0.2.11` 则允许根版本。该 wasm32 父包不属于本轮 Windows x64 / Linux amd64 原生安装目标，本轮保留该虚拟边，不扩充升级组；原候选 esbuild invalid 已消失。实际平台安装后的 `npm ls --all` 与原生加载结果须另外记录。
 
-最终主锁正常 `npm ci` 实装540包、postgres四文件补丁验证通过；Windows平台多余WASM后代经逐个路径/包身份核验后完整保留移出，实际 `npm ls --all` 为exit0、problems为空，SWC/sharp/字体和四套esbuild原生编译通过。完整 `npm run check` exit0，工具41、API765、Web184及两端lint/类型/构建通过。最终官方审计仍28条，见 `f4-peer-final-audit-20261101.json`。Linux完整runner及镜像浏览器成绩待实际结果补录；平台虚拟树、候选、实际安装和成品验收分别记录，不能互相代替。其余测试工具、lint、ORM、3D、字体、运行时及有状态镜像维护组继续按前述边界独立推进。
+最终主锁正常 `npm ci` 实装540包、postgres四文件补丁验证通过；Windows平台多余WASM后代经逐个路径/包身份核验后完整保留移出，实际 `npm ls --all` 为exit0、problems为空，SWC/sharp/字体和四套esbuild原生编译通过。完整 `npm run check` exit0，工具41、API765、Web184及两端lint/类型/构建通过。最终官方审计仍28条，见 `f4-peer-final-audit-20261101.json`。完整Linux runner四次Docker环境失败，尚无成品/镜像浏览器通过成绩，见[补充记录](./implementation/f4-linux-web-runner-20261101.md)；平台虚拟树、候选、实际安装和成品验收分别记录，不能互相代替。其余测试工具、lint、ORM、3D、字体、运行时及有状态镜像维护组继续按前述边界独立推进。

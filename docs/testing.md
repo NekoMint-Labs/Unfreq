@@ -127,7 +127,7 @@ node --test tests/recovery/redis-aof-safety.test.mjs
 
 真实演练 run-d736a665ead0 为19/19，来源及清理核对通过；第二条的参数、所有权及协议安全测试为20/20，其中协议路径使用管道替身，不能代替真实恢复。安全测试已纳入 test:integration-tools，真实演练仍须显式运行，不使普通 check 自动依赖 Docker。三次失败、协议探针及完整证据见[独立实施记录](./implementation/f2-redis-aof-20261101.md)。该范围不验证 API 登录、PostgreSQL/会话签名或生产旧备份的安全衔接，也不授权自动重放旧 AOF。
 
-## 完整 Linux Web 镜像（本轮验收中）
+## 完整 Linux Web 镜像（仍待验收）
 
 ```powershell
 npm run web:image:verify
@@ -135,7 +135,7 @@ npm run web:image:verify
 
 该入口从冻结来源构建 Dockerfile.web 的真实 runner，记录基础镜像、最终成品及 BUILD_ID；探测原生依赖和实际包/许可材料，使用镜像内 Next 与合成 API 验证页面和离线分享图。宿主 Chromium 访问 Linux Web 镜像，不作为 Linux 浏览器或实体设备结论。运行器/OG 的专项结果与完整镜像成绩分别记录，见[本轮实施记录](./implementation/f4-linux-web-runner-20261101.md)。
 
-完整镜像及本轮 source-map-js 1.2.2、baseline-browser-mapping 2.11.34 锁维护仍在验收中，最终结果按当前来源与锁单独保存，不沿用前轮成绩。生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
+本轮 source-map-js 1.2.2、baseline-browser-mapping 2.11.34 和Vite近层esbuild0.28.2已完成正常安装、平台残留保留移出后的完整依赖树、原生加载及全量本地检查（工具41/API765/Web184及两端构建）。完整镜像四轮因Docker环境失败，仍无最终runner/成品探针/37项镜像浏览器的通过成绩；干净来源和失败/清理分别记录，不沿用前轮成绩。先释放本机资源，再继续完整验收。生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
 
 ## CI
 

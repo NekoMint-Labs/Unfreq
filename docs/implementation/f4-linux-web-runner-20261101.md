@@ -68,6 +68,19 @@ OG 针对回归 26/26，Web lint、contracts/Web 类型检查通过，见 og-off
 
 本机普通 Docker 重启还遇到失效 AF_UNIX socket。确认 Docker 已停止、目标目录仅有运行时 socket 后，保留性重命名 LocalAppData 下 Docker/run 与 docker-secrets-engine 为 `.f4-preserved-20261101-web`，再启动已安装的 Docker；未删除数据卷、重置 Docker、修改全局资源配置或升级软件。这不是 RPC EOF 的确定根因。本轮引擎29.7.2、VM约8GB；改为顺序预热 deps/prod-deps 的 cacheonly 输出，仅最终 runner 导入镜像，以减少重复中间镜像导出。所有命令有截止时间，并用本轮无网络无数据的临时进程保持构建期间运行状态。
 
-完整镜像结果在实际运行后记录。
+第三、四轮均从干净提交 `aded0b0be4bb5bcc603479796b967a37c175d88b` 冻结156份Docker输入和10份夹具/运行器输入，两轮构建树SHA256相同：`edde339fd3c7715c622b7ddfdbf1a8d407aa78cc69bb3e497e60cf1417ba6bf9`。没有把先前脏工作区的镜像尝试重新标成本次来源。
+
+| 轮次 | 结果 | 清理读回 |
+| --- | --- | --- |
+| 第三轮 `caa0a218f5329b2ad930c70c` | deps完整541包、postgres4文件补丁及SWC/sharp require门禁通过，cacheonly阶段59.66秒；随后Windows Docker CLI启动报 `out of memory allocating heap arena map`，尚未执行prod-deps | 原manifest仍cleaned=false；CLI恢复后的独立recovery-cleanup.json核对容器/网络均零残留，原记录不改 |
+| 第四轮 `0161e9efb3f5194476b925d8` | deps缓存阶段1.81秒；prod-deps安装约6秒后再遇Engine RPC EOF，未到runner | 引擎恢复后按本轮标签、名称、固定镜像和无网络配置移除1个保持容器，独立读回容器/网络均零；原manifest仍失败 |
+
+第三轮后的宿主快照为提交量28,132,294,656 / 29,992,472,576字节（93%）、物理可用约1.7GB；这是失败后的观测，不是峰值或前两轮EOF的确定根因。后续WSL只读观测还有约7GB可用，未找到能证明这些EOF均为Linux OOM的日志；Engine一度500后恢复29.7.2。记录为 f4-third-host-memory-20261101.json、f4-web-image-third/fourth-20261101.log及各轮manifest/failure/recovery-cleanup。未关闭用户应用、修改分页文件、全局WSL/Docker内存或执行全局清理。
+
+**完整Linux runner仍未验收**：四轮均未产出并启动最终runner，没有本轮最终image ID/BUILD_ID、成品原生二进制探针、37项镜像浏览器、直接停止状态或真实Docker路由PNG的通过成绩。既有26项真实ImageResponse单测、helper样张和普通Next构建不能替代这些结果；最终Docker图仍待实际查看。停止/清理的验证入口已实现，环境失败不视为实现已经通过。
+
+可选后续方案已只读查证，但未创建或运行：Buildx0.36.1支持本轮独立docker-container builder的memory/memory-swap限制，以及worker.oci的max-parallelism=1。[driver](https://docs.docker.com/build/builders/drivers/docker-container/)及[并行配置](https://docs.docker.com/build/buildkit/configure/#max-parallelism)说明其作用；它不能保证修复宿主CLI OOM或所有EOF。该driver会创建privileged容器及独立状态卷，需独立BUILDX_CONFIG、随机名称、固定本机endpoint、不--use、预先确认名称不存在，保存ID/镜像/挂载/限额后只清本轮资源；不能套用本运行器的自有标签清理假设或prune。2GB上限不含宿主CLI/Engine/导入开销，在当前约1.9GB提交余量下未贸然启动冷缓存的第五轮。先释放资源，再决定重试或实现单轮限额；不把这份方案当已实现或验收。
+
+本地代码分为AOF `198df3f` 与Web/依赖/镜像入口 `aded0b0`；最终镜像来源应在下一次实际运行中重新记录。上述原始失败材料均保留。
 
 本轮没有真实账号、Provider、生产服务、数据处置或发布操作。真实数据效果、实机、目标生产部署和 A3 决策仍需各自条件。
