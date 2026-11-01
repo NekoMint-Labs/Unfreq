@@ -21,8 +21,8 @@ Root scripts are the contract (contracts are always built before API/Web work):
 
 ```bash
 npm run contracts:typecheck   # or contracts:build
-npm run api:check             # api:lint + api:typecheck + api:test + api:build
-npm run web:check             # web:lint + web:typecheck + web:build
+npm run api:check             # test:integration-tools + api:lint + api:typecheck + api:test + api:build
+npm run web:check             # web:lint + web:typecheck + web:test + web:build
 npm run check                 # contracts + api + web
 ```
 

@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { createOwnedWebBuilder } from "./web-image-builder.mjs";
+import { assertOwnedWebStop } from "./web-image-stop.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "Usage: node scripts/verify-web-image.mjs\nBuild and verify a fresh, locally owned Linux Web image with synthetic data only.\n";
@@ -13,7 +15,6 @@ const runId = randomBytes(12).toString("hex");
 const labelKey = "com.unfreq.web-image-verification.run";
 const imageTag = `unfreq-web-verify:${runId}`;
 const network = `unfreq-web-${runId}`;
-const awakeImage = "redis:7-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af";
 const fixturePaths = [
   ["tests/e2e/runtime/mock-api.mjs", "runtime/mock-api.mjs"],
   ["tests/e2e/runtime/interpretation-fixture.mjs", "runtime/interpretation-fixture.mjs"],
@@ -34,6 +35,7 @@ let activeChild;
 let interrupted = false;
 let dockerValidated = false;
 let pinnedEndpoint;
+let ownedBuilder;
 let exitCode = 1;
 const manifest = { runId, ownerPid: process.pid, token: randomBytes(24).toString("hex"),
   startedAt: new Date().toISOString(), syntheticOnly: true, hostPlatform: process.platform, hostNode: process.versions.node,
@@ -108,18 +110,22 @@ async function waitHttp(url, predicate) {
   throw new Error("Owned Web image did not become ready.");
 }
 async function stopContainer(id, role) {
-  await inspectContainer(id);
+  const before = await inspectContainer(id);
+  assert.equal(before.State.Running, true, "Owned Web process exited before its stop request");
+  assert.ok(liveContainers.has(id), "Owned Web process was not registered as running");
+  const signal = before.Config.StopSignal || "SIGTERM";
   const started = performance.now();
-  if (liveContainers.has(id)) await docker(["stop", "--time", "15", id]);
+  await docker(["stop", "--time", "15", id]);
   liveContainers.delete(id);
   const value = await inspectContainer(id);
   const logs = await docker(["logs", id]);
   await writeFile(path.join(directory, `${role}.log`), logs.stdout + logs.stderr);
-  manifest.stops.push({ role, elapsedMs: performance.now() - started, exitCode: value.State.ExitCode,
-    oomKilled: value.State.OOMKilled, running: value.State.Running });
-  assert.equal(value.State.Running, false);
-  assert.equal(value.State.OOMKilled, false);
-  assert.equal(value.State.ExitCode, 0, "Owned Web server did not stop cleanly");
+  const record = { role, elapsedMs: performance.now() - started, exitCode: value.State.ExitCode,
+    oomKilled: value.State.OOMKilled, running: value.State.Running, dead: value.State.Dead,
+    error: value.State.Error, stopRequested: true, signal, runningBeforeStop: before.State.Running };
+  manifest.stops.push(record);
+  await save();
+  record.outcome = assertOwnedWebStop(value.State, { role, stopRequested: true, signal });
 }
 
 try {
@@ -133,7 +139,6 @@ try {
   delete env.DOCKER_HOST;
   manifest.dockerVersion = (await docker(["info", "--format", "{{.ServerVersion}}"])).stdout.trim();
   dockerValidated = true;
-  manifest.builder = { command: "docker build", kind: "Docker Engine default", context: contextName };
   await mkdir(path.join(root, "test-results", "web-image"), { recursive: true });
   directory = await mkdtemp(path.join(root, "test-results", "web-image", `run-${runId}-`));
   manifest.sourceCommit = (await run("git", ["rev-parse", "HEAD"])).stdout.trim();
@@ -142,6 +147,7 @@ try {
   manifest.fixtureInputs = {};
   const fixtureBytes = new Map();
   for (const relative of [...fixturePaths.map(([relative]) => relative), "scripts/verify-web-image.mjs",
+    "scripts/web-image-builder.mjs", "scripts/web-image-stop.mjs",
     "playwright.image.config.ts", "tests/e2e/runtime/production.spec.ts", "tests/e2e/runtime/image-only.spec.ts"]) {
     const bytes = await readFile(path.join(root, relative));
     fixtureBytes.set(relative, bytes);
@@ -167,34 +173,23 @@ try {
     await writeFile(path.join(frozen, relative), bytes);
   }
   manifest.sourceTreeSha256 = sha(JSON.stringify(manifest.inputs));
-  // Desktop can enter Resource Saver while only BuildKit tasks are active.
-  // Keep one tiny, owned, networkless process alive without changing settings.
-  try { await docker(["image", "inspect", awakeImage]); }
-  catch (error) {
-    if (!/No such image/i.test(error.stderr ?? "")) throw error;
-    await docker(["pull", "--platform", "linux/amd64", awakeImage], { timeoutMs: 300_000 });
-  }
-  const awake = await docker(["create", "--name", `unfreq-web-${runId}-build-awake`, "--label", `${labelKey}=${runId}`,
-    "--network", "none", "--read-only", "--tmpfs", "/data:rw,nosuid,size=1m", "--entrypoint", "sleep",
-    awakeImage, "3600"]);
-  const awakeId = awake.stdout.trim(); containers.add(awakeId); await inspectContainer(awakeId);
-  await docker(["start", awakeId]); liveContainers.add(awakeId);
-  assert.equal((await inspectContainer(awakeId)).State.Running, true, "Owned build-awake process did not stay running");
-  manifest.buildAwake = { containerId: awakeId, network: "none", lifetimeSeconds: 3600, settingsChanged: false };
   const nodeDescriptor = JSON.parse((await docker(["buildx", "imagetools", "inspect", "node:22-alpine", "--format", "{{json .Manifest}}"], { timeoutMs: 120_000 })).stdout);
   assert.match(nodeDescriptor.digest, /^sha256:[a-f0-9]{64}$/);
   manifest.baseImage = { name: "node:22-alpine", descriptor: nodeDescriptor };
+  ownedBuilder = createOwnedWebBuilder({ docker, env, directory, runId, endpoint: pinnedEndpoint });
+  manifest.builder = ownedBuilder.record;
+  await save();
+  await ownedBuilder.start();
   await save();
   const buildStarted = performance.now();
-  // docker build uses the validated Engine's bundled default builder rather
-  // than a possibly remote, persistently selected buildx builder. The caller's
-  // BUILDX_BUILDER is deliberately absent from the child environment.
+  // The owned container builder caps this run's memory and solver parallelism;
+  // it does not select or reconfigure any persistent user builder.
   manifest.buildStages = [];
   // Prime these real Dockerfile targets sequentially so two clean installs and
   // compilation do not compete on a small local host. Final runner uses them.
   for (const target of ["deps", "prod-deps", "runner"]) {
     const stageStarted = performance.now();
-    const build = await docker(["build", ...(target === "runner" ? ["--load", "--tag", imageTag] : ["--output", "type=cacheonly"]),
+    const build = await ownedBuilder.build([...(target === "runner" ? ["--load", "--tag", imageTag] : ["--output", "type=cacheonly"]),
       "--platform", "linux/amd64", "--target", target,
       "--progress", "plain", "--file", path.join(frozen, "Dockerfile.web"),
       "--label", `${labelKey}=${runId}`, "--label", `org.opencontainers.image.revision=${manifest.sourceCommit}`,
@@ -203,7 +198,6 @@ try {
       "--metadata-file", path.join(directory, `build-metadata-${target}.json`), frozen], { capture: false, timeoutMs: 900_000 });
     await writeFile(path.join(directory, `build-${target}.log`), build.stdout + build.stderr);
     manifest.buildStages.push({ target, output: target === "runner" ? "image" : "cacheonly", elapsedMs: performance.now() - stageStarted });
-    assert.equal((await inspectContainer(awakeId)).State.Running, true, "Owned build-awake process stopped during build");
     await save();
   }
   manifest.buildMs = performance.now() - buildStarted;
@@ -280,6 +274,7 @@ try {
   interrupted = false;
   let cleaned = true;
   if (dockerValidated) {
+    if (ownedBuilder && !await ownedBuilder.cleanup()) cleaned = false;
     // Include resources created before an interrupted CLI acknowledged them.
     try {
       const ids = (await docker(["ps", "--all", "--quiet", "--filter", `label=${labelKey}=${runId}`])).stdout.trim().split(/\s+/).filter(Boolean);
