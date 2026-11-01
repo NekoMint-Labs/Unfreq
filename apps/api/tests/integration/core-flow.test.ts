@@ -264,15 +264,23 @@ async function moderate(id: string, status: ModerationStatus) {
   expect(response.json()).toMatchObject({ data: { signal: { id, status } } });
 }
 
-async function expectNotPublic(id: string, reviewing = false) {
-  for (const cookie of [undefined, reader.cookie]) {
+async function expectPrivateDetail(id: string) {
+  // An administrator must use the authorized internal interface too; the
+  // ordinary detail route never reveals another author's review metadata.
+  for (const cookie of [undefined, reader.cookie, admin.cookie]) {
     const detail = await request("GET", `/api/signals/${id}`, cookie);
-    if (reviewing) {
-      expect(detail.statusCode).toBe(200);
-      expect(Object.keys(detail.json().data.signal).sort()).toEqual(["createdAt", "id", "status", "updatedAt", "visibility"]);
-      expect(detail.json().data.signal.visibility).toBe("REVIEW_RESTRICTED");
-    } else expectError(detail, 404, "NOT_FOUND");
+    expectError(detail, 404, "NOT_FOUND");
+    expect(detail.json()).toEqual({
+      error: { code: "NOT_FOUND", message: "Signal not found." },
+      meta: { requestId: expect.any(String) },
+    });
+    expect(detail.body).not.toContain(id);
+    expect(detail.headers["cache-control"]).toContain("no-store");
   }
+}
+
+async function expectNotPublic(id: string) {
+  await expectPrivateDetail(id);
 
   for (const suffix of ["matches", "echoes", "audio", "audio/main", "audio/left", "audio/right"]) {
     expectError(await request("GET", `/api/signals/${id}/${suffix}`), 404, "NOT_FOUND");
@@ -729,7 +737,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     async (status) => {
       const id = await createDraft();
       if (status !== "DRAFT") await moderate(id, status);
-      await expectNotPublic(id, status === "REVIEWING");
+      await expectNotPublic(id);
       if (status === "DRAFT" || status === "REVIEWING") {
         const own = await request("GET", `/api/signals/${id}`, author.cookie);
         expect(own.statusCode).toBe(200);
@@ -738,6 +746,23 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expectError(await request("GET", `/api/signals/${id}`, author.cookie), 404, "NOT_FOUND");
       }
       if (status === "REVIEWING") {
+        const own = await request("GET", `/api/signals/${id}`, author.cookie);
+        expect(own.json().data.signal).toMatchObject({ visibility: "PRIVATE_OWNER",
+          publication: { state: "REVIEWING", canPublish: false } });
+        const internalUrl = "/api/admin/signals?status=REVIEWING&limit=100";
+        for (const [cookie, expectedStatus, code] of [
+          [undefined, 401, "UNAUTHORIZED"], [reader.cookie, 403, "FORBIDDEN"],
+        ] as const) {
+          const denied = await request("GET", internalUrl, cookie);
+          expectError(denied, expectedStatus, code);
+          expect(denied.json()).not.toHaveProperty("data");
+          expect(denied.body).not.toContain(id);
+        }
+        const internal = await request("GET", internalUrl, admin.cookie);
+        expect(internal.statusCode).toBe(200);
+        expect(internal.json().data.signals.items).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id, status: "REVIEWING", seedText: fixtureSeed }),
+        ]));
         expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       }
     },
@@ -1311,7 +1336,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       expect((await request("GET", `/api/signals/${id}/echoes`)).json().data.echoes).toHaveLength(1);
       await moderate(id, "REVIEWING");
       expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
-      await expectNotPublic(id, true);
+      await expectNotPublic(id);
     });
   });
 
@@ -1808,13 +1833,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expect(await publicationRowHash(row.id)).toBe(before);
         if (current.status === "REVIEWING") {
           expectError(await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie), 409, "CONFLICT");
-          const restricted = await request("GET", `/api/signals/${row.id}`);
-          expect(restricted.statusCode).toBe(200);
-          expect(restricted.json().data.signal).toMatchObject({ id: row.id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED" });
-          for (const key of ["fingerprint", "frequencyProfile", "seedText", "expandedText"]) expect(restricted.json().data.signal).not.toHaveProperty(key);
-        } else {
-          expectError(await request("GET", `/api/signals/${row.id}`, reader.cookie), 404, "NOT_FOUND");
         }
+        await expectPrivateDetail(row.id);
         const [persisted] = await h.sql`select fingerprint_json from signals where id = ${row.id}`;
         expect(persisted.fingerprint_json).toEqual(storedFingerprint);
         expect(await publicationRowHash(row.id)).toBe(before);

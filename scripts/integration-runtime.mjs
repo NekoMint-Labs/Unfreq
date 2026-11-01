@@ -9,11 +9,11 @@ export const runtimeEntryRelative = "apps/api/tests/integration/generation-proce
 export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRelative,
   abuse: "apps/api/tests/integration/abuse-process-fixture.js",
   scheduler: "apps/api/tests/integration/f1-scheduler-process-fixture.js" });
-const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
+const criticalSourceModules = ["db/client", "config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
   "modules/auth/repository", "modules/auth/identity-audit", "modules/signals/scheduler", "modules/signals/service-generated",
   "modules/auth/identity-mirror", "modules/admin/repository",
-  "modules/signals/replica-audit", "plugins/redis",
+  "modules/signals/replica-audit", "modules/signals/generation-repository", "plugins/redis",
   "modules/signals/scheduler-repository", "modules/signals/scheduler-time", "modules/signals/scheduler-types",
   "modules/ai/service", "modules/ai/repository", "modules/ai/provider-execution", "modules/ai/embedding-space", "modules/signals/service-embedding", "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
   "modules/ai/provider", "modules/ai/provider-prompts", "modules/ai/schemas", "modules/ai/expansion-review-rules", "modules/ai/signal-quality-evaluator", "modules/admin/ai-evaluation",
@@ -36,6 +36,8 @@ export const runtimeArtifactPaths = Object.freeze([
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
 export const runtimeSourcePaths = Object.freeze([
+  "package.json", "package-lock.json", "apps/api/package.json",
+  "apps/api/tests/integration/postgres-eof.test.ts", "apps/api/tests/integration/failures.test.ts",
   "apps/api/tests/integration/core-flow.test.ts", "packages/contracts/src/signals.ts",
   "apps/api/tests/integration/provider-stub.ts", "apps/api/tests/integration/matching-evaluation.ts", "apps/api/tests/fixtures/e3-matches.v1.json", "apps/api/tests/fixtures/e3-matches.v1.sha256",
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
