@@ -12,6 +12,9 @@ export const runtimeArtifactPaths = Object.freeze([
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
   "apps/api/src/modules/signals/generation-worker.js",
+  "apps/api/src/modules/signals/service-creation.js",
+  "apps/api/src/modules/signals/repository.js",
+  "apps/api/src/modules/signals/generation-repository.js",
 ]);
 const sourcePaths = Object.freeze([
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
@@ -20,6 +23,11 @@ const sourcePaths = Object.freeze([
   "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts",
   "apps/api/src/shared/generation-execution.ts",
   "apps/api/src/modules/signals/generation-worker.ts",
+  "apps/api/src/modules/signals/service-creation.ts",
+  "apps/api/src/modules/signals/repository.ts",
+  "apps/api/src/modules/signals/generation-repository.ts",
+  "apps/api/tests/integration/generation-harness.ts",
+  "apps/api/tests/integration/generation-checkpoints.test.ts",
   "scripts/integration-runtime.mjs",
 ]);
 const samePath = (left, right) => process.platform === "win32"

@@ -17,7 +17,10 @@ async function fixture(t) {
   const sourceFiles = ["apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
     "apps/api/tests/integration/generation-process-fixture.ts", "apps/api/tests/integration/generation-test-controls.ts",
     "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts", "apps/api/src/shared/generation-execution.ts",
-    "apps/api/src/modules/signals/generation-worker.ts", "scripts/integration-runtime.mjs"];
+    "apps/api/src/modules/signals/generation-worker.ts",
+    "apps/api/src/modules/signals/service-creation.ts", "apps/api/src/modules/signals/repository.ts",
+    "apps/api/src/modules/signals/generation-repository.ts", "apps/api/tests/integration/generation-harness.ts",
+    "apps/api/tests/integration/generation-checkpoints.test.ts", "scripts/integration-runtime.mjs"];
   for (const name of sourceFiles) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), "// synthetic compile input\n");

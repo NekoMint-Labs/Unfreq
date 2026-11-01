@@ -17,7 +17,7 @@ import type { GenerationBootPhase, GenerationCommand, GenerationDiagnostics, Gen
 
 type Sql = ReturnType<typeof postgres>;
 type CaseId = "restart" | "parallel" | "hidden" | "deleted" | "stale" | "failure" |
-  "preclaim" | "predispatch" | "prewrite" | "capacity" | "aba" | "close" | "closeearly" | "retry" | "exhaust";
+  "preclaim" | "predispatch" | "prewrite" | "capacity" | "aba" | "close" | "closeearly" | "retry" | "exhaust" | "admission";
 type Journal = Array<Record<string, string | number | boolean | null>>;
 type PendingReply = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 export type GenerationSession = { id: string; cookie: string };
@@ -218,6 +218,7 @@ export type GenerationHarness = {
   waitHold: (hold: ProviderRequestHold, child: GenerationProcess) => Promise<void>;
   waitIdle: () => Promise<void>;
   holdClaims: () => Promise<{ release: () => Promise<void> }>;
+  holdAdmission: (session: GenerationSession) => Promise<{ reached: () => Promise<void>; release: () => Promise<void> }>;
   waitNoAppConnections: () => Promise<void>;
   waitControl: (child: GenerationProcess, predicate: (state: GenerationControlState) => boolean, label: string) => Promise<GenerationControlState>;
   installDispatchFault: (session: GenerationSession, mode: "twice" | "always") => Promise<void>;
@@ -246,6 +247,7 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
   const ownedIds = new Set<string>();
   const registeredIds = new Set<string>();
   let closeClaimGate: (() => Promise<void>) | undefined;
+  let closeAdmissionGate: (() => Promise<void>) | undefined;
   const secrets = new Set([fixtureSeed, "generation-stub-only", "unfreq_integration_only", runtime.ownershipToken, `generation-session-${nonce}`, `generation-provider-${nonce}`]);
   const journal: Journal = [{ event: "case-created", caseId, databaseName, runId: managed.runId, at: Date.now() }];
   let provider: IntegrationProvider | undefined;
@@ -264,6 +266,9 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
     const attempt = async (work: () => Promise<unknown>, bucket: unknown[] = cleanupErrors) => {
       try { await work(); } catch (error) { bucket.push(error); }
     };
+    // An assertion failure must release a blocked INSERT before asking its
+    // server to finish the admitted request. This never opens a production gate.
+    if (closeAdmissionGate) await attempt(closeAdmissionGate);
     // A deliberate crash stays a crash. Remaining children must instead prove
     // app.close() drained the real worker and all process resources; only a
     // failed shutdown falls back to killing the already-owned PID.
@@ -584,6 +589,54 @@ export async function createGenerationHarness(caseId: CaseId): Promise<Generatio
           await sleep(20);
         } while (Date.now() < deadline);
         throw new Error("Synthetic provider or real generation worker did not settle within the bounded observation window.");
+      },
+      async holdAdmission(session) {
+        if (caseId !== "admission" || closeAdmissionGate || !registeredIds.has(session.id)) {
+          throw new Error("Admission gate requires its registered author and dedicated case.");
+        }
+        // Different from the worker claim key: scans and stop must remain free
+        // to finish while only this author's real INSERT is waiting.
+        await readySql`create table generation_test_admission_target (author_id uuid primary key)`;
+        await readySql`insert into generation_test_admission_target values (${session.id})`;
+        await readySql`create function generation_test_admission_wait() returns trigger language plpgsql as $$
+          begin
+            if NEW.generation_attempt_count = 0 and NEW.generation_status = 'RECEIVED'
+              and exists (select 1 from generation_test_admission_target where author_id = NEW.author_id) then
+              perform pg_advisory_xact_lock(1431193170, 1);
+            end if;
+            return NEW;
+          end $$`;
+        await readySql`create trigger generation_test_admission_wait before insert on signals
+          for each row execute function generation_test_admission_wait()`;
+        const gateClient = postgres(databaseUrl.toString(), { max: 1, prepare: false, connect_timeout: 5,
+          connection: { application_name: `unfreq-b1-gate-${nonce}`, statement_timeout: 2500 } });
+        const reserved = await gateClient.reserve().catch(async (error: unknown) => {
+          await gateClient.end({ timeout: 0 });
+          throw error;
+        });
+        let released = false;
+        const release = async () => {
+          if (released) return;
+          released = true;
+          try { await reserved`select pg_advisory_unlock(1431193170, 1)`; }
+          finally { reserved.release(); await gateClient.end({ timeout: 0 }); }
+        };
+        closeAdmissionGate = release;
+        const [identity] = await reserved<{ name: string }[]>`select current_database() as name`;
+        if (identity?.name !== databaseName) throw new Error("Admission gate database ownership changed.");
+        await reserved`select pg_advisory_lock(1431193170, 1)`;
+        record("owned-admission-gate-held");
+        return { release, async reached() {
+          const deadline = Date.now() + 2_000;
+          do {
+            const [waiting] = await readySql<{ count: number }[]>`select count(*)::int as count from pg_locks
+              where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+                and classid = 1431193170 and objid = 1 and objsubid = 2 and not granted`;
+            if (waiting?.count === 1) { record("admitted-insert-waiting-on-owned-gate"); return; }
+            await sleep(10);
+          } while (Date.now() < deadline);
+          throw new Error("Admitted request did not reach its real INSERT barrier.");
+        } };
       },
       async holdClaims() {
         if (caseId !== "preclaim" || closeClaimGate) throw new Error("Claim gate is restricted to its dedicated checkpoint case.");
