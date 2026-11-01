@@ -39,3 +39,11 @@
 首次上传的文件带 Windows CRLF，GitHub 读回发现 diff 放大；仅替换本轮刚创建的两个提交并以预期 SHA 校验更新，规范为 LF。最终读回 A1 为两处单行修改，A3 为七份 Markdown、63 行新增/34 行删除。最终 CI 对应上述新 SHA，没有沿用被替换提交的成绩。
 
 隔离目录与原始日志保存在本地忽略目录 `test-results/comment-fixes-20261101/`。本轮没有运行生产迁移、部署、真实收费 Provider、硬删除或历史数据处置。独立审批、依次合并、合并后 Ruleset 设置及独立 v4 升级仍按各自前置条件推进；不能把已回复评论解释为这些事项已经完成。
+
+## 接续：A1 已合并，A2 已协调基线
+
+2026-11-01 后续读回确认：`onedotmint` 于北京时间 18:46:39 批准 #1 的精确 Head `c902118d80b4e083720669e978ad38e1db539ff4`，并于 18:46:51 squash 合入 main，合并提交为 `74c15dc4a69e67e838c0c72865a4edcd04f046cf`。前文“尚无审批”描述首次交接时点，不代表本次接续状态。
+
+#2 随后将原 A2 的两项提交重放到该 main，新 Head 为 `3d3dd6ca34dd16d1337d996b8c9b654a77f4ed5b`。range-diff 两项均相同，29 个 A2 文件 blob 不变；两 Cookie 文件与 main 一致。旧/新 A2 完整 diff 的 SHA-256 同为 `eb0802ce03804ccb4dcbfde999f9f243e9abad61a4f59673bfe152089cf53db4`。重排通过精确旧 SHA 的 lease 推送，PR Base 改为 main。
+
+[新 Head 的四项 CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41300135826)全部成功；#2 已转为 Ready for review 并请求独立审批，[接续回复](https://github.com/NekoMint-Labs/Unfreq/pull/2#issuecomment-6557099739)已发布。#2 尚未合并，因此 #6 Ruleset 设置和 #3 的下一轮基线协调仍保留前置条件。v4 候选没有混入 #2。
