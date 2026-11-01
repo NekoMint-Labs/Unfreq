@@ -35,7 +35,7 @@ tags:
 - `GET /api/signals/galaxy?band=<signal_primary_band>` returns `{ points, bandOptions, generatedAt, themeOptions }` and filters to public points by the fixed primary band. `bandOptions` always contains the fixed seven primary bands.
 - Coordinates must be finite numbers; the frontend may normalize them for camera framing but must not compute embedding or semantic layout. The galaxy route must not call AI/embedding/reranker providers just to draw links.
 - `matchIds` reference published ids already present in the same response; clients ignore missing ids rather than fetching or computing matches locally.
-- The API may return an empty `points` array; the frontend must render a truthful empty state. `theme` remains a compatibility display field equal to `frequencyProfile.displayText`; new clients read `frequencyProfile`. `themeOptions` is for older clients only and must not drive new UI.
+- The API may return an empty `points` array; the frontend must render a truthful empty state. **Baseline observation:** `theme` is a compatibility display field equal to `frequencyProfile.displayText`, and baseline clients read `frequencyProfile`; `themeOptions` is for older clients only. **Approved A3 target, pending implementation:** Galaxy classification stays server-side and points expose only explicitly approved display fields and necessary functional metadata under a per-shape allowlist, not the complete fingerprint/profile or sensitive inferred attributes. Existing compatibility fields do not override the [A3 public-response requirements](../../docs/data-lifecycle.md#决定-2作者点击发布时究竟同意公开哪些内容). This docs-only PR does not change the route or client.
 - `/galaxy` is a full-bleed 3D view.
 
 ## ENG-004 Random tuning

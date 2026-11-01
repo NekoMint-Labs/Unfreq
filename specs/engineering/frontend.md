@@ -43,12 +43,12 @@ apps/web/public           PWA icons and static assets
 
 ## FEE-004 Visibility branching
 
-Result pages must branch on `visibility` before reading detail fields:
+Result pages must branch on `visibility` before reading detail fields. The following owner branches reflect the baseline contracts; [approved A3 visibility and public-field rules](../../docs/data-lifecycle.md#5-目标权限与状态转换待实现) govern the subsequent API/client update, which this docs-only PR does not implement:
 
 - `GENERATION_OWNER` → redirect to `/signal/:id/transmitting` (or render generation status there).
 - `PREVIEW_OWNER` → show seed/expanded text and a publish action only; hide matches, playback, resonance, save, and share-card UI until publish returns a `PUBLISHED` `SignalDetail`.
-- `REVIEW_RESTRICTED` → restricted result, no seed/expanded/fingerprint/matches/audio/resonance/save/share fields.
-- `SignalDetail` → the normal public result.
+- Baseline `REVIEW_RESTRICTED` compatibility → restricted result, no seed/expanded/fingerprint/matches/audio/resonance/save/share fields. Retaining a defensive legacy branch does not approve the API returning REVIEWING 200 to non-owners; the target is 404 and the ordinary not-found flow, with no existence/review metadata. Owners see review status privately; authorized administrators use internal interfaces.
+- Public detail → the approved allowlisted public result. Do not require or display the owner's original input, complete fingerprint/profile, or internal identity fields to render public content.
 
 Server-rendered result pages must forward the request cookie to the API so the owner is not treated as anonymous.
 
