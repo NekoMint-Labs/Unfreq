@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 const port = Number(process.env.RUNTIME_API_PORT ?? 4200);
 const webOrigin = process.env.RUNTIME_WEB_ORIGIN ?? "http://127.0.0.1:3200";
 const now = "2026-10-28T00:00:00.000Z";
-const sessionCookie = "unfreq_runtime_session";
+const sessionCookie = "unfreq_session";
 const owner = {
   id: "runtime-owner", code: "FM 78.23", freqCode: "FM 78.23",
   createdAt: now, isGuest: false, role: "USER", status: "ACTIVE",
