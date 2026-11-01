@@ -69,6 +69,8 @@ UNFREQ_PROXY_NETWORK=你的网络名
 
 API 默认不信任 `X-Forwarded-For`。需要按访客 IP 限流时，将 `TRUSTED_PROXY_CIDRS` 配为实际代理链的固定地址/CIDR，并确保这些地址只有代理能使用、入口会覆盖客户端伪造的转发头；不要使用布尔值或跳数。地址留空时，API 按直连代理的 IP 计数，同一代理后的用户会共用 IP 额度。当前 Caddy/NPM 部署应先核实实际转发链，再填写信任范围。
 
+非零额度提案、NPM→Caddy→API 转发头边界及启用前验收步骤见 [B3 pilot 预算与代理链验收边界](./implementation/b3-pilot-boundaries-20261101.md)；其中数值尚未启用，目标环境仍待验收。
+
 ## 为什么这样部署
 
 - Docker Compose 适合单机部署和迁移。
