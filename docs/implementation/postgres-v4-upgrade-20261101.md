@@ -1,6 +1,6 @@
 # postgres.js v4 升级与生命周期补丁候选
 
-批次：2026-11-01；准备记录写于 2026-11-02（北京时间）。基线 `c54f7e4e28d091954231f268665d1f13d9e1320a`，工作目录为 `C:\Users\zrjdx\.codex\worktrees\unfreq-v4-upgrade\unfreq`，对应 [issue #7](https://github.com/NekoMint-Labs/Unfreq/issues/7)。代码候选为提交 `476c89b`；各次成绩按下文的实际日志与输入指纹追溯。本页补齐本轮本地检查、Node下界、首次失败及135/135独立完整重跑；Linux验收尚待结果，当前不能称整个升级完成、已合并或已部署。
+批次：2026-11-01；记录写于2026-11-02（北京时间）。基线为 `c54f7e4e28d091954231f268665d1f13d9e1320a`，工作目录为 `C:\Users\zrjdx\.codex\worktrees\unfreq-v4-upgrade\unfreq`，对应[issue #7](https://github.com/NekoMint-Labs/Unfreq/issues/7)及[PR #8](https://github.com/NekoMint-Labs/Unfreq/pull/8)。代码提交为 `476c89b`，Node/数据库证明提交为 `9fb6ee8`；本地检查、两个Node下界、135/135真实PG/Redis重跑、Linux API依赖阶段及Web成品38/38均已完成。后续提交补CI准备步骤及本记录，具体输入范围见下文；这不表示已经合并main或部署。
 
 ## 候选范围与锁
 
@@ -33,6 +33,8 @@ cdf351ca90d8d3325c349c16abefa71e35327d8aabd07a78ec3dfab16b64b3b4
 | 两个 Node 下界 | `20.19.0`、`22.12.0` 各通过幂等0/2、模块2/2、原生工具、17项TCP诊断、离线generate、Vitest 6/6 | 本轮C安装树与日志；协议诊断是合成端点，不是真实PG验收 |
 | 首次完整真实 PG/Redis | 88通过、47跳过/135；exit1、cleaned=true | core初始化hook超过30000ms，整套未通过，原失败保留 |
 | 独立完整真实 PG/Redis 重跑 | 135/135，8文件；exit0、cleaned=true，无失败/跳过/todo | 同源、同锁、原预算，108份来源前后不变；独立项目资源读回均为0 |
+| Linux API依赖阶段 | deps/prod-deps及模块/TypeScript探针均通过，exit0、cleaned=true | 仅真实Dockerfile.api依赖阶段，不含完整API runner、数据库启动或应用请求 |
+| Linux Web成品 | 浏览器38/38、无跳过/重试/flaky；原生探针、停止、来源与清理通过 | Linux amd64服务，主机Chromium访问；合成夹具，不代表Linux浏览器、物理设备或真实模型质量 |
 | 最终锁完整官方 audit | exit1，完整报告为20条 moderate | exit1表示仍有告警；本轮报告已完整生成，不是超时或审计零告警 |
 
 补丁与 TCP 的本地准备材料在候选工作区被忽略的 `test-results/v4-lifecycle-patch-20261101/`。最终安装、全部检查、来源冻结和资源收尾应记录各自实际命令及输入，不能仅凭本表摘要或旧目录名称签收整套候选。
@@ -63,6 +65,20 @@ Node 下界阶段于 `2026-11-01T15:58:28.505Z` 至 `16:00:16.400Z` 执行，16�
 
 同源无改动的第二次完整运行已通过：`run-Z8LGD3 / unfreq-it-a9ded2fc5068`，外层命令于 `2026-11-01T16:24:11.961Z` 至 `16:33:18.501Z` 执行，原运行器实际8文件、135/135，失败/跳过/todo均为0，exit0、cleaned=true，未触发外层超时。日志与108份来源前后清单位于 `E:\unfreq\test-results\v4-real-integration-rerun-20261102\`；来源变化为空，锁仍为cdf351ca…，runtime保留83份编译产物。结束后独立读回该项目容器、网络、卷均为0。原30000ms hook、1800ms失败预算、同池恢复和副作用断言没有改变；第二次通过没有覆盖第一次失败记录。
 
+## Linux依赖与Web成品
+
+两个运行均以干净 `9fb6ee8129c3b4d5cf912cae496559cfe408915d` 执行，锁仍为cdf351ca…。API依赖证据在 `E:\unfreq\test-results\api-cache-seed-v4-20261102\runs\run-c7e41ee21c733688970366c9-4qYeQN\`：原Dockerfile.api的deps/prod-deps实际安装均应用新补丁2/2，离线探针再次验证0/2；Node22.23.4、Alpine3.24.3，真实ESM与CommonJS默认函数及index入口相同，两目标hash正确，tsx4.22.0的.mts/.cts和esbuild0.28.2原生转换通过。两份官方字体整包只预填本轮私有npm缓存，完整SRI校验，原npm命令及postinstall保留；依赖输入、工具和冻结副本前后核对通过，exit0、cleaned=true。这不是完整API runner验收。
+
+Web证据为候选 `test-results/web-image/run-876dc359ed169e6e5dad38d9-dgl4vJ`，外层于 `2026-11-01T17:00:00.280Z` 至 `17:11:12.861Z` 执行。成品为Linux amd64，image `sha256:63f3dc5dd74ebfdeed9e897cd2951a331de5cf5659533a2349b5b4537493af76`，Node22.23.4，BUILD_ID为 `r_8MDCywxYhLIA45SjwMe`。38项浏览器测试全部通过，无跳过、重试、flaky；SWC musl原生加载、sharp PNG及contracts运行导入通过。158份Docker COPY输入、12份验证输入及其副本前后核验通过，外层另核108份运行来源无变化。实际查看新中文/表情分享PNG，中文正常，缺字/表情明确以[?]及页脚说明呈现，未改分享原文。Next全局fetch的外部请求记录为0；该guard不等同于操作系统出口防火墙。
+
+两个Web进程停止前均在运行，实际SIGTERM后direct为143、runtime为0，均无OOM、dead或运行错误；最终exit0、cleaned=true。日志在 `E:\unfreq\test-results\v4-linux-web-20261102\`，独立读回按本轮标签核对容器、网络、卷及私有builder清理。此前Docker重启遇3个残留零字节AF_UNIX文件，先逐个核对类型/进程身份，再完整保留原运行目录并恢复服务；没有把环境恢复当作应用验收。
+
+## 独立Web CI准备修正
+
+[首个PR运行41328595284](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41328595284) 对应head9fb6、实际checkout merge `f1293a546d1a9720c14effcd88966a43a1f0c27a`，tree与head均为 `0b3b450d371fc8e216c3b5209143ec84fe951a7f`。部署脚本、API工具79/API767和Linux真实集成135/135通过；独立Web job执行106项后5个suite在导入 `@unfreq/contracts` 时失败，未完成Web192或Next构建。原始日志保留于 `E:\unfreq\test-results\pr8-ci-readback-41328595284-20261102\`。
+
+基线同样缺少这个前置步骤：contracts的types指向src而运行时exports指向dist，独立Web job的typecheck不会生成dist。本地完整check先执行API构建，因此没有暴露独立job的准备缺口。本批仅在CI矩阵的Web分支、测试前增加真实 `npm run contracts:build`，保留全部测试和预算；四份manifest、lock、108份运行来源及158份Docker输入均不改。当前CI结果以[PR #8 Checks](https://github.com/NekoMint-Labs/Unfreq/pull/8/checks)为准，不覆盖首次失败，也不把源码/平台成绩扩大为生产验收。
+
 ## 最终锁的独立完整 audit
 
 本轮使用官方 npm `11.19.1`，于 `2026-11-01T15:26:17.822Z` 至 `15:26:37.384Z` 独立运行完整 audit，约19.6秒。报告在本机：
@@ -79,11 +95,11 @@ E:\unfreq\test-results\full-audit-20261101\final-v4\
 
 本次 audit 只冻结并读回 lock、root/API/Web/contracts 四份 manifest、npm CLI 与配置指纹，命令前后无漂移。在该次audit期间，应用源码、安装器和补丁仍在并行修改，**该audit没有冻结或证明全部源码未变**。audit 不检验新补丁行为；后续交付仍须重新读回最终输入。
 
-## 后续验收与记录方式
+## 交付与回退边界
 
-以下项目尚待主执行者完成本轮运行或最终读回，不在本准备记录中写成通过：
+PR #8以尚未整合main的维护分支为基线，便于独立审查本轮驱动变更；基线整合、新补丁独立审查及main合并状态须分别确认。完整audit的20条moderate残留没有被宣称清零。
 
-- 两个 Dockerfile 的开发/生产依赖阶段和最终 Linux 成品：记录真实 Node、musl SWC/sharp、补丁读回、锁与来源、停止/清理结果。静态 COPY 或 Windows 成功不代替 Linux 运行。
-- 成组回退：manifest、lock、驱动选项、安装器/补丁和 Docker 接线一起处理，保留 FIN/恢复行为回归。没有生产数据迁移或生产配置操作。
+- 主目录同步与构建读回使用忽略目录 `E:\unfreq\test-results\root-v4-finalize-20261102\` 下的独立收尾工具，记录其实际clean提交、安装、原生加载、构建和来源/产物映射。C候选的135项成绩不冒充E主目录重新执行的成绩。
+- 成组回退须把manifest、lock、驱动选项、安装器/补丁和Docker接线一起恢复，并保留FIN/恢复回归；旧基线及其独立证据仍保留。本轮没有生产数据迁移、生产回退或生产配置操作。
 
 最终运行须另记精确提交或源文件指纹、lock、补丁输入/输出、实际计数、未执行项、失败、退出及清理。生产迁移、部署、真实模型质量与费用均不由本候选准备记录推出；issue #7保持未完成，直到其验收条件实际满足。

@@ -1,6 +1,6 @@
 # PostgreSQL 驱动 v4 与连接生命周期补丁
 
-本页描述 `postgres@4.0.0` 的新候选，实施状态见[本轮记录](./implementation/postgres-v4-upgrade-20261101.md)。候选仍带项目维护的两文件补丁；旧 3.4.9 安装器及四文件补丁已经在本候选退役，历史问题和当时成绩保留在[旧补丁说明](./postgres-startup-patch.md)。新候选的完整本地检查和两个 Node 下界检查已经通过；首次完整 PG/Redis 运行因 core 初始化 hook 超时未通过，同源完整重跑及 Linux 安装仍待结果。
+本页描述 `postgres@4.0.0` 升级候选，实施状态见[本轮记录](./implementation/postgres-v4-upgrade-20261101.md)。候选仍带项目维护的两文件补丁；旧3.4.9安装器及四文件补丁已经退役，历史事实保留在[旧补丁说明](./postgres-startup-patch.md)。本地检查、两个Node下界、独立真实PG/Redis重跑135/135和Linux依赖/镜像验收已通过；首次冷初始化失败仍保留。候选的审查、基线整合与合并状态见[PR #8](https://github.com/NekoMint-Labs/Unfreq/pull/8)，本页不表示已升级main或已部署。
 
 ## 上游依据与本地补充
 
@@ -45,7 +45,7 @@ sha512-kBh8qXtcvvIAc00DftQyOxz7M/3Zxww1tRMXZPLzipNXXl5PIzHml+9zB3Mrge2U8ldc0WF1Z
 
 安装器先核验全部输入和计算出的输出，再逐文件写临时文件并重命名。已知修补状态只验证，已知原始/修补混合状态可以补齐；未知版本、integrity、上下文或内容一律失败。逐文件重命名不是跨文件磁盘事务，中途 I/O 失败必须保留失败，不能忽略错误启动应用。
 
-两个 Dockerfile 的开发与生产依赖安装阶段，以及镜像/集成来源清单，已改为引用这组新资产；这只是接线状态，Linux 安装与成品检查仍须实际运行。`--ignore-scripts` 会跳过补丁，不能把这样的安装当作本候选正常安装。
+两个Dockerfile的开发与生产依赖阶段均已实际安装并核对新补丁。Web另完成Linux成品及38项浏览器验收；API的Linux证据仅含依赖阶段和模块/TypeScript探针，不含完整API runner。`--ignore-scripts` 会跳过补丁，不能把这样的安装当作本候选正常安装。
 
 ## 当前证据与待验收范围
 
@@ -55,6 +55,8 @@ sha512-kBh8qXtcvvIAc00DftQyOxz7M/3Zxww1tRMXZPLzipNXXl5PIzHml+9zB3Mrge2U8ldc0WF1Z
 
 两个 Node 下界各通过安装器幂等 `applied=0 / verified=2`、真实 ESM/CommonJS/Drizzle 模块2/2、Vite 转换、Rolldown 打包、SWC 原生加载、sharp PNG、tsx `.mts/.cts` 转换及 Vitest 6/6。tsx 为 `4.22.0`，其与 Vitest/Vite 的近层 esbuild 为 `0.28.2`，根 esbuild 保持 `0.25.12`。各下界的17项 TCP 诊断使用与当前安装包18文件哈希一致的独立副本，仍是合成协议测试。两次离线 Drizzle generate 的 SQL 均为 `a166434616d599d56090d463e90fbceaaa3d48b4f1148bce5707f497f2897d77`，既有迁移未改。本轮 `boundary-phase-summary.json` 的 SHA256 为 `221881d7006b97d4ae273f2392b5b44cdbb21a3a0dabc1ece9f4e6c51cfbd01e`，路径及二进制哈希见[实施记录](./implementation/postgres-v4-upgrade-20261101.md)。
 
-首次完整真实 PG/Redis 运行 `run-u3gw8N / e0cb6725b23d` 为135项中88通过、47跳过，exit1、cleaned=true。core 的 `beforeAll` 超过原30000ms，47项未执行；该次失败原样保留。同源无改动完整重跑 `run-Z8LGD3 / a9ded2fc5068` 实际135/135、无失败/跳过/todo，exit0、cleaned=true。两次108份来源均未变，83份编译产物保留在各自marker；独立容器、网络、卷读回均为0。原 FIN/RST、类型加载、健康池排队、同池恢复、预留/事务、错误类别和旧注册无晚写断言均保留，未放宽预算；Linux依赖/镜像门禁仍待完成。
+首次完整真实 PG/Redis 运行 `run-u3gw8N / e0cb6725b23d` 为135项中88通过、47跳过，exit1、cleaned=true。core 的 `beforeAll` 超过原30000ms，47项未执行；该次失败原样保留。同源无改动完整重跑 `run-Z8LGD3 / a9ded2fc5068` 实际135/135、无失败/跳过/todo，exit0、cleaned=true。两次108份来源均未变，83份编译产物保留在各自marker；独立容器、网络、卷读回均为0。原 FIN/RST、类型加载、健康池排队、同池恢复、预留/事务、错误类别和旧注册无晚写断言均保留，未放宽预算。
 
-[旧 v4 负评](./implementation/postgres-v4-20261101.md) 中的 100/119 与 16 项 EOF/恢复失败仍有效对应当时的无本轮补丁候选。新候选没有覆盖、删除或重新标记那些失败；是否解决须由新的独立运行回答。
+Linux API依赖运行 `c7e41ee21c733688970366c9` 的deps/prod-deps及离线探针均通过；Web运行 `876dc359ed169e6e5dad38d9` 的38项浏览器检查无跳过、重试或flaky，原生SWC/sharp、停止及来源读回通过，两个运行均exit0、cleaned=true。完整audit仍为20条moderate依赖记录；扫描完成不等于告警清零。精确范围、来源和独立CI准备修正见实施记录。
+
+[旧 v4 负评](./implementation/postgres-v4-20261101.md) 中的100/119与16项EOF/恢复失败仍对应当时没有本轮补丁的候选。上述新来源、新运行独立验证了本轮修正，没有覆盖、删除或重新标记旧失败。

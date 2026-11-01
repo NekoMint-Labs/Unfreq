@@ -74,9 +74,9 @@ node tests/integration/reproduce-postgres-eof.mjs
 
 这个诊断只创建并连接自有 loopback FIN 端点，不接触任何既有服务。在观察窗口内仍 pending 时退出码为 1，并明确输出 `not-fixed`；它不把预期挂起当作成功。它只是驱动诊断，不代替 API 恢复验收；完整 EOF 回归在默认集成套件中，不被跳过。
 
-当前候选由 root `postinstall` 调用 `scripts/apply-postgres-lifecycle-patch.mjs`，核对精确4.0.0、lock SRI及 `pool.js/index.js` 两文件的输入/输出 SHA256。ESM原生默认导入与CommonJS `.default` 接入各自保留真实Node模块回归，四连接工厂显式 `infer: true`。未知版本、integrity或源码漂移拒绝安装；已知修补状态只验证。两个Dockerfile已接同一新安装器，实际Linux安装仍须单独验收；`--ignore-scripts` 会跳过补丁，不能记为本候选正常安装。
+当前候选由 root `postinstall` 调用 `scripts/apply-postgres-lifecycle-patch.mjs`，核对精确4.0.0、lock SRI及 `pool.js/index.js` 两文件的输入/输出 SHA256。ESM原生默认导入与CommonJS `.default` 接入各自保留真实Node模块回归，四连接工厂显式 `infer: true`。未知版本、integrity或源码漂移拒绝安装；已知修补状态只验证。两个Dockerfile使用同一新安装器，已分别实际验收Linux开发/生产依赖阶段；`--ignore-scripts` 会跳过补丁，不能记为本候选正常安装。
 
-新增验证必须覆盖当前未发送冷启动批次的终结、类型加载迟到结果失效、健康连接占用时继续正常排队，以及同一个pool恢复后的新工作。健康队列不新增全局期限，已经发送的SQL、事务回调和旧注册不能被盲目重放；未知COMMIT结果仍需业务栅栏处理。自有TCP诊断17/17仅为准备证据，原FIN/RST、预留/事务、两槽五路和真实API无迟到写入断言仍在真实集成中执行。本轮完整检查工具79/API767/Web192及两端lint/类型/构建已经通过，选定108份来源无变化；真实PG/Redis正在另起运行，Node下界和Linux仍待各自最终读回。具体来源及成绩见[新候选记录](./implementation/postgres-v4-upgrade-20261101.md)，旧119项负评及A2记录不改写。
+新增验证必须覆盖当前未发送冷启动批次的终结、类型加载迟到结果失效、健康连接占用时继续正常排队，以及同一个pool恢复后的新工作。健康队列不新增全局期限，已经发送的SQL、事务回调和旧注册不能被盲目重放；未知COMMIT结果仍需业务栅栏处理。自有TCP诊断17/17不代替真实数据库验收。本轮工具79/API767/Web192及两端lint/类型/构建通过，两个Node下界通过；真实PG/Redis独立完整重跑135/135、Web Linux成品浏览器38/38均exit0、cleaned=true，原预算及来源保护保留。首次冷初始化失败与旧119项负评原样保留。独立Web CI在测试前另执行contracts构建，避免依赖其他job或旧dist。具体范围见[新候选记录](./implementation/postgres-v4-upgrade-20261101.md)。
 
 ## 浏览器与部署脚本
 
