@@ -157,7 +157,7 @@ try {
 
   const allPaths = (await run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).stdout.split("\0").filter(Boolean);
   const paths = [...new Set(allPaths)].filter((relative) =>
-    [".dockerignore", "Dockerfile.web", "package.json", "package-lock.json", "apps/api/package.json", "scripts/apply-postgres-startup-patch.mjs"].includes(relative) ||
+    [".dockerignore", "Dockerfile.web", "package.json", "package-lock.json", "apps/api/package.json", "scripts/apply-postgres-lifecycle-patch.mjs"].includes(relative) ||
     /^(apps\/web\/|packages\/contracts\/|patches\/)/.test(relative)).sort();
   assert.ok(paths.length > 20);
   manifest.inputs = {};

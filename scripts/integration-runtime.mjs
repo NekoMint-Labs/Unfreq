@@ -36,6 +36,9 @@ export const runtimeArtifactPaths = Object.freeze([
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
 export const runtimeSourcePaths = Object.freeze([
+  "scripts/apply-postgres-lifecycle-patch.mjs", "patches/postgres-4.0.0-lifecycle.json",
+  "patches/postgres-4.0.0-lifecycle.patch", "tests/integration/postgres-module.test.mjs",
+  "node_modules/postgres/package.json", "node_modules/postgres/src/pool.js", "node_modules/postgres/src/index.js",
   "package.json", "package-lock.json", "apps/api/package.json",
   "apps/api/tests/integration/postgres-eof.test.ts", "apps/api/tests/integration/failures.test.ts",
   "apps/api/tests/integration/core-flow.test.ts", "packages/contracts/src/signals.ts",

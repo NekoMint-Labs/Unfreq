@@ -34,6 +34,7 @@ export function createSignalAudioRepository(options: {
     throw new Error("Invalid audio repository configuration.");
   }
   const client = postgres(env.databaseUrl, {
+    infer: true,
     prepare: false, max: options.maxConnections ?? 2,
     connect_timeout: Math.ceil(env.healthDependencyTimeoutMs / 1000),
     connection: { application_name: "unfreq-audio-worker", statement_timeout: options.statementTimeoutMs,

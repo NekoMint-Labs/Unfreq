@@ -1,0 +1,24 @@
+{
+  "package": "postgres",
+  "version": "4.0.0",
+  "integrity": "sha512-kBh8qXtcvvIAc00DftQyOxz7M/3Zxww1tRMXZPLzipNXXl5PIzHml+9zB3Mrge2U8ldc0WF1ZdLp1iYQi7Kh3A==",
+  "policy": "Fail only the current unsent cold acquisition cohort on startup/type-load failure; preserve raw pool recovery, error classes, healthy queue waiting and non-replay of sent work.",
+  "references": [
+    "https://github.com/porsager/postgres/commit/e417a83657154da57030ed615058b27c9a904a4e",
+    "https://github.com/porsager/postgres/commit/00dd3164c40914ab0904efe8ef2f722c3bd0d2b3",
+    "https://github.com/porsager/postgres/commit/2e52628f2c88b790e86006e238b26779625e567c"
+  ],
+  "localSupplement": "A connection/type-readiness cohort owns its timer, startup signals and load token. Failure removes unsent jobs before closing owned resources, clears stale retry rejection state, and rejects late results. No new healthy queue timeout, callback/SQL replay, zero backoff, or Proxy API adapter.",
+  "files": [
+    {
+      "path": "src/pool.js",
+      "originalSha256": "10370ac8bdb8edfcbe27aa7c1899c1213120a8b43ffda678058793c545b103b3",
+      "patchedSha256": "9510e4621492e8c37f4dc9dd9fc59ddba1da7b18851f9da6cefcb14776ce8426"
+    },
+    {
+      "path": "src/index.js",
+      "originalSha256": "ec9c3c98b32c7d324fe2ce401b8d7c14e69458afb184ffbb8c833ef8a9e4eb31",
+      "patchedSha256": "b11ef8f52c4c52255bc32f66b48c7bd5fa65bcbf556e3ff5678335cda8d7a502"
+    }
+  ]
+}
