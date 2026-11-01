@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import sharp from "sharp";
 import { getLocalOgTypography } from "../../../../lib/og-local-fonts";
 
 const findSignal = vi.hoisted(() => vi.fn());
@@ -24,6 +26,15 @@ function expectAtomicCardText(text: string) {
   expect(withoutPlaceholders).not.toContain("]");
   expect(Array.from(text).some((character) => character.length === 1 &&
     character.charCodeAt(0) >= 0xd800 && character.charCodeAt(0) <= 0xdfff)).toBe(false);
+}
+
+async function brightPixels(png: Buffer, region: { left: number; top: number; width: number; height: number }) {
+  const { data, info } = await sharp(png).extract(region).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let count = 0;
+  for (let index = 0; index < data.length; index += info.channels) {
+    if (data[index]! > 110 && data[index + 1]! > 110 && data[index + 2]! > 110) count += 1;
+  }
+  return count;
 }
 
 beforeEach(() => {
@@ -88,6 +99,41 @@ describe("offline share-card typography and publication gates", () => {
     expect(syntheticSignal).toEqual(original);
     expect(blockedOutbound).not.toHaveBeenCalled();
     expect(errors).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it.each([
+    { id: "long-chinese", text: "这是一段用于验证移动阅读的合成表达，需要完整显示并可以向下滚动。".repeat(30), substituted: false },
+    { id: "long-emoji", text: "🙂".repeat(100), substituted: true },
+    { id: "exact-chinese-budget", text: "文".repeat(126), substituted: false },
+    { id: "unbroken-latin-budget", text: "W".repeat(126), substituted: false },
+  ])("keeps the complete footer and safe text boundaries in a real PNG: $id", async ({ id, text, substituted }) => {
+    const source = { ...syntheticSignal, expandedText: text };
+    const original = structuredClone(source);
+    findSignal.mockResolvedValue(source);
+    const typography = await getLocalOgTypography();
+    expectAtomicCardText(typography.formatCardText(text).text);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const png = Buffer.from(await (await GET(request(), context())).arrayBuffer());
+    expect(source).toEqual(original);
+    // Compare actual footer pixels to a short card with the same notice. A
+    // matching blank crop alone would miss a footer that was hidden entirely.
+    findSignal.mockResolvedValue({ ...syntheticSignal, expandedText: substituted ? "短文🙂" : "短文" });
+    const reference = Buffer.from(await (await GET(request(), context())).arrayBuffer());
+    const footer = { left: 76, top: 536, width: 1048, height: 40 };
+    expect(await sharp(png).extract(footer).raw().toBuffer()).toEqual(await sharp(reference).extract(footer).raw().toBuffer());
+    expect(await brightPixels(png, { left: 76, top: 536, width: 650, height: 40 })).toBeGreaterThan(200);
+    expect(await brightPixels(png, { left: 108, top: 206, width: 1016, height: 282 })).toBeGreaterThan(1000);
+    expect(await brightPixels(png, { left: 0, top: 0, width: 1200, height: 40 })).toBe(0);
+    expect(await brightPixels(png, { left: 76, top: 500, width: 1048, height: 26 })).toBe(0);
+    expect(await brightPixels(png, { left: 0, top: 590, width: 1200, height: 40 })).toBe(0);
+    expect(findSignal).toHaveBeenCalledTimes(4);
+    expect(blockedOutbound).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
+    if (id === "long-chinese" || id === "long-emoji") {
+      const directory = new URL("../../../../../../../test-results/og-layout-20261101/", import.meta.url);
+      await mkdir(directory, { recursive: true });
+      await writeFile(new URL(`${id}.png`, directory), png);
+    }
   }, 15_000);
 
   it.each([

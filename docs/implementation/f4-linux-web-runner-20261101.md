@@ -16,7 +16,7 @@
 npm run web:image:verify
 ```
 
-运行器只接受无参数或 --help，拒绝调用者指定 URL、镜像、项目及资源。它核验本机 Docker endpoint 并固定到该端点，使用 Docker Engine 默认构建器，避免持久选中的 buildx 构建器把上下文传到其他环境。[Docker 官方说明](https://docs.docker.com/build/builders/#difference-between-docker-build-and-docker-buildx-build)区分这两种默认选择。
+运行器只接受无参数或 --help，拒绝调用者指定 URL、镜像、项目及资源。它核验本机 Docker endpoint 并固定到该端点。前五轮使用 Docker Engine 默认构建器；接续提交改用显式指定 endpoint 和独立 BUILDX_CONFIG 的本轮限额构建器，具体资源及清理规则见后文。两者均不接受用户持久选中的任意 builder。[Docker 官方说明](https://docs.docker.com/build/builders/#difference-between-docker-build-and-docker-buildx-build)区分默认构建器的选择行为。
 
 从 Dockerfile 所需来源冻结构建上下文，排除工作区 node_modules、.next、环境文件与测试结果。记录来源提交、工作区状态、每个实际输入及树哈希。Dockerfile 新增 NODE_IMAGE 参数，默认仍为 node:22-alpine；验证时解析官方索引 digest 并固定同一基础镜像，构建真实 runner 阶段和默认 /api 浏览器配置。构建产物、基础索引、最终镜像 ID 与 BUILD_ID 分别记录，不混写标识类型。
 
@@ -30,7 +30,7 @@ npm run web:image:verify
 
 成品材料记录实际 Node/Alpine 包版本、包清单及包根 LICENSE/NOTICE/COPYING 等文件和哈希。现有生产安装覆盖整个 workspace，镜像不是仅含 Web 依赖的最小镜像，悬空的 API workspace 链接如实记录。清单不覆盖全部内嵌资产、系统库许可或分发义务，不是完整 SBOM 或法律合规结论。
 
-每次结果写入 test-results/web-image/run-<随机>/。容器与网络清理前按本轮随机标签核对，结束后再次检查残留；镜像、冻结上下文、许可材料和构建缓存保留，便于复核，不全局清理。
+每次结果写入 test-results/web-image/run-<随机>/。应用容器与网络清理前按本轮随机标签核对，结束后再次检查残留；限额 builder 的容器和卷使用后文的独立归属核验。镜像、冻结上下文和许可材料保留，便于复核；新 builder 的私有缓存随本轮 state 卷移除，前五轮默认构建器的缓存不做全局清理。
 
 fetch 夹具还强制 `redirect: error`，防止获准回环地址的 30x 在原生 fetch 内跟随到其他地址而绕过计数。Node 内置回归实际启动两个拥有的回环服务，四种 string/Request/options 写法均收到 302，但目标服务命中为零；本地 API 与 data: 仍可读取。拒绝记录只有固定计数，不接收 URL、正文或 token。此项 1/1 是夹具边界验证，不是声称已发生真实外发。
 
@@ -84,3 +84,31 @@ OG 针对回归 26/26，Web lint、contracts/Web 类型检查通过，见 og-off
 本地代码分为AOF `198df3f` 与Web/依赖/镜像入口 `aded0b0`；最终镜像来源应在下一次实际运行中重新记录。上述原始失败材料均保留。
 
 本轮没有真实账号、Provider、生产服务、数据处置或发布操作。真实数据效果、实机、目标生产部署和 A3 决策仍需各自条件。
+
+## 接续：独立限额构建器与停止语义
+
+从 `7c2d08f` 接续。Docker 未运行，启动时两处 AF_UNIX 临时 socket 再次失效；在后端停止、绝对路径和零字节 socket 核验后，保留性重命名运行时目录再启动。没有删除卷、重置 Docker 或修改全局资源配置，记录见 `f4-docker-*-preservation-20261101*.json`。分步恢复过程中再次留下的 socket 也保留，最后同时处理两处目录才恢复引擎。
+
+第五轮 `5641c357ba393865144c5bb1` 使用旧默认构建器，从 `7c2d08f` 冻结同一批 156 份 Docker 输入；deps 5.04 秒、prod-deps 42.26 秒通过，runner 到达 Next 编译后仍发生 Engine RPC EOF。构建期间宿主快照为可用物理内存 317 MiB、可用提交空间 85 MiB；这是当时观测而非峰值，不能证明所有 EOF 的根因。原 manifest 保留 exit1/cleaned=false；恢复引擎后只移除该轮已核验标签、名称、固定镜像及无网络配置的保持容器，独立 `recovery-cleanup.json` 核对零容器/网络残留，原记录不改。
+
+本地提交 `45eb7f1` 将验证入口改为本轮独立的 docker-container BuildKit 构建器。名称随机，BUILDX_CONFIG 位于本轮证据目录，显式固定本机 endpoint，不修改用户选中的 builder；解析官方 BuildKit 索引 digest 后固定镜像。资源上限为 2 GiB 内存、3 GiB 内存加交换空间，worker.oci max-parallelism=1，restart-policy=no。依据 [driver 选项](https://docs.docker.com/build/builders/drivers/docker-container/)与[并行配置](https://docs.docker.com/build/buildkit/configure/#max-parallelism)；上限不包括宿主 CLI、Engine、导入或浏览器开销，也不保证消除环境故障。
+
+Buildx 容器按 driver 使用 privileged，验证期间实际检查容器 ID、固定镜像、资源限额和唯一 state 卷。state 卷预建时带本轮标签；容器由 Buildx 自动创建，不假设它继承应用容器标签。清理前重读卷指纹和容器身份，先保留 daemon/state 移除本轮私有 builder 元数据，再单独停止、删除已核验容器，确认卷没有消费者后移除，最后读回。CLI 回执丢失时只在事前确认不存在、精确名称、本轮标签及 local driver/scope 全部满足后恢复卷归属；未知资源保持不动并报告清理失败，不执行 prune。
+
+停止门禁改为实际角色语义：当前 Next 源码在 SIGTERM 关闭处理后退出 143，因此直接 npm CMD 接受本轮明确请求 SIGTERM 后的 143 或 0，测试监督进程仍只接受 0。两者均拒绝仍运行、OOM、dead、Docker error 和 137 等退出码。记录停止前运行状态、请求信号及结果，不以 143 推定全部请求已排空。新增两个 host helper 均进入来源冻结和最后读回。
+
+最终工具门禁 `f4-bounded-builder-tools-final-20261101.log` 为 77/77，包含 builder 协议32项及停止策略4项；首次沙箱运行67/69，两项既有补丁夹具被临时目录 rename 权限拦截，原日志保留。正常本机权限的中间69/69及最终77/77分别记录。部署脚本原11组再次通过，合成临时目录读回零残留；只使用 Docker/curl 替身，Windows noacl 仍不构成 POSIX 权限证明。修正了两份规范漏列工具测试/Web单测的命令说明。
+
+限额构建器的完整镜像结果另记；协议测试不替代真实 BuildKit、成品探针或镜像浏览器验收。未改变依赖锁、Web/API业务、数据库和 Provider 配置。
+
+### 首轮限额镜像的实际缺陷与修正
+
+`71e63466e25f26bf705482b8` 从干净 `45eb7f1` 冻结156份Docker输入、12份验证输入。deps/prod-deps/runner分别约160.24/36.02/228.26秒，首次完整产出Linux amd64 runner：Docker inspect ID为 `sha256:6dc8c39f5cdc751db9cab39928c567465faf91cc18b5b7439c3467fc28472972`，BUILD_ID为 `s1n5kqrJ8A6_elWzKJfAS`。实际Node22.23.4、musl SWC/sharp二进制加载和哈希、sharp PNG、contracts及禁带目录检查通过，登记181包/164份包根通知；这仍不是完整法律物料清单。原npm CMD收到本轮SIGTERM后实际退出143，无OOM或Docker error，与新增停止策略一致。
+
+内核读回memory.max=2147483648、memory.swap.max=1073741824，确实限制本轮构建器；快照在 `f4-web-image-bounded-memory-20261101.jsonl`，不把单点当峰值。此前构建器一直保留到浏览器之后清理，宿主再次紧张：draft在newPage前超时，390px静态chunk为ERR_INSUFFICIENT_RESOURCES，D1出现WebGL context lost，D2截图时浏览器关闭。按manifest owner PID及精确Playwright命令核验后，只终止本轮浏览器子进程树，记录 `manual-browser-stop.json`；没有执行完37项，不以部分通过作为镜像验收。
+
+真实PNG人工查看还发现长中文把页脚挤出画布，签名和尺寸测试不能发现。新布局固定header、正文和footer区域，长文适配字号和断行，保留126字符预算及原子占位、正文快照和二次版本门禁。新增真实ImageResponse/sharp像素回归：页脚必须和同提示短文一致且有实字，正文非空，上下安全区与正文/页脚间隔没有亮字；针对性30/30通过，长中文及emoji两张样图逐张查看。单独核对后原emoji样张没有裁切，确定缺陷为长中文排版。
+
+D1 trace另暴露确定的React418：Galaxy服务器直接格式化本地时间，Linux UTC与上海浏览器文本不一致。改为SSR/首次hydrate一致的时间占位，随后按浏览器本地时区格式化，保留time的精确dateTime；不固定为无标注的北京时区，也不隐藏hydration警告。真实SSR在UTC/上海/纽约4项通过，新增真实SSR→上海浏览器回归，使完整镜像目标增为38项。其他locale调用经owning链核对是Server-only、浏览器交互后显示或未挂载旧组件，本轮没有扩展冻结能力。
+
+运行器同时改为镜像载入后先清理私有builder和state卷，再启动探针及Chromium。清理补扫使用inspect返回的完整容器ID，避免64位创建ID与12位发现ID重复登记，移除后再inspect造成假失败。上述旧轮原manifest仍exit1/cleaned=false；builder本身已cleaned=true，另存的recovery-cleanup.json实际核对应用容器/网络及builder容器/卷均为0，没有覆盖原记录或追加删除。

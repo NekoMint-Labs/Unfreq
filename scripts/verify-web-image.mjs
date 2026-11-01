@@ -208,6 +208,11 @@ try {
     repoDigests: inspected.RepoDigests, cmd: inspected.Config.Cmd, sizeBytes: inspected.Size };
   assert.equal(inspected.Os, "linux");
   assert.equal(inspected.Architecture, "amd64");
+  // Building and browsing do not need to overlap. Release the private daemon
+  // and its cache before starting native probes or host Chromium processes.
+  assert.equal(await ownedBuilder.cleanup(), true, "Owned builder could not be released before runtime checks");
+  manifest.builderReleasedBeforeRuntime = true;
+  await save();
   const fixtures = path.join(directory, "fixtures");
   await mkdir(path.join(fixtures, "runtime"), { recursive: true });
   for (const [relative, destination] of fixturePaths) {
@@ -251,7 +256,7 @@ try {
   await writeFile(path.join(directory, "browser.log"), browsers.stdout + browsers.stderr);
   const report = JSON.parse(await readFile(path.join(directory, "playwright.json"), "utf8"));
   assert.equal(report.stats.unexpected, 0); assert.equal(report.stats.skipped, 0); assert.equal(report.stats.flaky, 0);
-  assert.ok(report.stats.expected >= 37);
+  assert.ok(report.stats.expected >= 38);
   manifest.browsers = report.stats;
   manifest.playwrightVersion = JSON.parse(await readFile(path.join(root, "node_modules", "playwright", "package.json"), "utf8")).version;
   const identity = await (await fetch(`http://127.0.0.1:${port}/__image/identity`)).json();
@@ -278,7 +283,10 @@ try {
     // Include resources created before an interrupted CLI acknowledged them.
     try {
       const ids = (await docker(["ps", "--all", "--quiet", "--filter", `label=${labelKey}=${runId}`])).stdout.trim().split(/\s+/).filter(Boolean);
-      for (const id of ids) { await inspectContainer(id); containers.add(id); }
+      for (const id of ids) {
+        const value = await inspectContainer(id);
+        containers.add(value.Id);
+      }
     } catch { cleaned = false; }
     for (const id of containers) {
       try {

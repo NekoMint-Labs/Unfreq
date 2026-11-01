@@ -24,6 +24,7 @@ import { detailFadeExitMs, fallbackBandLabels } from "./galaxy-scene-constants";
 import { galaxyLegendItems } from "./galaxy-semantics";
 import { GalaxyGraphicsBoundary } from "./GalaxyGraphicsBoundary";
 import { useGalaxyReducedMotion } from "./useGalaxyReducedMotion";
+import { GalaxyGeneratedTime } from "./GalaxyGeneratedTime";
 
 type GalaxyCanvasProps = {
   bandOptions?: Array<{
@@ -259,10 +260,7 @@ export function GalaxyCanvas({
         </h1>
         <p className="mt-1 font-mono text-xs text-[color:var(--text-secondary)]">
           {coverage === undefined ? "" : `符合筛选 ${coverage.totalEligibleCount} · `}返回样本 {points.length} · 绘制 {graphics === "enabled" ? renderPoints.length : 0} ·{" "}
-          {new Date(generatedAt).toLocaleTimeString("zh-CN", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+          <GalaxyGeneratedTime generatedAt={generatedAt} />
         </p>
         {selectedBand !== undefined ? (
           <p className="mt-1 text-xs text-[color:var(--text-secondary)]">

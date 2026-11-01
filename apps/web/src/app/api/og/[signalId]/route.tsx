@@ -45,8 +45,6 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           flexDirection: "column",
           fontFamily: "Unfreq Sans, Unfreq Mono",
           height: "100%",
-          justifyContent: "space-between",
-          padding: "68px 76px",
           position: "relative",
           width: "100%",
         }}
@@ -81,9 +79,12 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           style={{
             alignItems: "center",
             display: "flex",
+            height: 56,
             justifyContent: "space-between",
-            position: "relative",
-            width: "100%",
+            left: 76,
+            position: "absolute",
+            top: 64,
+            width: 1048,
           }}
         >
           <div
@@ -116,10 +117,13 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
             borderLeft: "2px solid rgba(232, 232, 240, 0.58)",
             display: "flex",
             flexDirection: "column",
-            gap: 22,
-            maxWidth: 880,
+            gap: 20,
+            height: 320,
+            left: 76,
             paddingLeft: 30,
-            position: "relative",
+            position: "absolute",
+            top: 168,
+            width: 1048,
           }}
         >
           <div
@@ -127,7 +131,9 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
               color: "#4A4A5C",
               fontFamily: "Unfreq Mono, Unfreq Sans",
               fontSize: 18,
+              flexShrink: 0,
               letterSpacing: "0.22em",
+              lineHeight: 1.2,
             }}
           >
             {label("EXPANDED SIGNAL")}
@@ -135,10 +141,14 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           <div
             style={{
               color: "#E8E8F0",
-              fontSize: cardText.length > 96 ? 40 : 46,
+              // The 126-unit snippet fits within five lines at the smallest
+              // size. Keep the footer's own space instead of shrinking it.
+              flexShrink: 0,
+              fontSize: cardText.length > 96 ? 32 : cardText.length > 64 ? 38 : 46,
               letterSpacing: 0,
-              lineHeight: 1.54,
+              lineHeight: 1.45,
               whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
             }}
           >
             {cardText}
@@ -146,13 +156,17 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
         </div>
         <div
           style={{
-            alignItems: "flex-end",
+            alignItems: "center",
             color: "#8B8B9C",
             display: "flex",
-            fontSize: 24,
+            fontSize: 22,
+            height: 32,
             justifyContent: "space-between",
-            position: "relative",
-            width: "100%",
+            left: 76,
+            lineHeight: 1.2,
+            position: "absolute",
+            top: 538,
+            width: 1048,
           }}
         >
           <div style={{ display: "flex" }}>{label(glyphNotice ? "部分字形/表情以 [?] 显示" : "每个想法都不再孤独")}</div>

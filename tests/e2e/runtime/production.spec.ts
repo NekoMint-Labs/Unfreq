@@ -217,6 +217,30 @@ test("Galaxy reading exposes reporting without dismissing the selected signal", 
   await expect(page.getByRole("button", { name: "关闭信号详情", exact: true })).toBeVisible();
 });
 
+test("Galaxy hydrates its SSR time placeholder into the browser's local time zone", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, timezoneId: "Asia/Shanghai" });
+  try {
+    const page = await context.newPage();
+    const hydrationErrors: string[] = [];
+    page.on("pageerror", (error) => hydrationErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") hydrationErrors.push(message.text());
+    });
+    const response = await page.goto("/galaxy");
+    expect(response?.status()).toBe(200);
+    // Match an actual HTML time element, not a serialized RSC prop or a
+    // client-only placeholder; the owning Galaxy page is server-rendered.
+    expect(await response!.text()).toMatch(/<time\b[^>]*>--:--<\/time>/);
+    const time = page.locator(".galaxy-hud-panel time");
+    await expect(time).toHaveAttribute("datetime", "2026-10-28T00:00:00.000Z");
+    await expect(time).toHaveText("08:00");
+    expect(await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone)).toBe("Asia/Shanghai");
+    expect(hydrationErrors.filter((message) => /hydration|#418|didn't match|server rendered/iu.test(message))).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
 test("390px production Galaxy renders WebGL and navigates its frequency filter", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/galaxy");
