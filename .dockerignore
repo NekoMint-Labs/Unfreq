@@ -8,6 +8,9 @@ apps/*/.next
 apps/*/dist
 apps/*/.tsbuildcache
 coverage
+test-results
+playwright-report
+blob-report
 *.tsbuildinfo
 .env
 .env.*

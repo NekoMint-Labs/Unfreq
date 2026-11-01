@@ -20,6 +20,8 @@
   },
   "include": [
     "drizzle.config.ts",
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "tests/integration/**/*.ts",
+    "vitest*.config.ts"
   ]
 }
