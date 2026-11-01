@@ -109,6 +109,10 @@ npm 10.9.7 对两补丁候选及 esbuild 候选的原始重写均丢失了基线
 
 ### 2026-11-01 v4 候选与独立完整 audit
 
-新候选基于 `c54f7e4`，锁 `cdf351ca90d8d3325c349c16abefa71e35327d8aabd07a78ec3dfab16b64b3b4` 相对该基线只改 API workspace 和 postgres 两条包记录。四连接工厂保留 `infer: true`；v4 使用新的两文件生命周期补丁，不能称为已无项目补丁。正常安装543包、postinstall applied2/verified2及轻量 TCP17/17已确认。完整本地检查工具79/API767/Web192及两端lint/类型/构建通过，选定108份来源前后无变化；真实 PG/Redis、Node 下界和 Linux 成品仍待各自最终验收。
+新候选基于 `c54f7e4`，锁 `cdf351ca90d8d3325c349c16abefa71e35327d8aabd07a78ec3dfab16b64b3b4` 相对该基线只改 API workspace 和 postgres 两条包记录。四连接工厂保留 `infer: true`；v4 使用新的两文件生命周期补丁，不能称为已无项目补丁。正常安装543包、postinstall applied2/verified2及轻量 TCP17/17已确认。完整本地检查工具79/79、API767/767、Web192/192及两端lint/类型/构建通过，选定108份来源前后清单相同，清单 SHA256 为 `aa1561c37a3f308fb6a1331264275a5a7b123c0e6f4a85b49c6e71949b67c61a`。
+
+本轮 Node `20.19.0`、`22.12.0` 已各自通过补丁幂等0/2、真实 ESM/CommonJS/Drizzle 模块2/2、Windows 原生工具、tsx `.mts/.cts`、17项合成 TCP 诊断、离线 generate 和 Vitest 6/6。两份 SQL 哈希相同，既有迁移与8项安装输入未变；这些是当前 C 候选的独立日志。7条不适用 WASM 残留对应6个目录，经祖先/后代无链接、包身份及116文件哈希核验后完整保留移出；随后完整 `npm ls --all --json` 的顶层和递归 `problems/extraneous` 均为空。
+
+首次完整真实 PG/Redis `run-u3gw8N / e0cb6725b23d` 为88通过、47跳过/135，core `beforeAll` 超过原30000ms，exit1、cleaned=true；该次失败与旧100/119均保留。同源、同锁、原预算的独立完整重跑 `run-Z8LGD3 / a9ded2fc5068` 已135/135、无失败/跳过/todo，exit0、cleaned=true。两次108份来源未变、83份编译产物有冻结记录，独立容器/网络/卷读回均为0。Linux成品仍待本候选实际运行；不能用合成TCP或旧3.4.9镜像成绩代替。
 
 这份最终锁已用官方 npm11.19.1独立完成完整 audit，exit1且报告有效：20条 moderate 包记录，16 dev-only / 4 正式依赖树，5直接 / 15传递，对应2条直接 advisory。正式链含 kit → esm-loader → core-utils → esbuild0.18.20，不能写成全是开发依赖，也没有以跨主或降级建议换取零告警。实际报告在 `E:\unfreq\test-results\full-audit-20261101\final-v4\`；冻结范围仅 lock、四份 manifest及npm CLI/配置，不含仍在编辑的应用/安装器/补丁全部源码。完整状态及旧100/119负评的保留方式见[v4升级记录](./implementation/postgres-v4-upgrade-20261101.md)。
