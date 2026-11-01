@@ -30,6 +30,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 ## 开发
 
 - [开发指南](./development.md)
+- [数据公开与生命周期设计（规则已确认，待实施）](./data-lifecycle.md)
 
 ## 其他
 

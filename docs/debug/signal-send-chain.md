@@ -3,6 +3,13 @@
 Short map of the current Unfreq signal path. Use this before changing signal,
 galaxy, audio, resonance, or my-frequency behavior.
 
+The review visibility and public-field descriptions below are observations of the
+A3 code baseline (`0ee5775d3d156c69f459a531f17b876809f9ee12`), not the approved
+future contract. [A3's approved target](../data-lifecycle.md#5-目标权限与状态转换待实现)
+requires REVIEWING to return 404 to non-owners and public responses to use strict
+per-shape allowlists. Those runtime changes belong to subsequent implementation;
+this PR only updates documentation.
+
 ## Current Core Flow
 
 ```text
@@ -53,7 +60,8 @@ previews until `POST /api/signals/:id/publish` confirms publication. The old
     signals render seed, expanded signal, Top 3 same-frequency matches,
     playback, resonance, save, share card, and follow-up. Reviewing owner access
     renders only the saved seed and review status. Reviewing non-owner access
-    renders a restricted "temporarily not public" state. Generating rows
+    renders a restricted "temporarily not public" state in this old baseline;
+    the approved target instead uses non-owner 404 without review metadata. Generating rows
     redirect back to the transmitting page.
 - `apps/web/src/components/signals/SignalPublishButton.tsx`
   - Calls `publishSignal()` and refreshes the result page after the backend
@@ -227,7 +235,9 @@ but they are outside the current runtime product boundary.
   unavailable or fails review after rewrite, the API surfaces `AI_UNAVAILABLE`.
 - Signals with high-risk fingerprints complete as `REVIEWING`; the transmitting
   page then redirects to the result page, which renders either the owner review
-  state or restricted non-owner state.
+  state or, in the old baseline, a restricted non-owner state. The approved A3
+  target keeps the owner state private and returns 404 to non-owners; do not
+  preserve the old restricted 200 behavior as a requirement.
 - Signals with low/medium-risk fingerprints complete as `DRAFT` plus
   `generation_status=COMPLETED`. Only the owner result page can read this
   preview. Public list, random, galaxy, match, save, resonance, and share-card
