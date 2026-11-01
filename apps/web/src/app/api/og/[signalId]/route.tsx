@@ -1,8 +1,9 @@
 import { ImageResponse } from "next/og";
 import { notFound } from "next/navigation";
 import { getPublicSignal } from "@/lib/signal-data";
+import { getLocalOgTypography } from "@/lib/og-local-fonts";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type SignalOgRouteContext = {
   params: Promise<{
@@ -15,18 +16,6 @@ const imageSize = {
   width: 1200,
 } as const;
 
-const maxCardTextLength = 126;
-
-function truncateCardText(value: string): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-
-  if (normalized.length <= maxCardTextLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxCardTextLength - 1)}…`;
-}
-
 export async function GET(request: Request, context: SignalOgRouteContext) {
   const { signalId } = await context.params;
   const signal = await getPublicSignal(signalId);
@@ -37,8 +26,12 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
 
   const version = new URL(request.url).searchParams.get("v");
   if (version !== null && (!/^[1-9]\d{0,9}$/u.test(version) || Number(version) !== signal.publicationVersion)) notFound();
-  const frequencyCode = signal.authorFreqCode ?? "Unfreq";
-  const cardText = truncateCardText(signal.expandedText);
+  const typography = await getLocalOgTypography();
+  const frequency = typography.formatText(signal.authorFreqCode ?? "Unfreq");
+  const card = typography.formatCardText(signal.expandedText);
+  const cardText = card.text;
+  const label = (value: string) => typography.formatText(value).text;
+  const glyphNotice = card.substituted || frequency.substituted;
 
   const rendered = new ImageResponse(
     (
@@ -50,8 +43,7 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           color: "#E8E8F0",
           display: "flex",
           flexDirection: "column",
-          fontFamily:
-            'Noto Sans SC, PingFang SC, Microsoft YaHei, SimSun, serif',
+          fontFamily: "Unfreq Sans, Unfreq Mono",
           height: "100%",
           justifyContent: "space-between",
           padding: "68px 76px",
@@ -97,13 +89,12 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           <div
             style={{
               color: "#E8E8F0",
-              fontFamily:
-                'Geist Mono, SFMono-Regular, Menlo, Consolas, monospace',
+              fontFamily: "Unfreq Mono, Unfreq Sans",
               fontSize: 30,
               letterSpacing: "0.08em",
             }}
           >
-            {frequencyCode}
+            {frequency.text}
           </div>
           <div
             style={{
@@ -111,14 +102,13 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
               borderRadius: 8,
               color: "#8B8B9C",
               display: "flex",
-              fontFamily:
-                'Geist Mono, SFMono-Regular, Menlo, Consolas, monospace',
+              fontFamily: "Unfreq Mono, Unfreq Sans",
               fontSize: 20,
               letterSpacing: "0.18em",
               padding: "12px 16px",
             }}
           >
-            UNFREQ
+            {label("UNFREQ")}
           </div>
         </div>
         <div
@@ -135,13 +125,12 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
           <div
             style={{
               color: "#4A4A5C",
-              fontFamily:
-                'Geist Mono, SFMono-Regular, Menlo, Consolas, monospace',
+              fontFamily: "Unfreq Mono, Unfreq Sans",
               fontSize: 18,
               letterSpacing: "0.22em",
             }}
           >
-            EXPANDED SIGNAL
+            {label("EXPANDED SIGNAL")}
           </div>
           <div
             style={{
@@ -166,24 +155,24 @@ export async function GET(request: Request, context: SignalOgRouteContext) {
             width: "100%",
           }}
         >
-          <div style={{ display: "flex" }}>每个想法都不再孤独</div>
+          <div style={{ display: "flex" }}>{label(glyphNotice ? "部分字形/表情以 [?] 显示" : "每个想法都不再孤独")}</div>
           <div
             style={{
               color: "#4A4A5C",
               display: "flex",
-              fontFamily:
-                'Geist Mono, SFMono-Regular, Menlo, Consolas, monospace',
+              fontFamily: "Unfreq Mono, Unfreq Sans",
               fontSize: 18,
               letterSpacing: "0.14em",
             }}
           >
-            unfreq.space
+            {label("unfreq.space")}
           </div>
         </div>
       </div>
     ),
     {
       ...imageSize,
+      fonts: typography.fonts,
       headers: {
         "cache-control": "private, no-store, max-age=0",
       },

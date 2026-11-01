@@ -108,13 +108,34 @@ node --test tests/evaluation/faithfulness-cli.test.mjs
 
 ## F2 合成恢复与副本
 
-F2 同一隔离套件还运行真实部署脚本的合成 pg_dump/gzip → 空库 psql 恢复，验证损坏压缩包零写入、SQL 错误整次回滚、非空目标拒绝、媒体/config 字节、原密钥解密、pgvector 和 API 主路径。备份后新增记录应缺失，较新撤回状态在开放隔离读取前重放；检查点、RPO 观测和本机 RTO 写入该轮 f2-recovery/recovery-report.json。Linux 容器专项验证 700/600 权限，Windows noacl 不作为权限证明。Redis AOF、真实媒体质量、目标服务器和第三方处理未验收。
+F2 同一隔离套件还运行真实部署脚本的合成 pg_dump/gzip → 空库 psql 恢复，验证损坏压缩包零写入、SQL 错误整次回滚、非空目标拒绝、媒体/config 字节、原密钥解密、pgvector 和 API 主路径。备份后新增记录应缺失，较新撤回状态在开放隔离读取前重放；检查点、RPO 观测和本机 RTO 写入该轮 f2-recovery/recovery-report.json。Linux 容器专项验证 700/600 权限，Windows noacl 不作为权限证明。本段 SQL/媒体恢复不包含 Redis AOF；AOF 的独立合成演练见下节，真实媒体质量、目标服务器和第三方处理仍待验收。
 
 F2 的真实 SQL 另验证十二类副本引用、样本截断、媒体元数据和不输出私密内容；GET 详情/matches/Galaxy 前后对比数据库与本地 Provider 请求事件，确认不派发或回填。新审计的 signal/attempt 关联由真实 worker 验证。源码、脚本及 Linux fixture 纳入本轮来源指纹。
 
 `npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；默认完整集成命令仍覆盖八个文件。固定 --generation-checkpoints 参数仅供任务重启专项诊断，不替代完整门禁。
 
 2026-11-01 的 [F2 任务观察调整](./implementation/f2-generation-observation-20261101.md) 将 checkpoint 中排队、单次执行和关闭准备分别验证。完成观察使用单次 SQL 批量读取、持久化的完成时间/attempt 截止比较及不随重排刷新的总 watchdog；关闭额外要求 shutdown 取消，不能用 deadline 取消冒充。旧 3 秒准备、5 秒整批失败仍是历史延迟记录，新门禁不宣称这些旧窗口均已通过。生产执行预算、执行权检查和并发上限没有调整。
+
+## 独立 Redis AOF 合成恢复
+
+```powershell
+npm run redis:recovery:verify
+node --test tests/recovery/redis-aof-safety.test.mjs
+```
+
+第一条命令使用固定 Redis digest、本机 Docker endpoint、新建 internal 网络和拥有标签的卷/容器，不映射宿主端口。每个 client 通过一个持续 `docker exec -i … redis-cli -2 --json` 会话复用生产预算与一次性挑战 Lua，核对写入前及 WAITAOF 前后的 CLIENT ID；退出须实际收齐响应并结束进程。覆盖当前检查点恢复、绝对 TTL、不复活已消费状态、共享预算及严格模式下损坏 AOF 拒绝启动，另要求实际观察到较旧备份复活挑战、退回已花额度的危险反例。
+
+真实演练 run-d736a665ead0 为19/19，来源及清理核对通过；第二条的参数、所有权及协议安全测试为20/20，其中协议路径使用管道替身，不能代替真实恢复。安全测试已纳入 test:integration-tools，真实演练仍须显式运行，不使普通 check 自动依赖 Docker。三次失败、协议探针及完整证据见[独立实施记录](./implementation/f2-redis-aof-20261101.md)。该范围不验证 API 登录、PostgreSQL/会话签名或生产旧备份的安全衔接，也不授权自动重放旧 AOF。
+
+## 完整 Linux Web 镜像（本轮验收中）
+
+```powershell
+npm run web:image:verify
+```
+
+该入口从冻结来源构建 Dockerfile.web 的真实 runner，记录基础镜像、最终成品及 BUILD_ID；探测原生依赖和实际包/许可材料，使用镜像内 Next 与合成 API 验证页面和离线分享图。宿主 Chromium 访问 Linux Web 镜像，不作为 Linux 浏览器或实体设备结论。运行器/OG 的专项结果与完整镜像成绩分别记录，见[本轮实施记录](./implementation/f4-linux-web-runner-20261101.md)。
+
+完整镜像及本轮 source-map-js 1.2.2、baseline-browser-mapping 2.11.34 锁维护仍在验收中，最终结果按当前来源与锁单独保存，不沿用前轮成绩。生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
 
 ## CI
 

@@ -255,6 +255,10 @@ const server = createServer(async (request, response) => {
     publicSignal.expandedText = `${"这是一段用于验证移动阅读的合成表达，需要完整显示并可以向下滚动。".repeat(60)} ${"x".repeat(180)} D3_LONG_END`;
     return ok(response, { synthetic: true });
   }
+  if (request.method === "POST" && url.pathname === "/__runtime/offline-og") {
+    publicSignal.expandedText = "中文离线分享：保持原文，表情与稀字在图片中明确占位。🙂 👩🏽‍💻 🇨🇳 1️⃣ 𠮷 " + "🙂".repeat(100);
+    return ok(response, { synthetic: true });
+  }
   if (request.method === "POST" && url.pathname === "/__runtime/d4-complete") { d4Complete = true; return ok(response, { synthetic: true }); }
   if (request.method === "POST" && url.pathname === "/__runtime/d4-history") { d4History = true; return ok(response, { synthetic: true }); }
   if (request.method === "POST" && url.pathname === "/api/signals") {

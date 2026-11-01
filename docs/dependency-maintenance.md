@@ -88,4 +88,20 @@ API 组至少运行 `npm run api:check`、共享 contracts 检查及真实隔离
 
 ## 本轮实施状态
 
-上文的初始查询和候选是基线记录。后续已实际执行最小 API 安全组，保留其他组；Fastify `5.12.7`、Zod `4.6.7` 及必要传递锁项、LogController 适配和 Web 原生安装门禁见[实际实施记录](./implementation/f4-dependency-maintenance-20261101.md)。最终正常权限审计为 30 个包记录（5 high、24 moderate、1 low），不将候选全表写成已升级或已验收。Windows 干净安装后清理确认多余的 WASM 包，最终 npm ls 无问题；Linux 首次漏装 SWC 的记录、按原锁修复缓存和实际门禁重建分别保留。镜像和许可证初查仍不代表生产或分发合规验收。
+上文的初始查询和候选是基线记录。后续已实际执行最小 API 安全组，保留其他组；Fastify `5.12.7`、Zod `4.6.7` 及必要传递锁项、LogController 适配和 Web 原生安装门禁见[实际实施记录](./implementation/f4-dependency-maintenance-20261101.md)。最终正常权限审计为 30 个包记录（5 high、24 moderate、1 low），不将候选全表写成已升级或已验收。Windows 干净安装后清理确认多余的 WASM 包，当时浅层 npm ls 无问题；Linux 首次漏装 SWC 的记录、按原锁修复缓存和实际门禁重建分别保留。镜像和许可证初查仍不代表生产或分发合规验收。
+
+### 2026-11-01 构建传递补丁与 esbuild peer 修复（验证中）
+
+本轮在隔离候选中使用官方 `https://registry.npmjs.org/`，将 `source-map-js 1.2.1 → 1.2.2`、`baseline-browser-mapping 2.10.29 → 2.11.34` 两项传递补丁纳入主锁，四份 manifest 的依赖声明不变，root 仅增加验证命令；未引入 override 或新增直接依赖。两项的精确版本、tarball URL 与 integrity 均已向官方 registry 读回核对。它们主要服务于 PostCSS、Tailwind、Next 和浏览器兼容数据；source-map-js 也可由 API 测试工具的 Vitest → Vite → PostCSS 链到达，因此不能笼统称作只属于 Web。此批次未改 API DTO、数据库驱动、迁移或数据。
+
+两补丁候选的官方 `npm audit --json` 从 30 个受影响包记录（5 high、24 moderate、1 low）降为 28 个（4 high、23 moderate、1 low）；只移除了上述两包，未新增命中。另有 9 个既有记录的 `fixAvailable` / `effects` 元数据变化，未应用其建议，也未把它们算作新的 advisory 或修复。28 是该候选的包记录计数，不是已证实可利用的漏洞数，不代表零告警、完整安全扫描或最终 esbuild 补树后的审计结果。原始和差异证据保留在 `test-results/f4-transitive-candidate-20261101/`。
+
+这次全层级检查还发现基线锁的既有 peer 缺陷：`vitest/node_modules/vite 8.0.11` 要求可选 peer `esbuild ^0.27.0 || ^0.28.0`，实际却向上解析到根 `0.25.12`。此前 `npm ls --depth=0` 的退出码不能证明全部嵌套依赖有效；上段历史记录中的“npm ls 无问题”只涵盖当时的浅层检查，不能作为全层级通过证据。普通 `npm install --package-lock-only --ignore-scripts` 的 cwd 对照候选未修复此边；带显式 `--prefix` 的 install 还产生了本地 self-link，已拒绝，未纳入主锁。
+
+随后使用正常 npm resolver 的命名 `npm update esbuild --save=false --package-lock-only --ignore-scripts --no-audit --no-fund`，只增加 `node_modules/vitest/node_modules/esbuild 0.28.2` 及其 26 个可选平台记录，共 27 个 dev 记录，满足 Vite 的既有范围。全部新增记录均已核对官方精确版本、resolved、integrity 和平台/依赖元数据；所有既有包记录保持原值，根 esbuild `0.25.12`、tsx 近层 `0.27.7` 和 core-utils 近层 `0.18.20` 均保留。没有借此更新 Vitest、Vite、Drizzle 或其他维护组。候选锁 SHA-256 为 `12b3298aa62463677ef225c9a4290d8e6e2469b7f27bbb53e12072efa187f44b`；主锁按原字段顺序合并相同 27 条记录后为 `fa3ee88449b4142f0c68b7e4f21fcdca66cf51910dd174947dc4157229a387b7`，两者结构相同。应用前的主锁及四份 manifest 哈希核验无漂移。
+
+npm 10.9.7 对两补丁候选及 esbuild 候选的原始重写均丢失了基线的 42 个 `libc` 字段；只在该记录的 version、resolved、integrity 完全相同时恢复原字段，未借恢复操作修改版本或来源。最终两补丁候选仅改变两条包记录，esbuild 候选在其基线上仅新增上述 27 条。原始 npm 输出、恢复清单、精确 argv/cwd/prefix、结构差异、官方来源与应用读回保留在两个候选目录中；esbuild 汇总为 `test-results/f4-esbuild-peer-candidate-20261101/summary.json`。
+
+全平台虚拟树检查仍返回 1，已单独保留结果，不能写成全部通过。基线可选开发包 `@tailwindcss/oxide-wasm32-wasi 4.3.0`（`cpu: [wasm32]`）要求 `@napi-rs/wasm-runtime ^1.1.4`，却解析到根 `0.2.12`；该问题未由本轮引入。Rolldown 的同类包已有自己的 `1.1.4`，unrs 的 `^0.2.11` 则允许根版本。该 wasm32 父包不属于本轮 Windows x64 / Linux amd64 原生安装目标，本轮保留该虚拟边，不扩充升级组；原候选 esbuild invalid 已消失。实际平台安装后的 `npm ls --all` 与原生加载结果须另外记录。
+
+最终主锁正常 `npm ci` 实装540包、postgres四文件补丁验证通过；Windows平台多余WASM后代经逐个路径/包身份核验后完整保留移出，实际 `npm ls --all` 为exit0、problems为空，SWC/sharp/字体和四套esbuild原生编译通过。完整 `npm run check` exit0，工具41、API765、Web184及两端lint/类型/构建通过。最终官方审计仍28条，见 `f4-peer-final-audit-20261101.json`。Linux完整runner及镜像浏览器成绩待实际结果补录；平台虚拟树、候选、实际安装和成品验收分别记录，不能互相代替。其余测试工具、lint、ORM、3D、字体、运行时及有状态镜像维护组继续按前述边界独立推进。

@@ -19,7 +19,7 @@ API 两项直接依赖固定为 Fastify `5.12.7`、Zod `4.6.7`，原为 `5.8.5` 
 日志均在被忽略的 `test-results/f4-*20261101*`。不继承 F3 或 F2 的历史通过记录作为依赖升级验收。
 
 - 首次沙箱 `npm ci` 长时间停留、依赖不完整，核对 PID/命令后只停止该安装。正常本机权限同锁重试，10 分钟后 exit 0，安装 538 包，postgres applied=4 / verified=4；Windows SWC/sharp 可加载。Zod 官方精确 tgz 的 SHA512 与 lock 一致后补入正常缓存，没有换 registry、版本或手放 node_modules。两次安装日志保留。
-- 正常安装仍报告 WASM 清理 EPERM，`npm ls` 保留六个 extraneous。确认 Windows 原生包正常后，只清理这些多余 WASM 包和残留 rolldown WASI 目录；七个绝对目标先核验在工作区 node_modules 内。最终 `f4-installed-clean-20261101.json` 中 problems/extraneous 均为空，未动业务数据。
+- 正常安装仍报告 WASM 清理 EPERM，`npm ls` 保留六个 extraneous。确认 Windows 原生包正常后，只清理这些多余 WASM 包和残留 rolldown WASI 目录；七个绝对目标先核验在工作区 node_modules 内。最终 `f4-installed-clean-20261101.json` 中浅层 problems/extraneous 均为空，未动业务数据。后续完整 `npm ls --all` 另发现既有 Vite 可选 esbuild peer 不匹配；这份浅层记录不能证明整棵树无问题，见[后续记录](./f4-linux-web-runner-20261101.md)。
 - 第一轮根检查：运行器 15/15、API 744/745；唯一失败是上述 Fastify 弃用输出破坏静默日志断言，未进入 Web。见 `f4-check-20261101.log`。适配后 `npm run check` exit 0：运行器 15/15、API 745/745、Web 138/138、两端 lint/类型/构建全部通过，见 `f4-check-final-20261101.log`。随后两个测试替身同步后，日志、错误与诊断隐私专项 3 文件 20/20，无弃用输出；最终 API lint/类型再次通过。完整隔离结果收尾补充。
 - 正常权限的最终官方审计 JSON 为 `f4-audit-after-api-verified-20261101.json`：30 个包记录，5 high、24 moderate、1 low；Fastify、Zod、find-my-way、fast-uri 不再报告。中间沙箱报告也保留，不覆盖原始结果；不宣称全项目零漏洞。
 - 第一份 Linux API 生产依赖镜像 exit 0，183 包、postgres 四文件补丁通过；实际 Node `22.23.4`、Fastify `5.12.7`、cors `11.2.0`、Zod `4.6.7`、sharp `0.35.5` 可读取/加载，但 SWC 缺失，不能算 Web 原生验收。lock、musl/架构/engine 检查均通过；成品不含 cache mount 内日志，没有唯一确定失败原因。
