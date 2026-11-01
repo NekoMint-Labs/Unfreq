@@ -2,6 +2,8 @@
 
 这份文档记录服务器日常操作。部署入口见 [部署指南](./deployment.md)，迁移入口见 [服务器迁移](./server-migration.md)。
 
+额度调整、未知付费任务及代理链验证见 [B3 pilot 预算与代理链验收边界](./implementation/b3-pilot-boundaries-20261101.md)；该文档是待评审提案，不代表目标环境已验收。
+
 ## 常用命令
 
 ```bash
