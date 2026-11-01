@@ -1,6 +1,6 @@
 # F4：剩余依赖维护与独立验证候选
 
-日期：2026-11-01。代码基线 `baf41d32609bdfa144a05f192672938759a54795`，候选工作目录为 `test-results/f4-transitive-20261101/`。最终 D 候选已完成干净安装、完整检查和真实 PG/Redis 集成，113 项全部通过；最终 Linux 镜像与镜像浏览器验收仍待运行。以下成绩均来自 D 锁及本轮来源，不沿用历史成绩。
+日期：2026-11-01。代码基线 `baf41d32609bdfa144a05f192672938759a54795`，候选工作目录为 `test-results/f4-transitive-20261101/`，固定提交 `54cafe5b7668c2e736f2c865e3e115788fa3c8e4`。最终 D 候选已完成干净安装、完整检查和真实 PG/Redis 集成，113 项全部通过；首轮 Linux 镜像在应用构建完成后遇到 Docker 引擎中断，镜像浏览器尚未执行。以下成绩均来自 D 锁及本轮来源，不沿用历史成绩。
 
 ## 范围与当前状态
 
@@ -43,7 +43,7 @@ D 的根 manifest 与锁副本在 11:33:51 UTC 固定。首次完整来源记录
 
 ## 审计范围与暂时无法闭环的上游链
 
-旧官方审计以锁 `fa3ee884...` 为对象，报告 28 个包记录（4 high、23 moderate、1 low），不是 28 个已证实可利用的应用漏洞。A 的新 lock-only 审计超过总准备阈值后按精确进程身份终止；B 的新审计在 60 秒总截止终止，锁前后哈希不变。两次都未得到完整新 JSON，不能填写一个新的通过成绩或告警总数。C/D 没有额外重试全量审计。
+旧官方审计以锁 `fa3ee884...` 为对象，报告 28 个包记录（4 high、23 moderate、1 low），不是 28 个已证实可利用的应用漏洞。A 的新 lock-only 审计超过总准备阈值后按精确进程身份终止；B 的新审计在 60 秒总截止终止，锁前后哈希不变。C 没有重试。D 固定提交后另用官方 npm 11.19.1 做了一轮完整范围 lock-only 审计：收到官方 bulk 响应及后续元数据 HTTP 200，但图计算未在 210 秒内完成，按截止终止自有 PID45444并读回其退出。565份 tracked 输入、D锁及干净状态均无漂移。三次均未得到完整新 JSON，不能填写新的通过成绩或告警总数；原始响应、调试日志和退出记录保存在 `stage-D/final-audit/`，没有把 bulk 响应当成完整报告。
 
 已将候选版本与旧官方记录的具体范围比对；这能说明已知范围是否仍匹配，不能替代最终锁的新完整审计或应用可利用性分析。
 
@@ -68,9 +68,25 @@ ORM `0.45.4` / kit `0.31.11` 可另做同支补丁维护，但不能宣称清除
 | tsx 与 postgres 真实行为 | 两下界的 `.mts` / `.cts` 输入均经 tsx 4.22.0 实际执行，结果与 Node 版本正确。默认 1300ms FIN 诊断分别 76ms / 16ms 结算，客户端/服务端均关闭、无自有 socket；诊断仍保留 `acceptancePassed: false`，不替代应用全套。实际旧驱动 EOF 19/19 成绩来自下述完整集成 |
 | 完整 `npm run check` | 退出 0；工具 77/77、API 767/767、Web 192/192，lint、类型检查、API 构建和 Next webpack 生产构建均通过；101 份输入与 D 锁前后不变 |
 | 最终源下真实 PG/Redis 集成 | `run-2UaXsq`，8 个文件 113/113，failed / pending / todo 均 0；退出 0、未中断、cleaned=true。101 来源 / 83 产物及四文件补丁最终读回相同，自有容器 / 网络 / 卷均为空。覆盖新的 404 期望、原 EOF 预算和来源冻结，不继承旧轮次 |
-| 最终 Linux Web 镜像、平台二进制、停止/清理、38 项镜像浏览器与真实 OG 图片查看 | 待运行；需先审查并冻结干净提交，当前尚未启动本候选的最终镜像验收 |
+| 最终 Linux Web 镜像、平台二进制、停止/清理、38 项镜像浏览器与真实 OG 图片查看 | 干净 `54cafe5` 的首轮实际完成 deps / prod-deps 安装及 Next 生产构建；OCI传输阶段遇到Engine RPC EOF，未产生成品验收成绩，原生探针及38项浏览器未执行。原manifest退出1、cleaned=false；独立来源读回通过，清理与新一轮完整验收接续处理，见下文 |
 | 最终锁官方完整审计 | 未完成；已有超时记录，不阻塞其他实际验证 |
 
 主要证据为 `stage-D/npm-ci-run.json`、`npm-ls-all-clean-summary.json`、`native-current-final.json`、`node-boundaries.json`、`check-run.json`、`integration-run.json` 与 `final-verification.json`。完整来源快照为 `source-before-check.json`；集成自身的 manifest、Vitest JSON 和 runtime marker 位于本候选 `test-results/integration/run-2UaXsq/`。最终读回之后才更新本记录的验收文字，运行输入没有随之改动。
 
 本轮不连接生产、不应用生产迁移、不改变数据处置、调度开关或 Provider 配置，也不调用收费模型。真实模型、人评、实机、目标环境迁移/恢复、A3 数据处置与参赛事实仍按各自记录保留边界。
+
+## Linux 首轮失败及恢复记录
+
+独立 API 依赖验证使用同一干净提交、D锁和固定官方 Node index。`1ec4c43551734db178439213` 与 `21b253cf771576543faed120` 两轮均在真实 `npm ci --prefer-offline` 阶段分别约326.6秒、300.1秒出现 `ECONNRESET / network aborted`，尚未执行探针或 prod-deps，不能记作API镜像通过。两轮来源、冻结副本与工具读回相同，manifest和独立读回均确认自有builder容器、状态卷清零。构建输出保留于 `test-results/api-dependency-images-20261101/runs/`；内部npm调试日志随自有缓存卷清理未保留，不能据最后一个成功HTTP请求猜失败包。
+
+Web首轮 `8dae8b6cc8b6ea82826babb9` 从干净 `54cafe5` 冻结158份Docker输入和12份验证输入，source tree为 `f8d286b2eb6d03def265a9648d378515dd373598405a6b2fb3610faa6c5c440b`。真实deps安装147.9秒，随后prod-deps、Next构建和OCI层导出完成；sending tarball阶段Engine RPC EOF。Docker Desktop状态读回为stopping，docker-desktop WSL实例Stopped；原manifest保留exit1和cleaned=false，builder discovery/readback因服务不可用超时。独立只读核对158份来源、158份冻结副本、12份夹具及原manifest均匹配，不把这个补充读回写回原manifest的sourceVerified字段。
+
+用户随后明确允许恢复全局Docker。官方start/restart未恢复后，只读日志定位后台启动时无法移除 `sailor-ingest.sock`（Windows1920）；单socket为0字节AF_UNIX重解析文件，父目录及祖先没有重解析跳转，后台进程已退出。单文件改名仍失败；核对run目录仅有四个0字节socket后，将 `%LOCALAPPDATA%/Docker/run` 在同目录改名保留为 `run.stale-20261101T132600Z`，创建空run目录，再启动服务。没有删除旧目录、修改ACL、settings、VHD或数据卷。系统此前另有虚拟内存不足事件，不能据此把Docker停止或socket故障的根因判定为已解决。服务恢复、本轮精确资源清理及最终镜像验收的结果继续另记。
+
+## 主工作区的同源安装与产物刷新
+
+D以`04323b6`同步回主工作区，随后仅另加B3文档。498份非文档实际文件与SAFE `54cafe5` 对应Git blob一致：文本明确按CRLF正规化比较，二进制逐字节，不把它写成全部原始字节相同。主工作区101份来源和5份manifest分别冻结，根锁精确字节仍为D哈希。正常 `npm ci --no-audit --no-fund --prefer-offline` 退出0，543包，根补丁applied4/verified4；锁前后不变。
+
+完整树再次发现同七条WASM残留；核对六目录、无链接边界及116份文件与D保存内容一致后，完整移入新的本轮忽略证据。随后递归依赖树无问题，Windows九项原生探针及postgres补丁/ESM/CJS通过。API首次增量构建退出0但未重发射未受影响入口，保留日志并仅备份ignored的API tsbuildinfo，再正常全量构建；API与Web生产构建均退出0，入口已刷新。
+
+现有集成runtime工具另作纯编译并验证本工作区101来源/83产物。与候选比较77份逐字节相同，另6份仅CRLF，正规化后83份全部一致；原始逐字节比较false与EOL分析分别保留，未宣称83份都是同一原始哈希。完整check、两个Node下界和113集成不在主工作区重复执行，来源映射与本次实际检查明确区分。证据为 `test-results/root-D-finalize-20261101/final-readback.json`，passed=true；构建、日志和node_modules不提交为源码。

@@ -51,3 +51,19 @@
 后续维护者于北京时间 19:25:19 将获批的 #2 squash 合入 main `c80fef65fa9f18a71305569ed5b1ee5e76a7fe61`。#3 的四项文档提交随后重放到该 main，新 Head 为 `39462e716ce4a7837c3519385e8580d06cd0dad6`；八份文档 blob 与完整 delta 均不变，delta SHA-256 为 `02a3e882db0664c632d647d50504c5741650c14f950862b5c7f5ce90636eac1d`。新 Head 的[四项 CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41303531980)成功，已转为 Ready 并请求独立批准，[回复](https://github.com/NekoMint-Labs/Unfreq/pull/3#issuecomment-6557621170)已发布。此前的未合并说明仍保留为阶段记录。
 
 维护者随后设置 #6；[只读验收记录](./ruleset-integration-20261101.md)确认四项检查已在默认分支实际生效，其他可读取配置不变，issue 已关闭。#7 的 v4 候选则在真实 FIN/恢复门禁失败，见[负向评估](./postgres-v4-20261101.md)；未将其升级或补丁删除混入当前实现。
+
+## B1/B2：关停交错回归
+
+针对[#4新评论](https://github.com/NekoMint-Labs/Unfreq/pull/4#issuecomment-6557377329)，在其精确旧Head `ff18fc7` 上另作测试、夹具、来源冻结及文档补充，提交 `ce93dcc2fbdf0c868d441a77a4cc8e99df320d97`。没有重写生产代码或schema。真实HTTP在通过准入后由本轮专属PostgreSQL INSERT屏障挂起，待真实consumer stop完成才放行；验证同ID持久pending、原PID自然退出、新PID仅领取一次、作者仅一行、两个预期Provider阶段各一次。文档据此说明：关闭前已准入请求可以持久排队等待其他或新启动消费者，不能承诺停机期间完成。
+
+独立锁安装和完整本地check通过；最后夹具只读停止标记收紧后，lint、类型及冻结工具6/6另过，未把较早的check改标成较晚源码成绩。提交经普通快进推送到#4自己的head `fix/b1-generation-recovery`，Base仍为`docs/a3-data-lifecycle`、Draft不变。由于该Base已重排而当前PR有冲突，自动PR CI未触发；随后对精确Head只手动触发一次[独立CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41312031728)。四项全部成功，工具14、API268、Web38、真实集成47/47，新增交错用例通过。下载日志确认PG、Redis与网络移除；未直接取得远端manifest，不外推其未读字段。
+
+历史NULL pending盘点/不自动纳管、所有副本同数据库与同C、所有attempt/owner/lease/state栅栏以及未知付费工作不盲重放保持。C1仍另作接入。当前#4不是可合并状态；#3独立批准/合并后仍须协调冲突并对新Head重跑。[处理回复](https://github.com/NekoMint-Labs/Unfreq/pull/4#issuecomment-6558742765)已发布。
+
+## B3：预算与代理链验收提案
+
+针对[#5新评论](https://github.com/NekoMint-Labs/Unfreq/pull/5#issuecomment-6557377866)，提交 `34c2ae338a2b75c5b96b86b102ce8cd65effa5ca` 只新增[提案](./b3-pilot-boundaries-20261101.md)并在部署/运维各加一个入口，共三份Markdown。23个预算字段按当时PR5范围逐项核对；20人pilot、接收30次生成与20次新音频的数值仅待评审。成本以待核实际模型上界的变量公式说明，包含重试/备用、固定窗口边界及UTF-16与厂商计费的差异。全零结构样例保持，没有批准或启用生产数值。
+
+文档明确默认Caddy会丢弃不受信任的传入XFF，仅配置API CIDR无法恢复已丢弃的访客地址；给出真实生效配置、逐跳地址、双客户端、伪造头和副本一致性的目标环境验收步骤，没有把应用层桩测试当作NPM→Caddy→API实测。共享Redis/DB、namespace、HMAC、策略、fail-closed、缓存音频、owned socket drain及未知PENDING/F1边界均保留。
+
+三份远端文件逐字读回一致，提交差异确为三份文档；[新Head四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41308905465)全部成功，真实集成65/65。#5仍Draft并堆叠#4，[处理回复](https://github.com/NekoMint-Labs/Unfreq/pull/5#issuecomment-6558259986)已读回；父分支整合、最终基线协调及对应新Head检查仍待前置条件，未继承旧绿灯作为合并资格。
