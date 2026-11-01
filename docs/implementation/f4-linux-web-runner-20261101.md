@@ -112,3 +112,19 @@ Buildx 容器按 driver 使用 privileged，验证期间实际检查容器 ID、
 D1 trace另暴露确定的React418：Galaxy服务器直接格式化本地时间，Linux UTC与上海浏览器文本不一致。改为SSR/首次hydrate一致的时间占位，随后按浏览器本地时区格式化，保留time的精确dateTime；不固定为无标注的北京时区，也不隐藏hydration警告。真实SSR在UTC/上海/纽约4项通过，新增真实SSR→上海浏览器回归，使完整镜像目标增为38项。其他locale调用经owning链核对是Server-only、浏览器交互后显示或未挂载旧组件，本轮没有扩展冻结能力。
 
 运行器同时改为镜像载入后先清理私有builder和state卷，再启动探针及Chromium。清理补扫使用inspect返回的完整容器ID，避免64位创建ID与12位发现ID重复登记，移除后再inspect造成假失败。上述旧轮原manifest仍exit1/cleaned=false；builder本身已cleaned=true，另存的recovery-cleanup.json实际核对应用容器/网络及builder容器/卷均为0，没有覆盖原记录或追加删除。
+
+`2ef7f1e` 保存上述修复。完整本地 `f4-image-fixes-full-check-20261101.log` exit0：工具77/API765（67文件）/Web192（23文件），两端lint/类型/构建通过。没有重跑真实数据库113项，也没有把旧源结果改成本次源的证据。
+
+随后 `f9b1db581467a69bc6659c1a` 从干净 `2ef7f1e` 冻结158份Docker输入及12份验证输入，构建树 `2d7651474581a34f4245e66ac5599d35a05fff4b99fc6e3b68579245bd306d0e`，主锁仍为 `fa3ee88449b4142f0c68b7e4f21fcdca66cf51910dd174947dc4157229a387b7`。镜像Docker inspect ID为 `sha256:c4a703382006f6941b03a3a78331bc56ca5f23f521e8dc8bfe35c0bc294fc4f1`，BUILD_ID为 `TjmSx-rlSCEl6Z2lEmhHv`；成品探针通过，builder在运行前已实际清理，direct再次SIGTERM/143通过。
+
+这轮完整浏览器为37/38，只有D3 WebGL创建失败用例在context收尾报 `browserContext.close: Test ended.`。trace中降级、公开样本、私密排除、键盘打开及关闭后焦点恢复断言全部完成，最后断言结束后才发生Close context失败。没有证据证明浏览器OOM、crash或业务缺陷，根因未定；没有修改产品/夹具、吞掉close错误、跳过或加重试。新跨时区回归及前轮资源失败项均通过，实际Linux的两张OG已逐张查看，并读回header/正文/footer有字、上下安全边界无亮字；PNG仍1200×630。原37/38失败和trace保留，exit1且cleaned=true，不当成全套通过；后续以相同输入的新项目独立完整复验。
+
+### 评审修正后的完整复验
+
+2026-11-01 从 `baf41d32609bdfa144a05f192672938759a54795` 的干净隔离工作区执行新一轮 `8cf25fb31fdb028cc4757b8a`。此前中断的 `2100a8fa712bce85f253036b` 已确认 owner PID 不存在、构建被取消；唯一遗留的私有 BuildKit 容器和 state 卷逐项匹配完整 ID、固定镜像、限额、挂载、标签及卷指纹后清理。独立 `recovery-cleanup.json` 读回容器/卷/应用容器/网络均零残留，原 manifest 的 SHA-256 `484e361a25169e74adc77b12c8231b87b5669c9c34503df0c2fe6f4233c7401b` 未变，没有补写成初次成功。
+
+新轮冻结 158 份 Docker 输入和 12 份验证输入，构建树 `d98480d6a7fbf366b5d839fb65fc65bb2cd4c935417263960be8b9c74e0262c8`。相对旧轮，产品输入差异仅为换行；验证源码更新了两处 Cookie 名称，D3 用例、超时与重试策略未改。Docker inspect 的最终镜像 ID 为 `sha256:9920c3d8cb6e4da72aeaaf7576413590fc3515bc78a001a281551632cb8ccde0`，BUILD_ID 为 `DGlibD_fJVkIK_xz_sInK`。原生 musl SWC/sharp、PNG、contracts 和成品禁带目录探针通过；私有 builder 与 state 卷在浏览器前释放。
+
+完整镜像浏览器 **38/38**，用时 349.82 秒，skipped/unexpected/flaky 均为 0。直接 npm CMD 的本轮 SIGTERM 停止为 143，测试监督进程停止为 0，均无 OOM、dead 或 Docker error；结束读回 `sourceVerified=true`、`exitCode=0`、`cleaned=true`。中文与 emoji 两张真实路由 PNG 已逐张查看：标题、正文和页脚可读，页脚未挤出，图片仍是有长度预算的摘要，emoji 占位提示正确。
+
+原 37/38 的 D3 收尾失败仍保留。独立 trace 复核没有发现确定的夹具生命周期错误；新轮通过不等于已查明旧失败根因。证据位于 `test-results/f4-completion-20261101/test-results/web-image/run-8cf25fb31fdb028cc4757b8a-Jv3B7A/`，控制台日志为 `test-results/f4-completion-20261101-image.log`。这是 Windows Chromium 访问 Linux Web 镜像配合合成 API 的工程验收，不是 Linux 浏览器、实体手机或生产部署验收；后续依赖升级必须另做最终来源验证。
