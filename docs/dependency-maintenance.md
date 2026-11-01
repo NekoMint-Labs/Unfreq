@@ -4,7 +4,7 @@
 
 ## 本次读取和安装边界
 
-本机为 Node.js `22.22.2`、npm `10.9.7`。CI 与两个 Dockerfile 使用 Node 22，Docker 基础标签是可移动的 `node:22-alpine`。根 `engines` 仅声明 `>=20.9.0`；完整开发工具链中的 Vite `8.0.11` 要求 `^20.19.0 || >=22.12.0`，因此“满足根 engines”不足以证明可以运行全部检查。当前 Node 满足已锁工具的要求。
+初始盘点使用 Node.js `22.22.2`、npm `10.9.7`。CI 与两个 Dockerfile 使用 Node 22，Docker 基础标签是可移动的 `node:22-alpine`。当时根 `engines` 仅声明 `>=20.9.0`，低于完整开发工具链中 Vite `8.0.11` 的 `^20.19.0 || >=22.12.0` 要求；初始本机版本满足该要求。当前 v4 候选根范围已为 `^20.19.0 || >=22.12.0`，两个下界仍须按新候选分别验收，不能继承早期安装成绩。
 
 以下只读检查已完成，原始文件在被忽略的 `test-results/`：
 
@@ -22,7 +22,7 @@
 | Next 安全组 | Next / eslint-config-next `16.4.3`；React / React DOM `19.2.6` | Next 未出现在本次 outdated；React / DOM latest `19.3.1` | A1 已独立更新 Next，继续成对保留；重新检查 SSR、OG、登录 cookie、私密/撤回页面以及 Windows/Linux SWC 后再升级。Next 的 eslint 传递告警见下文，不能据此把运行时 Next 判为命中同一问题 |
 | API 请求组 | Fastify `5.8.5`、cors `11.2.0`、fastify-plugin `5.1.0`、Zod `4.4.3` | Fastify `5.12.7`、cors `11.3.1`、Zod `4.6.7` | 优先处理同主安全版本。拟实施最小批次 Fastify `5.12.7` + Zod `4.6.7`，cors 无本次直接安全告警，先保留 11.x 并验证。检查负向授权、cookie/CORS、非法 JSON/参数、Provider 结构输出及关闭生命周期；不能只跑 happy path |
 | ORM 与迁移组 | drizzle-orm `0.45.2`、drizzle-kit `0.31.10` | `0.45.4`、`0.31.11` | 后续独立补丁批次；ORM 与 kit 联合验证类型、事务、已有迁移、干净库迁移和备份恢复。不因 npm 建议而降到 kit `0.18.1`；未经审查不生成、重写或应用生产迁移 |
-| PostgreSQL 驱动组 | postgres `3.4.9` + 项目四文件哈希补丁 | latest `4.0.0` | 保留精确固定。上游版本与本地补丁不是可互换产物；须对照上游修复和 EOF/类型加载/预留/Drizzle 事务恢复集，再成组移除或更新补丁。详见[补丁说明](./postgres-startup-patch.md) |
+| PostgreSQL 驱动组 | postgres `3.4.9` + 项目四文件哈希补丁 | 新候选精确 `4.0.0` + 两文件生命周期补丁 | 成组退役旧安装器/补丁并接入新组，保留新postinstall与Docker接线；不新增健康队列期限、不重放已发送工作。本地检查、Node下界、真实PG/Redis135及新Linux依赖/Web38已验收，新补丁仍须独立审查；见[当前驱动说明](./postgres-driver.md)及[本轮记录](./implementation/postgres-v4-upgrade-20261101.md)，旧说明保留为历史 |
 | 3D 与 React 渲染组 | three `0.184.0`、types `0.184.1`、fiber `9.6.1`、drei `10.7.7` | `0.187.0`、`0.187.0`、`9.8.2`、`10.7.9` | 暂保留，后续四者联动。three `0.x` 的 minor 可能改变 API；验证星图坐标、命中、相机、图例、键盘列表、WebGL 降级及减少动画，并以实际浏览器检查材质与弃用提示 |
 | 测试工具组 | Vitest `4.1.5`、其 Vite `8.0.11`、Playwright `1.60.0` | Vitest wanted `4.1.12` / latest `5.0.5`，Playwright `1.64.1` | 后续先做 Vitest 4.x 与其允许的 Vite 修复版；重跑 API/Web 单测、运行器及真实隔离。Playwright 单独升级并安装对应浏览器，浏览器结果不能跨版本继承。无需因最新标签直接跨到 Vitest 5 |
 | TypeScript 与 lint 组 | TypeScript `5.9.3`、ESLint `9.39.4`、typescript-eslint `8.59.2` | TS latest `7.0.2`；ESLint wanted `9.39.5` / latest `10.14.0`；typescript-eslint `8.72.1` | 保留 TS 5；跨主升级须先有明确收益和迁移验证。lint 与插件成组审查，包含 glob 传递告警；不采用 audit 给出的 ESLint 4、config-next `0.2.4` 等破坏现有配置的降级 |
@@ -80,7 +80,7 @@
 
 ## 安装、验证与回退规则
 
-每组单独保存 manifest 与 lock，并检查锁变化是否只覆盖预期组和必要传递项。不混入跨主工具、无关字体、数据库迁移或数据处置。干净安装需运行 root `npm ci`，不能忽略 postinstall；随后核对 postgres 四文件哈希和 `npm ls` 的真实问题。Windows SWC 成功不替代 Linux musl 安装，两个生产依赖阶段也需分别确认。
+每组单独保存 manifest 与 lock，并检查锁变化是否只覆盖预期组和必要传递项。不混入跨主工具、无关字体、数据库迁移或数据处置。干净安装需运行 root `npm ci`，不能忽略 postinstall；随后按对应批次核对 postgres 补丁哈希和 `npm ls` 的真实问题。历史 3.4.9 为四文件，当前 v4 候选为 `pool.js/index.js` 两文件，包 SRI 与输入/输出 SHA 均固定；正常安装的 `applied/verified` 不能替代真实数据库恢复验收。Windows SWC 成功不替代 Linux musl 安装，两个生产依赖阶段也需分别确认。
 
 API 组至少运行 `npm run api:check`、共享 contracts 检查及真实隔离套件；API DTO/校验边界受影响时补 Web 类型与单测。Web/3D 组运行完整 `npm run web:check` 并检查生产构建浏览器中的实际交互。脚本/镜像改动另运行部署脚本检查和镜像准备。迁移组使用新建隔离数据库验证，不连接生产、不运行 `push` 改库。[Drizzle 官方说明](https://orm.drizzle.team/docs/kit-overview) 将 generate、migrate、push 和 Studio 明确区分，不能把 CLI 可启动当迁移成功。
 
@@ -105,3 +105,14 @@ npm 10.9.7 对两补丁候选及 esbuild 候选的原始重写均丢失了基线
 全平台虚拟树检查仍返回 1，已单独保留结果，不能写成全部通过。基线可选开发包 `@tailwindcss/oxide-wasm32-wasi 4.3.0`（`cpu: [wasm32]`）要求 `@napi-rs/wasm-runtime ^1.1.4`，却解析到根 `0.2.12`；该问题未由本轮引入。Rolldown 的同类包已有自己的 `1.1.4`，unrs 的 `^0.2.11` 则允许根版本。该 wasm32 父包不属于本轮 Windows x64 / Linux amd64 原生安装目标，本轮保留该虚拟边，不扩充升级组；原候选 esbuild invalid 已消失。实际平台安装后的 `npm ls --all` 与原生加载结果须另外记录。
 
 最终主锁正常 `npm ci` 实装540包、postgres四文件补丁验证通过；Windows平台多余WASM后代经逐个路径/包身份核验后完整保留移出，实际 `npm ls --all` 为exit0、problems为空，SWC/sharp/字体和四套esbuild原生编译通过。完整 `npm run check` exit0，工具41、API765、Web184及两端lint/类型/构建通过。最终官方审计仍28条，见 `f4-peer-final-audit-20261101.json`。完整Linux runner四次Docker环境失败，尚无成品/镜像浏览器通过成绩，见[补充记录](./implementation/f4-linux-web-runner-20261101.md)；平台虚拟树、候选、实际安装和成品验收分别记录，不能互相代替。其余测试工具、lint、ORM、3D、字体、运行时及有状态镜像维护组继续按前述边界独立推进。
+
+
+### 2026-11-01 v4 候选与独立完整 audit
+
+新候选基于 `c54f7e4`，锁 `cdf351ca90d8d3325c349c16abefa71e35327d8aabd07a78ec3dfab16b64b3b4` 相对该基线只改 API workspace 和 postgres 两条包记录。四连接工厂保留 `infer: true`；v4 使用新的两文件生命周期补丁，不能称为已无项目补丁。正常安装543包、postinstall applied2/verified2及轻量 TCP17/17已确认。完整本地检查工具79/79、API767/767、Web192/192及两端lint/类型/构建通过，选定108份来源前后清单相同，清单 SHA256 为 `aa1561c37a3f308fb6a1331264275a5a7b123c0e6f4a85b49c6e71949b67c61a`。
+
+本轮 Node `20.19.0`、`22.12.0` 已各自通过补丁幂等0/2、真实 ESM/CommonJS/Drizzle 模块2/2、Windows 原生工具、tsx `.mts/.cts`、17项合成 TCP 诊断、离线 generate 和 Vitest 6/6。两份 SQL 哈希相同，既有迁移与8项安装输入未变；这些是当前 C 候选的独立日志。7条不适用 WASM 残留对应6个目录，经祖先/后代无链接、包身份及116文件哈希核验后完整保留移出；随后完整 `npm ls --all --json` 的顶层和递归 `problems/extraneous` 均为空。
+
+首次完整真实 PG/Redis `run-u3gw8N / e0cb6725b23d` 为88通过、47跳过/135，core `beforeAll` 超过原30000ms，exit1、cleaned=true；该次失败与旧100/119均保留。同源、同锁、原预算的独立完整重跑 `run-Z8LGD3 / a9ded2fc5068` 已135/135、无失败/跳过/todo，exit0、cleaned=true。两次108份来源未变、83份编译产物有冻结记录，独立容器/网络/卷读回均为0。新v4的Linux API依赖阶段 `c7e41ee21c733688970366c9` 与Web成品 `876dc359ed169e6e5dad38d9` 已独立验收，后者浏览器38/38；两者exit0、cleaned=true。API阶段不包含完整API runner，Web证据不沿用旧3.4.9镜像。
+
+这份最终锁已用官方 npm11.19.1独立完成完整 audit，exit1且报告有效：20条 moderate 包记录，16 dev-only / 4 正式依赖树，5直接 / 15传递，对应2条直接 advisory。正式链含 kit → esm-loader → core-utils → esbuild0.18.20，不能写成全是开发依赖，也没有以跨主或降级建议换取零告警。实际报告在 `E:\unfreq\test-results\full-audit-20261101\final-v4\`；冻结范围仅 lock、四份 manifest及npm CLI/配置，不含仍在编辑的应用/安装器/补丁全部源码。完整状态及旧100/119负评的保留方式见[v4升级记录](./implementation/postgres-v4-upgrade-20261101.md)。

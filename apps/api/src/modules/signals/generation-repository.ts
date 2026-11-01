@@ -84,6 +84,7 @@ export function configureSignalGenerationRepository(options: GenerationRepositor
     throw new Error("Generation lock timeout must be shorter than statement timeout.");
   }
   const client = postgres(env.databaseUrl, {
+    infer: true,
     connect_timeout: Math.ceil(env.healthDependencyTimeoutMs / 1000),
     max: options.maxConnections ?? 2,
     prepare: false,

@@ -6,6 +6,7 @@ import type { AiSignalSchedulerConfig, AiSignalSchedulerRepository, SchedulerBat
 // instead of returning while an unbounded INSERT can still commit later.
 export function configureAiSignalSchedulerRepository(config: Pick<AiSignalSchedulerConfig, "dbStatementTimeoutMs" | "dbLockTimeoutMs">): AiSignalSchedulerRepository {
   const client = postgres(env.databaseUrl, {
+    infer: true,
     max: 1, prepare: false,
     connect_timeout: Math.ceil(env.healthDependencyTimeoutMs / 1000),
     connection: { statement_timeout: config.dbStatementTimeoutMs, lock_timeout: config.dbLockTimeoutMs },
