@@ -112,7 +112,7 @@ F2 同一隔离套件还运行真实部署脚本的合成 pg_dump/gzip → 空�
 
 F2 的真实 SQL 另验证十二类副本引用、样本截断、媒体元数据和不输出私密内容；GET 详情/matches/Galaxy 前后对比数据库与本地 Provider 请求事件，确认不派发或回填。新审计的 signal/attempt 关联由真实 worker 验证。源码、脚本及 Linux fixture 纳入本轮来源指纹。
 
-`npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；默认完整集成命令仍覆盖八个文件。固定 --generation-checkpoints 参数仅供任务重启专项诊断，不替代完整门禁。
+`npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；当前默认完整集成命令覆盖九个文件，包含后续新增的迁移CLI回归，见下文CI节。固定 --generation-checkpoints 参数仅供任务重启专项诊断，不替代完整门禁。
 
 2026-11-01 的 [F2 任务观察调整](./implementation/f2-generation-observation-20261101.md) 将 checkpoint 中排队、单次执行和关闭准备分别验证。完成观察使用单次 SQL 批量读取、持久化的完成时间/attempt 截止比较及不随重排刷新的总 watchdog；关闭额外要求 shutdown 取消，不能用 deadline 取消冒充。旧 3 秒准备、5 秒整批失败仍是历史延迟记录，新门禁不宣称这些旧窗口均已通过。生产执行预算、执行权检查和并发上限没有调整。
 
@@ -167,6 +167,8 @@ API成品的进行中任务专项可使用`npm run api:image:verify -- --resume-
 
 PR #8 精确 Head `590f8f4` 的[运行41330941297](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41330941297)四项检查已通过：工具79、API767、Web192及真实 PG/Redis135/135。该提交为独立 Web job 补充 contracts 构建前置步骤；首次缺少 dist 的失败仍保留在[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。远端 CI 不替代主目录重新执行；主目录对应安装、原生加载、构建及来源/产物映射单独登记，未重跑完整 check、两个 Node 下界或完整集成。
 
-本轮新增 API 成品工具后的完整工具门禁实际82/82、无失败/取消/跳过/todo，exit0，13.71秒，日志为 `test-results/api-image-tools-complete-20261102.log`。首轮80/82的资源超时和 CLI 帮助文本断言问题、修正范围见 API 镜像记录；未放宽原预算或输入/远端保护。该工具成绩不转记为两端全部业务单测或完整数据库集成。
+前一阶段新增 API 成品工具后的完整工具门禁实际82/82、无失败/取消/跳过/todo，exit0，13.71秒，日志为 `test-results/api-image-tools-complete-20261102.log`。首轮80/82的资源超时和 CLI 帮助文本断言问题、修正范围见 API 镜像记录；未放宽原预算或输入/远端保护。该历史成绩不转记为后续工具或两端全部业务单测、完整数据库集成。
+
+Web宿主等待修复后的代码提交 `453f9c6` 已完成工具87/87，并通过[四项远端CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41474310409)。本地139项集成、API20+4和Web38项的来源及实际运行仍分别登记，不由CI或文档同步替代重跑。
 
 普通 `npm run check` 仍不强制要求 Docker 或测试浏览器；真实服务集成由显式命令和独立 CI job 负责。

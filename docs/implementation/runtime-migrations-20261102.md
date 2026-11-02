@@ -53,4 +53,6 @@ dev generate额外的网络度量首轮把tsx父进程命名管道IPC误当IP网
 
 最终Web同锁成品的三阶段完整构建已完成，首轮在宿主waitHttp发生unsettled top-level await、未进入浏览器。修复有引用超时后，受限续验核对同一158份构建输入和固定镜像 `60b1bca5587d…`，`run-cb56e66fd506dc0b35cb0e1c-5krnkN` 实际38/38、外层exit0、sourceVerified/cleaned=true；当前13份验证来源也全部冻结，旧失败保留。成品165包按名及嵌套路径均无kit/loader/core-utils/esbuild，原生探针、中文及占位字形OG、两种停止通过，详见[Web补充记录](./web-runtime-readiness-20261102.md)。最终工具测试87/87；这次工具修复后再次独立核对API136输入/112产物无漂移。
 
+Web工具修复后的代码提交 `453f9c6d010598ba8a618c3e3d9855cd69edcb78` 也已通过[四项远端CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41474310409)。后续仅同步文档中的当前摘要与历史标识，不改变该代码或锁，也不重复构建成品。
+
 回退需成组恢复manifest、lock、迁移脚本、Docker及测试接线至基线；不回退既有SQL或数据库账本。KIT与runner的双向幂等不构成生产恢复结论。本轮没有main合并、生产部署、真实数据迁移或收费模型调用。
