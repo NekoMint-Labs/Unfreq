@@ -26,12 +26,13 @@
     "deploy:test": "sh scripts/test-deployment-scripts.sh",
     "e2e": "npm run contracts:build && playwright test",
     "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/postgres-module.test.mjs tests/integration/runtime-guard.test.mjs tests/images/web-verifier.test.mjs tests/recovery/redis-aof-safety.test.mjs tests/images/og-webpack.test.mjs tests/images/web-fetch-guard.test.mjs tests/images/web-stop-policy.test.mjs tests/images/web-builder.test.mjs",
+    "api:image:verify": "node scripts/verify-api-image.mjs",
     "web:image:verify": "node scripts/verify-web-image.mjs",
     "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
     "web:build": "npm run contracts:build && npm --workspace @unfreq/web run build",
     "web:check": "npm run web:lint && npm run web:typecheck && npm run web:test && npm run web:build",
     "web:lint": "npm --workspace @unfreq/web run lint",
-    "web:test": "npm --workspace @unfreq/web run test",
+    "web:test": "npm run contracts:build && npm --workspace @unfreq/web run test",
     "web:typecheck": "npm run contracts:typecheck && npm --workspace @unfreq/web run typecheck"
   },
   "engines": {

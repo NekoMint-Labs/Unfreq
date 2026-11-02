@@ -2,6 +2,8 @@
 
 批次：2026-11-01；记录写于2026-11-02（北京时间）。基线为 `c54f7e4e28d091954231f268665d1f13d9e1320a`，工作目录为 `C:\Users\zrjdx\.codex\worktrees\unfreq-v4-upgrade\unfreq`，对应[issue #7](https://github.com/NekoMint-Labs/Unfreq/issues/7)及[PR #8](https://github.com/NekoMint-Labs/Unfreq/pull/8)。代码提交为 `476c89b`，Node/数据库证明提交为 `9fb6ee8`；本地检查、两个Node下界、135/135真实PG/Redis重跑、Linux API依赖阶段及Web成品38/38均已完成。后续提交补CI准备步骤及本记录，具体输入范围见下文；这不表示已经合并main或部署。
 
+2026-11-02后续：[完整API runner构建、同一成品18项运行/关停/清理验收及独立Web测试入口](./api-image-20261102.md)已另行记录。下文的“仅依赖阶段”保留本批历史范围，不覆盖后续成品验收，也不转写成生产部署结果。
+
 ## 候选范围与锁
 
 API 精确固定 `postgres@4.0.0`。相对本轮基线的 lock 对象只改变 `apps/api`、`node_modules/postgres` 两条记录；当前 lock SHA256 为：

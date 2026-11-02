@@ -2,4 +2,5 @@
 set -eu
 
 npm run api:migrate
-exec npm --workspace @unfreq/api run start
+cd apps/api
+exec node dist/server.js
