@@ -1,5 +1,7 @@
 # PostgreSQL 驱动 v4 与连接生命周期补丁
 
+2026-11-02后续[生产迁移器](./implementation/runtime-migrations-20261102.md)将kit留作开发generate，生产改用编译后的同版ORM migrator；driver版本与两文件补丁不变，SQL和账本不重写。最终API检查及新增CLI场景的139项真实回归通过；生产依赖裁剪、独立审计和最终镜像按该记录分别报告。
+
 本页描述 `postgres@4.0.0` 升级候选，实施状态见[本轮记录](./implementation/postgres-v4-upgrade-20261101.md)。候选仍带项目维护的两文件补丁；旧3.4.9安装器及四文件补丁已经退役，历史事实保留在[旧补丁说明](./postgres-startup-patch.md)。本地检查、两个Node下界、独立真实PG/Redis重跑135/135和Linux依赖/镜像验收已通过；首次冷初始化失败仍保留。候选的审查、基线整合与合并状态见[PR #8](https://github.com/NekoMint-Labs/Unfreq/pull/8)，本页不表示已升级main或已部署。
 
 ## 上游依据与本地补充

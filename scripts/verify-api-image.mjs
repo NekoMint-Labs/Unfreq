@@ -289,7 +289,7 @@ try {
   const probe = await docker(["exec", api, "node", "/tmp/api-image-probe.mjs"], { timeoutMs: 90_000 });
   await writeFile(path.join(directory, "probe.json"), probe.stdout);
   manifest.probe = JSON.parse(probe.stdout);
-  assert.ok(manifest.probe.passed >= 18);
+  assert.equal(manifest.probe.passed, 20);
   assert.equal(manifest.probe.passed, manifest.probe.checks.length);
 
   assert.equal((await inspectOwned("container", api)).State.Running, true);

@@ -45,6 +45,8 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [完整 API 镜像与独立 Web 测试入口](./implementation/api-image-20261102.md)
 - [API 成品进行中任务关停与重启](./implementation/api-active-shutdown-20261102.md)
 - [旧版本回退后的真实业务与连接故障回归](./implementation/rollback-faults-20261102.md)
+- [生产迁移器与开发工具依赖边界](./implementation/runtime-migrations-20261102.md)
+- [Web 宿主等待修复与同成品续验](./implementation/web-runtime-readiness-20261102.md)
 - [B3 pilot 预算提案与真实代理链验收](./implementation/b3-pilot-boundaries-20261101.md)
 - [参赛事实与证据待办](./competition-evidence.md)
 - [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)

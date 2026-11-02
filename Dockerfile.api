@@ -49,7 +49,6 @@ COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY apps/api/drizzle.config.ts apps/api/drizzle.config.ts
 COPY scripts/api-entrypoint.sh ./scripts/api-entrypoint.sh
 RUN chmod +x ./scripts/api-entrypoint.sh
 EXPOSE 4000

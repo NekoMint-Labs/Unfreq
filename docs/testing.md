@@ -112,7 +112,7 @@ F2 同一隔离套件还运行真实部署脚本的合成 pg_dump/gzip → 空�
 
 F2 的真实 SQL 另验证十二类副本引用、样本截断、媒体元数据和不输出私密内容；GET 详情/matches/Galaxy 前后对比数据库与本地 Provider 请求事件，确认不派发或回填。新审计的 signal/attempt 关联由真实 worker 验证。源码、脚本及 Linux fixture 纳入本轮来源指纹。
 
-`npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；默认完整集成命令仍覆盖八个文件。固定 --generation-checkpoints 参数仅供任务重启专项诊断，不替代完整门禁。
+`npm run api:recovery:verify` 使用同一运行器的新项目，固定选择备份恢复和核心权限/副本两个文件，适合独立复核 F2。它不复用上一轮服务或接受任意测试路径，manifest 的 scope 为 f2-recovery；当前默认完整集成命令覆盖九个文件，包含后续新增的迁移CLI回归，见下文CI节。固定 --generation-checkpoints 参数仅供任务重启专项诊断，不替代完整门禁。
 
 2026-11-01 的 [F2 任务观察调整](./implementation/f2-generation-observation-20261101.md) 将 checkpoint 中排队、单次执行和关闭准备分别验证。完成观察使用单次 SQL 批量读取、持久化的完成时间/attempt 截止比较及不随重排刷新的总 watchdog；关闭额外要求 shutdown 取消，不能用 deadline 取消冒充。旧 3 秒准备、5 秒整批失败仍是历史延迟记录，新门禁不宣称这些旧窗口均已通过。生产执行预算、执行权检查和并发上限没有调整。
 
@@ -135,6 +135,8 @@ npm run web:image:verify
 
 该入口从冻结来源构建 Dockerfile.web 的真实 runner，记录基础镜像、最终成品及 BUILD_ID；探测原生依赖和实际包/许可材料，使用镜像内 Next 与合成 API 验证页面和离线分享图。宿主 Chromium 访问 Linux Web 镜像，不作为 Linux 浏览器或实体设备结论。运行器/OG 的专项结果与完整镜像成绩分别记录，见[本轮实施记录](./implementation/f4-linux-web-runner-20261101.md)。
 
+生产迁移器锁的最终成品已在 `run-1f4107d248add6f442bc5369` 完成三阶段构建，宿主等待提前退出后保留原失败并核对清理。`npm run web:image:verify -- --resume-runtime=<自有构建runId>` 可严格复用来源未变、原资源已清理的同一成品，重新运行全部探针与浏览器，不接受任意镜像或URL。本轮 `run-cb56e66fd506dc0b35cb0e1c` 实际38/38、来源/停止/清理和外层exit0；158构建输入及13验证输入全部核对，成品实际不含旧kit工具链。等待修复、原失败和图片限制见[补充记录](./implementation/web-runtime-readiness-20261102.md)。
+
 当前 `postgres@4.0.0` 候选已完成独立 Linux Web 成品验收：`run-876dc359ed169e6e5dad38d9` 实际浏览器38/38，无跳过、重试或 flaky，SWC/sharp 原生探针、停止、来源读回和清理通过。158份 Docker 输入与12份验证输入前后核验通过；精确输入、镜像及 BUILD_ID 见[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。较早的 Docker 环境失败、37/38及中断记录保留在[Linux补充记录](./implementation/f4-linux-web-runner-20261101.md)，不由最终通过覆盖。该 Web 服务使用合成 API；生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
 
 ## 完整 Linux API 镜像
@@ -144,6 +146,8 @@ npm run api:image:verify
 ```
 
 该入口冻结 `Dockerfile.api` 的实际输入，构建开发、生产依赖及最终 runner，在新建隔离 PG/Redis 上执行真实入口迁移、应用请求与停止检查；不读取实际 `.env` 或连接生产。来源、资源所有权、完整运行及受限续验的规则见[API镜像记录](./implementation/api-image-20261102.md)。
+
+生产迁移器最终提交d470fae的完整API构建 `run-ac8e873d8fe30c8e9c57f0b7` 实际20/20，同一成品 `e27c26b864fa…` 的 `run-8858d0fbd74b7f84024c7feb` 再验20+4进行中任务关停/重启；均外层exit0、来源及清理通过。空/blank URL子进程拒绝、27项迁移及kit/loader实际缺失均覆盖，详见[迁移器记录](./implementation/runtime-migrations-20261102.md)。下段18项仍仅属旧成品历史范围。
 
 本轮为同一成品的两阶段证据：`run37d9722` 完成全部构建阶段与构建器清理，随后 DockerHub pgvector 鉴权 EOF 使原 full run exit1、runtime未启动；核对同一311份 COPY 输入、探针/构建器与原 image ID 后，`run-5dd3535dc5ed52358a915845-nXZsky` 使用本机已有官方 RepoDigest 完成18/18、27项迁移、PID1为node、SIGTERM后506ms退出0，sourceVerified/cleaned=true、cleanupFailures为空，续验外层exit0。314份来源（311份 COPY、3份验证输入）的最终独立哈希核对无漂移，容器/网络/卷独立读回均为空。不能将续验通过改写为原整轮 exit0；较早的清理枚举错误和首次续验失败另存原记录。已有 `api:integration` 的135项、成品18项和工具82项属于不同门禁，互不替代。
 
@@ -157,10 +161,14 @@ API成品的进行中任务专项可使用`npm run api:image:verify -- --resume-
 
 ## CI
 
+生产迁移器新增第9个完整集成文件，4组覆盖空库27项/幂等、故障DDL/数据/ledger整体回滚、不可达DB及空/blank URL不得迁移到受控PG默认库。CLI及SQL/journal纳入136份来源、112份产物保护，原8文件与预算不变。最终run-Yjpd5T实际139/139、exit0、cleaned=true；API检查84工具/767单测和构建通过，同锁Web192及构建另有完整check证据，详见[迁移器记录](./implementation/runtime-migrations-20261102.md)。
+
 现有 API、Web、部署脚本任务保留。Web 单测已并入 `web:check`，不再额外重复执行。新增独立 `Isolated API integration` job，运行同一个托管集成命令；不需要仓库 secrets 或收费 AI。
 
 PR #8 精确 Head `590f8f4` 的[运行41330941297](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41330941297)四项检查已通过：工具79、API767、Web192及真实 PG/Redis135/135。该提交为独立 Web job 补充 contracts 构建前置步骤；首次缺少 dist 的失败仍保留在[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。远端 CI 不替代主目录重新执行；主目录对应安装、原生加载、构建及来源/产物映射单独登记，未重跑完整 check、两个 Node 下界或完整集成。
 
-本轮新增 API 成品工具后的完整工具门禁实际82/82、无失败/取消/跳过/todo，exit0，13.71秒，日志为 `test-results/api-image-tools-complete-20261102.log`。首轮80/82的资源超时和 CLI 帮助文本断言问题、修正范围见 API 镜像记录；未放宽原预算或输入/远端保护。该工具成绩不转记为两端全部业务单测或完整数据库集成。
+前一阶段新增 API 成品工具后的完整工具门禁实际82/82、无失败/取消/跳过/todo，exit0，13.71秒，日志为 `test-results/api-image-tools-complete-20261102.log`。首轮80/82的资源超时和 CLI 帮助文本断言问题、修正范围见 API 镜像记录；未放宽原预算或输入/远端保护。该历史成绩不转记为后续工具或两端全部业务单测、完整数据库集成。
+
+Web宿主等待修复后的代码提交 `453f9c6` 已完成工具87/87，并通过[四项远端CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41474310409)。本地139项集成、API20+4和Web38项的来源及实际运行仍分别登记，不由CI或文档同步替代重跑。
 
 普通 `npm run check` 仍不强制要求 Docker 或测试浏览器；真实服务集成由显式命令和独立 CI job 负责。
