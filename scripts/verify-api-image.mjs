@@ -3,12 +3,12 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createOwnedWebBuilder } from "./web-image-builder.mjs";
 
-const usage = "Usage: node scripts/verify-api-image.mjs [--resume-runtime=<owned-run-id>]\nBuild the real Linux API runner and test it with disposable PostgreSQL/Redis and synthetic data.\nResume accepts only a prior owned build with identical Docker inputs and probe.\n";
+const usage = "Usage: node scripts/verify-api-image.mjs [--resume-runtime=<owned-run-id> | --resume-shutdown=<owned-run-id>]\nBuild the real Linux API runner and test it with disposable PostgreSQL/Redis and synthetic data.\nResume accepts only a prior owned build with identical Docker inputs and probe.\n";
 if (process.argv.length === 3 && process.argv[2] === "--help") { console.log(usage); process.exit(0); }
-const resumeMatch = process.argv.length === 3 ? /^--resume-runtime=([a-f0-9]{24})$/u.exec(process.argv[2]) : null;
+const resumeMatch = process.argv.length === 3 ? /^--resume-(runtime|shutdown)=([a-f0-9]{24})$/u.exec(process.argv[2]) : null;
 if (process.argv.length !== 2 && !resumeMatch) { console.error(usage); process.exit(1); }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runId = randomBytes(12).toString("hex");
@@ -27,8 +27,12 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => [
   "CI", "NO_COLOR", "FORCE_COLOR",
 ].includes(key.toUpperCase())).map(([key, value]) => [key.toUpperCase(), value]));
 const verificationPaths = ["scripts/verify-api-image.mjs", "scripts/web-image-builder.mjs", "tests/images/api-image-probe.mjs"];
+const activeShutdown = resumeMatch?.[1] === "shutdown";
+const extraVerificationPaths = activeShutdown ? ["api-image-active-shutdown.mjs", "api-image-held-provider.mjs", "api-image-active-probe.mjs"].map((name) => `tests/images/${name}`) : [];
 const manifest = { runId, startedAt: new Date().toISOString(), syntheticOnly: true,
-  scope: "Real Dockerfile.api runner, production-mode synthetic HTTP/PG/Redis checks and idle SIGTERM; not production or active-job drain acceptance.",
+  scope: activeShutdown
+    ? "Previously built real API image, synthetic production HTTP/PG/Redis and in-flight local Provider shutdown/restart; not production or remote paid computation."
+    : "Real Dockerfile.api runner, production-mode synthetic HTTP/PG/Redis checks and idle SIGTERM; not production or active-job drain acceptance.",
   sourceScope: "Frozen Docker COPY inputs plus verifier/probe sources; not an entire repository signature.",
   stages: [], images: {}, inputs: {}, verificationInputs: {}, failures: [], stops: [], cleanupFailures: [] };
 let directory, endpoint, builder, activeChild;
@@ -67,7 +71,7 @@ async function inspectOwned(kind, id) {
   assert.equal(kind === "container" ? value.Config.Labels[label] : value.Labels[label], runId, "Resource ownership changed");
   return value;
 }
-async function createContainer(role, image, options = [], command = []) {
+async function createContainer(role, image, options = [], command = [], start = true) {
   const name = `${networkName}-${role}`;
   const result = await docker(["create", "--name", name, "--label", `${label}=${runId}`,
     "--network", networkName, "--network-alias", role, "--security-opt", "no-new-privileges",
@@ -76,7 +80,7 @@ async function createContainer(role, image, options = [], command = []) {
   containers.add(id);
   const inspected = await inspectOwned("container", id);
   assert.deepEqual(inspected.HostConfig.PortBindings, {}, "Host port publication is refused");
-  await docker(["start", id]);
+  if (start) await docker(["start", id]);
   return id;
 }
 async function untilReady(id, command, timeoutMs = 60_000) {
@@ -186,7 +190,7 @@ try {
     /^(apps\/api\/|packages\/contracts\/|patches\/)/u.test(relative)).sort();
   const frozen = path.join(directory, "context");
   for (const [base, selected, hashes] of [[frozen, paths, manifest.inputs],
-    [path.join(directory, "verification"), verificationPaths, manifest.verificationInputs]]) {
+    [path.join(directory, "verification"), [...verificationPaths, ...extraVerificationPaths], manifest.verificationInputs]]) {
     for (const relative of selected) {
       assert.ok(!relative.split("/").some((part) => ["node_modules", "dist", ".git", "test-results"].includes(part)));
       assert.ok(!/^\.env(?:\.|$)/u.test(path.basename(relative)) || path.basename(relative).endsWith(".example"), "Environment files are refused");
@@ -206,7 +210,7 @@ try {
   manifest.sourceTreeSha256 = sha(JSON.stringify(manifest.inputs));
   await save();
   if (resumeMatch) {
-    await resumeOwnedBuild(resumeMatch[1]);
+    await resumeOwnedBuild(resumeMatch[2]);
   } else {
   const nodeImage = await resolveImage("node:22-alpine");
   builder = createOwnedWebBuilder({ docker, env, directory, runId, endpoint });
@@ -304,6 +308,12 @@ try {
   assert.equal(stop.dead, false);
   assert.equal(stop.error, "");
   assert.match(logs.stdout + logs.stderr, /api server shutting down/u);
+  if (activeShutdown) {
+    const { verifyActiveShutdown } = await import(pathToFileURL(path.join(directory, "verification/tests/images/api-image-active-shutdown.mjs")).href);
+    manifest.activeShutdown = {};
+    await verifyActiveShutdown({ docker, createContainer, untilReady, inspectOwned, imageId: manifest.image.id,
+      apiEnv, policy, pg, directory, runId, record: manifest.activeShutdown, save });
+  }
   await verifySources(frozen);
   manifest.sourceVerified = true;
   exitCode = 0;

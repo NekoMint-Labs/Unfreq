@@ -44,7 +44,7 @@ test("API image help works without Docker or inherited credentials", () => {
   assert.equal(result.stderr, "");
 });
 test("API image verifier rejects caller-selected resources before Docker", () => {
-  for (const args of [["--image", "existing-production"], ["--database-url=postgres://localhost/production"], ["--resume-runtime=../other"], ["--resume-runtime=abc"], ["--help", "extra"]]) {
+  for (const args of [["--image", "existing-production"], ["--database-url=postgres://localhost/production"], ["--resume-runtime=../other"], ["--resume-runtime=abc"], ["--resume-shutdown=../other"], ["--help", "extra"]]) {
     const result = invokeApi(args, { PATH: "" });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Usage:/);
@@ -53,7 +53,7 @@ test("API image verifier rejects caller-selected resources before Docker", () =>
 });
 test("API image verifier refuses remote and UNC endpoints without cleanup calls", () => {
   for (const DOCKER_HOST of ["tcp://forbidden.invalid:2375", "npipe:////remote-server/pipe/docker_engine"]) {
-    for (const args of [[], ["--resume-runtime=1234567890abcdef12345678"]]) {
+    for (const args of [[], ["--resume-runtime=1234567890abcdef12345678"], ["--resume-shutdown=1234567890abcdef12345678"]]) {
       const result = invokeApi(args, { DOCKER_HOST, PATH: "" });
       assert.equal(result.status, 1);
       assert.match(result.stderr, /Remote Docker endpoints are refused/);

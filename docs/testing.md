@@ -149,7 +149,11 @@ npm run api:image:verify
 
 ## 源码与依赖组回退演练
 
+API成品的进行中任务专项可使用`npm run api:image:verify -- --resume-shutdown=<自有构建runId>`，在同源镜像上执行原18组及4组真实worker关停/重启检查。2026-11-02最终run9d8ce16实际18/18+4/4、sourceVerified/cleaned=true、exit0；两次关停前都确认请求仍挂起，从探针开始到停止完成的宿主计时上界2.62/2.93秒均小于镜像内原25秒材料期限，详见[专项记录](./implementation/api-active-shutdown-20261102.md)。这是本地合成HTTP，不证明远端实际计算停止。
+
 2026-11-02 在独立 Git archive 副本完成 `c54f7e4` 的有限范围演练：568份文件与原 Git blob 一致；正常权限 `npm ci` 实装542包，保留旧3.4.9四文件 postinstall，补丁SHA、幂等0/4、原生ESM/CJS与Drizzle构造通过，零SQL。首次全树虽exit0仍有7条多余 WASM 记录，先完整保留移出6个根目录并核对116文件哈希，再确认最终全树exit0且顶层及递归问题为空。源码及主目录4.0安装未变。日志、原沙箱EPERM、初始树和最终报告在 `test-results/postgres-rollback-20261102/`；不据此认定旧数据库恢复、业务/FIN、镜像或生产回退通过。
+
+随后同一冻结568份源码、同一安装的原完整`npm run api:integration`已113/113、8文件全过，runner/外层exit0、cleaned=true，原预算和断言不变。包括EOF19、真实握手RST、业务、调度、生成、预算和合成SQL/媒体恢复；101份运行来源、83份产物和四补丁独立核对一致，主目录v4安装未变，项目容器/网络/卷读回为空。见[回退故障记录](./implementation/rollback-faults-20261102.md)。上段只记录先前安装演练的范围，后续成绩不覆盖原失败，也不构成生产恢复或版本降级授权。
 
 ## CI
 
