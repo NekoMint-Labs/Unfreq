@@ -50,6 +50,65 @@ async function expectDraftUnavailable(context: BrowserContext) {
   }
 }
 
+test("FM credential forms stay disabled until hydration and then establish an SSR session", async ({ page, context, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
+  let releaseJavaScript = () => {};
+  const javaScriptGate = new Promise<void>((resolve) => { releaseJavaScript = resolve; });
+  let heldRequests = 0;
+  let released = false;
+  const staticJavaScript = /\/_next\/static\/.*\.js(?:\?.*)?$/;
+  await context.route(staticJavaScript, async (route) => {
+    if (new URL(route.request().url()).origin === origin && !released) {
+      heldRequests += 1;
+      await javaScriptGate;
+    }
+    await route.continue();
+  });
+  try {
+    // Commit the actual SSR document while its client JavaScript remains held.
+    // DOMContentLoaded would wait for those scripts and miss the unsafe window.
+    await page.goto("/login?returnTo=%2Fme", { waitUntil: "commit" });
+    const registerPassword = page.getByLabel("设置密码", { exact: true });
+    const frequency = page.getByLabel("FM", { exact: true });
+    const password = page.getByLabel("密码", { exact: true });
+    const registerButton = page.getByRole("button", { name: "创建我的 FM 频率", exact: true });
+    const loginButton = page.getByRole("button", { name: "FM 登录", exact: true });
+    await expect(registerPassword).toBeVisible();
+    await expect.poll(() => heldRequests).toBeGreaterThan(0);
+    for (const control of [registerPassword, frequency, password, registerButton, loginButton]) {
+      await expect(control).toBeDisabled();
+    }
+    for (const credential of [registerPassword, password]) {
+      await expect(page.locator("form").filter({ has: credential })).toHaveAttribute("method", "post");
+    }
+    released = true;
+    releaseJavaScript();
+    for (const control of [registerPassword, frequency, password, registerButton, loginButton]) {
+      await expect(control).toBeEnabled();
+    }
+    await frequency.fill("FM 78.23");
+    await password.fill("runtime-password");
+    const loginResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/auth/frequency/login" && response.request().method() === "POST";
+    });
+    await loginButton.click();
+    expect((await loginResponse).status()).toBe(200);
+    await expect(page).toHaveURL(/\/me$/);
+    await expect(page.getByRole("heading", { name: "航行日志" })).toBeVisible();
+    expect((await context.cookies()).find((cookie) => cookie.name === "unfreq_session")?.httpOnly).toBe(true);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "航行日志" })).toBeVisible();
+    const ssr = await context.request.get("/me");
+    expect(ssr.status()).toBe(200);
+    expect(await ssr.text()).toContain(privateSeed);
+  } finally {
+    released = true;
+    releaseJavaScript();
+    await context.unroute(staticJavaScript);
+  }
+});
+
 test("FM login establishes a cookie that survives SSR navigation and reload", async ({ page, context }) => {
   await page.goto("/login?returnTo=%2Fme");
   await page.getByLabel("FM", { exact: true }).fill("FM 78.23");
