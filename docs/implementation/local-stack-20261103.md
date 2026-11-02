@@ -1,6 +1,6 @@
-# 本机隔离全栈验收与登录表单水合问题
+# 本机隔离全栈验收与表单水合问题
 
-日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。本记录保留首次失败和诊断；修复后的新 Linux Web 成品及完整真实浏览器流程尚待执行，不能据此宣布本轮通过。
+日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。本记录保留两处表单问题及各轮失败：登录表单修复后的 Linux39项已通过，真实全栈随后在首页输入处失败；首页修复后的新40项成品与完整真实流程仍待验收，不能据此宣布本轮通过。
 
 ## 范围与隔离
 
@@ -12,7 +12,7 @@
 
 ## TLS 与客户端夹具的首四次失败
 
-证据根目录为 `test-results/local-stack-20261103/`，`run-index.json` 保存各轮目录、原退出码与 manifest 指纹。以下四轮均 exit1、cleaned=true，sourceVerified=false；未完成的来源验证不补填成功。
+证据根目录为 `test-results/local-stack-20261103/`，`run-index.json` 保存首六轮目录、原退出码与 manifest 指纹；后续轮次按下文原目录另记。以下四轮均 exit1、cleaned=true，sourceVerified=false；未完成的来源验证不补填成功。
 
 | runId / 目录后缀 | 原失败 | 范围 |
 | --- | --- | --- |
@@ -45,10 +45,30 @@
 
 整轮 exit1、sourceVerified/cleaned=true，本轮容器/网络/卷均为空；manifest SHA256 为 `7b59da3bee0b0fb8af6ad48147026912fd2f9522b8c8c50cb5542c9f936b2a62`。
 
-## 已实施修复与尚待验证
+## 登录修复后的39项成品
 
 最小产品修复仅改 `FrequencyLoginForm.tsx`：以 SSR 为false、客户端为true的就绪快照禁用两张凭据表单的输入与提交，事件接管后再启用；表单显式 `method="post"`。没有引入任意延迟，也没有修改注册 API 或认证契约。
 
 `tests/e2e/runtime/production.spec.ts` 新增生产回归：实际拦住静态 JS，检查水合前两张表单禁用、POST方法，释放后可交互，并检查登录、httpOnly会话、SSR导航和刷新。该项使用生产 Web 与合成 API 夹具，与上面的真实后端全栈流程分开报告。
 
-修复后的本机 Web 完整检查已 exit0：lint、类型、192项单测及生产构建通过。新增回归后的 Linux Web39项、新成品的真实隔离全栈16组及相应来源/清理尚待执行。旧成品的受控失败和历史38项成绩均不转记为修复后通过。最终应另记精确提交/来源、实际成品、完整失败/阻塞计数及清理读回；本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。
+登录修复提交 `4ea78d18b65fed7fcfb48d9fbc95a6fca1d2f51f` 的本机 Web 检查 exit0：lint、类型、192项单测及生产构建通过。交付为基于 `d843461` 的[草稿PR #11](https://github.com/NekoMint-Labs/Unfreq/pull/11)，该提交的[四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41493808872)通过；不表示批准、合并或部署。
+
+新 Web 完整构建 `run-b5dcfd53975897516deb26e7-wckJho` 使用 Node22.23.4，生成 Linux amd64 镜像 `sha256:277b0df19b1bae2c91b3c072844059deba891312a766194a7af9131713449421`。三阶段真实构建、158份构建输入和13份验证来源核对通过；生产浏览器39/39、227.54秒，无跳过、重试或flaky，外层exit0、sourceVerified/cleaned=true。新增登录 JS gate 回归实际执行；该套仍使用合成 API，不能代替真实全栈16组。
+
+该 Web run 的首次 `independent-final-readback.json` 因标签枚举命中一个短暂容器而非零，原JSON保留；后续只读观察未独立确认该容器所有者，没有删除它。全栈后续清理结束后的 `independent-final-readback-after-stack-cleanup.json` 全部通过，SHA256为 `8dbba26b204226e919de00e5b23f9faefcf6ada527a4165734a18cb959d3e195`；记录同镜像身份、171份输入在该验收窗口不变及六类资源为空，不把后续零资源改写成首次独立检查成功。
+
+## 新成品真实全栈：登录已过，首页无法提交
+
+`run-b5a407e230f67ca9a7234c47-HDoEYW` 使用上述39项成品，真实 smoke和27项迁移通过；浏览器 `browser-2026-11-02T17-48-59-265Z-2f2141c9e5/summary.json` 为5通过、1失败、10阻塞。页面注册、退出、再次登录、httpOnly/secure会话及SSR刷新已执行通过；首页填写后DOM可见文字，但计数为 `000 / 200`，发射按钮持续禁用，生成步骤失败。后续发布、OG、星图和撤回链未执行，不能从截图或前序通过推出它们通过。整轮外层exit1、sourceVerified/cleaned=true。
+
+该轮 `independent-live-inspection.json` 的 SHA256为 `07a84ce6f7790672613a6580bfc2ced2bb166e38051ee96379f011b8911f82d7`。独立读取发生在清理后，明确 `liveSnapshotCaptured=false`、`liveEnvironmentVerified=false`：只能确认镜像身份、冻结合成env的空密钥/URL与零额度，以及容器/网络/卷为空，不能冒充运行中容器环境已被独立观察。
+
+## 首页受控诊断与第二个修复
+
+`run-fb222bdfc164d1a1fa570c0e-R0thHQ` 仅诊断首页水合，`browser-home-hydration-d5868c729342c7a3/summary.json` 为2通过、2失败。拦住7份静态JS时，输入框允许输入，DOM长度59而React计数0；释放JS后DOM仍为59、计数仍为0、提交禁用，未观察到value setter写入。与登录框的52→0不同，这里保留的是DOM文字，React状态尚未绑定。
+
+水合后清空再填写才得到 `059 / 200`、按钮可用；诊断没有点击发射，实际生成请求0、外域请求0，导航query未带输入。整轮exit1、sourceVerified/cleaned=true，资源读回为空；该结果只定位问题，不是完整业务通过。
+
+第二个最小修复仅为 `HomeFrequencyEntry.tsx` 增加客户端就绪状态：SSR禁用输入、发射及漫游按钮，表单显式POST；`production.spec.ts` 新增第二个JS gate回归，检查释放后的计数、提交body及导航，生产套件变为40项。未改Auth、API、合成响应、Provider或预算。
+
+首页修复后的本机Web完整检查已外层exit0，lint、类型、192项单测及生产构建全部通过，日志为 `test-results/local-stack-home-web-check-20261103.log`。新Linux40项与新成品的最终真实16组尚待执行。旧39项、两轮真实流程失败及两种受控诊断均保留其原范围；后续需另记精确来源、成品、完整失败/阻塞计数和清理读回。本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。

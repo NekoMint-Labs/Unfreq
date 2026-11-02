@@ -37,6 +37,8 @@ type HomeFrequencyEntryProps = {
 };
 
 const subscribeContinuation = () => () => {};
+const getClientReady = () => true;
+const getServerClientReady = () => false;
 export function HomeFrequencyEntry(props: HomeFrequencyEntryProps) {
   const snapshot = useSyncExternalStore(subscribeContinuation, readContinuationSnapshot, () => null);
   const stored = props.restoreContinuation ? parseContinuation(snapshot) : undefined;
@@ -60,6 +62,7 @@ function HomeFrequencyComposer({
   restoreContinuation,
 }: HomeFrequencyEntryProps) {
   const router = useRouter();
+  const isClientReady = useSyncExternalStore(subscribeContinuation, getClientReady, getServerClientReady);
   const [frequency] = useState<FrequencyIdentity | undefined>(initialFrequency);
   const [phase, setPhase] = useState<HomeEntryPhase>(
     initialFrequency !== undefined ? "ready" : isApiUnavailable ? "failed" : "locked",
@@ -82,12 +85,13 @@ function HomeFrequencyComposer({
   const loginHref = `/login?returnTo=${encodeURIComponent(hasContinuation ? "/?continue=1" : "/?onboarding=seed")}`;
   const canSubmit = useMemo(() => {
     return (
+      isClientReady &&
       phase === "ready" &&
       seedLength >= minSeedLength &&
       seedLength <= maxSeedLength &&
       !isSubmitting
     );
-  }, [isSubmitting, phase, seedLength]);
+  }, [isClientReady, isSubmitting, phase, seedLength]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -120,6 +124,7 @@ function HomeFrequencyComposer({
   };
 
   const tuneRandom = async () => {
+    if (!isClientReady || isTuningRandom || isSubmitting) return;
     setError(undefined);
     setRandomTuneError(undefined);
     setIsTuningRandom(true);
@@ -155,7 +160,7 @@ function HomeFrequencyComposer({
           </div>
         ) : null}
 
-        <form className="home-void-form" onSubmit={submit}>
+        <form className="home-void-form" method="post" onSubmit={submit}>
           <label className="sr-only" htmlFor="seed-text">
             写下种子
           </label>
@@ -167,7 +172,7 @@ function HomeFrequencyComposer({
             ) : null}
             <textarea
               className={`home-seed-textarea disabled:opacity-60 ${hasSeedText ? "" : "home-seed-textarea-empty"} ${isLocked ? "home-seed-textarea-locked" : ""}`}
-              disabled={phase !== "ready" && !isSubmitting}
+              disabled={!isClientReady || (phase !== "ready" && !isSubmitting)}
               id="seed-text"
               maxLength={maxSeedLength}
               minLength={minSeedLength}
@@ -180,7 +185,7 @@ function HomeFrequencyComposer({
                 }
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (isClientReady && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
@@ -198,7 +203,7 @@ function HomeFrequencyComposer({
           >
             <button
               className="home-void-action home-void-action-zh"
-              disabled={isTuningRandom || isSubmitting}
+              disabled={!isClientReady || isTuningRandom || isSubmitting}
               onClick={tuneRandom}
               type="button"
             >
@@ -249,7 +254,7 @@ function HomeFrequencyComposer({
                 {error}
               </p>
             ) : null}
-            {hasContinuation && !isSubmitting ? <button className="home-fm-entry-link" type="button" onClick={() => { clearContinuation(); setSeedText(""); setParentSignalId(undefined); router.replace("/"); }}>清除续写</button> : null}
+            {hasContinuation && !isSubmitting ? <button className="home-fm-entry-link" disabled={!isClientReady} type="button" onClick={() => { clearContinuation(); setSeedText(""); setParentSignalId(undefined); router.replace("/"); }}>清除续写</button> : null}
             {randomTuneError ? (
               <p className="home-micro-text" role="status">
                 {randomTuneError}

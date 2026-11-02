@@ -109,6 +109,64 @@ test("FM credential forms stay disabled until hydration and then establish an SS
   }
 });
 
+test("home composer waits for hydration before accepting a seed and posting its bound value", async ({ page, context, baseURL }) => {
+  await signIn(context);
+  const origin = new URL(baseURL!).origin;
+  let releaseJavaScript = () => {};
+  const javaScriptGate = new Promise<void>((resolve) => { releaseJavaScript = resolve; });
+  let heldRequests = 0;
+  let released = false;
+  const staticJavaScript = /\/_next\/static\/.*\.js(?:\?.*)?$/;
+  await context.route(staticJavaScript, async (route) => {
+    if (new URL(route.request().url()).origin === origin && !released) {
+      heldRequests += 1;
+      await javaScriptGate;
+    }
+    await route.continue();
+  });
+  try {
+    await page.goto("/", { waitUntil: "commit" });
+    const seedInput = page.getByLabel("写下种子", { exact: true });
+    const submitButton = page.getByRole("button", { name: /^发\s*射$/ });
+    const randomButton = page.getByRole("button", { name: /^漫\s*游$/ });
+    const counter = page.locator(".home-void-count");
+    await expect(seedInput).toBeVisible();
+    await expect.poll(() => heldRequests).toBeGreaterThan(0);
+    for (const control of [seedInput, submitButton, randomButton]) await expect(control).toBeDisabled();
+    await expect(page.locator("form").filter({ has: seedInput })).toHaveAttribute("method", "post");
+    await expect(counter).toHaveText("000 / 200");
+    released = true;
+    releaseJavaScript();
+    await expect(seedInput).toBeEnabled();
+    await expect(randomButton).toBeEnabled();
+    await expect(submitButton).toBeDisabled();
+    const seed = "HYDRATED_HOME_SYNTHETIC_SEED";
+    await seedInput.fill(seed);
+    await expect(seedInput).toHaveValue(seed);
+    await expect(counter).toHaveText(`${seed.length.toString().padStart(3, "0")} / 200`);
+    await expect(submitButton).toBeEnabled();
+    const createResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/signals" && response.request().method() === "POST";
+    });
+    await submitButton.click();
+    const created = await createResponse;
+    // The existing loopback Web fixture returns 200; real API acceptance checks 201 separately.
+    expect(created.status()).toBe(200);
+    expect(created.request().postDataJSON()).toEqual({ seedText: seed });
+    const accepted = await created.json();
+    expect(accepted.data.signal.seedText).toBe(seed);
+    expect(accepted.data.signal.visibility).toBe("GENERATION_OWNER");
+    const signalId = accepted.data.signal.id;
+    await expect(page).toHaveURL((url) =>
+      url.pathname === `/signal/${signalId}/transmitting` || url.pathname === `/result/${signalId}`);
+  } finally {
+    released = true;
+    releaseJavaScript();
+    await context.unroute(staticJavaScript);
+  }
+});
+
 test("FM login establishes a cookie that survives SSR navigation and reload", async ({ page, context }) => {
   await page.goto("/login?returnTo=%2Fme");
   await page.getByLabel("FM", { exact: true }).fill("FM 78.23");
