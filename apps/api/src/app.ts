@@ -16,10 +16,13 @@ import { errorHandler } from "./shared/error-handler.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
 import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
+import { createSignalGenerationWorker, type GenerationWorkerOptions, type SignalGenerationWorker } from "./modules/signals/generation-worker.js";
 import { adminThemeRadioRoutes, themeRadioRoutes } from "./modules/theme-radio/routes.js";
 
 type BuildAppOptions = {
   logger?: FastifyServerOptions<RawServerDefault>["logger"];
+  generationWorkerFactory?: (options: GenerationWorkerOptions) => SignalGenerationWorker;
+  onGenerationFatal?: () => void | Promise<void>;
 };
 
 const resolveLoggerOptions = (options: BuildAppOptions) => {
@@ -52,16 +55,27 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   app.setErrorHandler(errorHandler);
 
+  const generationWorker = (options.generationWorkerFactory ?? createSignalGenerationWorker)({
+    logger: app.log,
+    forceCloseApplicationDatabase: () => closeDatabaseConnection({ timeoutSeconds: 0 }),
+    onFatal: () => options.onGenerationFatal === undefined ? app.close() : options.onGenerationFatal(),
+  });
+  let stopAiSignalScheduler: (() => void) | undefined;
+
+  app.addHook("onReady", async () => { generationWorker.start(); });
+  // Stop consumers while PostgreSQL is still open. The preClose stage precedes
+  // the existing plugin onClose hooks, including Redis and the primary pool.
+  app.addHook("preClose", async () => {
+    stopAiSignalScheduler?.();
+    await generationWorker.stop();
+  });
+
   app.addHook("onClose", async () => {
     await closeDatabaseConnection();
   });
 
   if (!env.isTest) {
-    const stopAiSignalScheduler = startAiSignalScheduler(app.log);
-
-    app.addHook("onClose", async () => {
-      stopAiSignalScheduler();
-    });
+    stopAiSignalScheduler = startAiSignalScheduler(app.log);
   }
 
   await app.register(cors, {
@@ -79,7 +93,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(meRoutes, { prefix: "/api" });
   await app.register(frontendDiagnosticRoutes, { prefix: "/api/frontend-diagnostics" });
   await app.register(reportRoutes, { prefix: "/api/reports" });
-  await app.register(signalRoutes, { prefix: "/api/signals" });
+  await app.register(signalRoutes, { prefix: "/api/signals", generationWorker });
   await app.register(monthlyRecapRoutes, { prefix: "/api/me/recaps" });
   await app.register(themeRadioRoutes, { prefix: "/api/theme-radio" });
   await app.register(imageRoutes, { prefix: "/api/images" });

@@ -1,4 +1,10 @@
 import { AppError } from "../../shared/errors.js";
+import {
+  assertGenerationActive,
+  beforeGenerationDispatch,
+  combineGenerationAbortSignal,
+  throwIfGenerationStopped,
+} from "../../shared/generation-execution.js";
 import { resolveChatProviderConfigs } from "./provider-config.js";
 import {
   createChatProviderError,
@@ -30,10 +36,12 @@ export async function callChatProvider<TOutput>(
   type: string,
   content: string,
 ): Promise<TOutput> {
+  await assertGenerationActive();
   const availableConfigs = (await resolveChatProviderConfigs()).filter((config) => {
     return config.baseUrl.length > 0 && config.model.length > 0 && config.provider.length > 0;
   });
   const configs = selectChatProviderConfigs(availableConfigs, type);
+  await assertGenerationActive();
 
   if (configs.length === 0) {
     throw createChatProviderError("AI provider is not configured.", {
@@ -47,11 +55,10 @@ export async function callChatProvider<TOutput>(
   const timeoutMs = getAiProviderTimeoutMs(type);
 
   for (const config of configs) {
+    await assertGenerationActive();
     let response: Response;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
+    let timeout: NodeJS.Timeout | undefined;
+    let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
 
     try {
       const requestBody = {
@@ -75,6 +82,11 @@ export async function callChatProvider<TOutput>(
           : {}),
       };
 
+      await beforeGenerationDispatch("chat", type);
+      const controller = new AbortController();
+      combined = combineGenerationAbortSignal(controller.signal);
+      timeout = setTimeout(() => { controller.abort(); }, timeoutMs);
+      throwIfGenerationStopped();
       response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/chat/completions`, {
         body: JSON.stringify(requestBody),
         headers: {
@@ -82,8 +94,9 @@ export async function callChatProvider<TOutput>(
           ...(config.apiKey.length === 0 ? {} : { authorization: `Bearer ${config.apiKey}` }),
         },
         method: "POST",
-        signal: controller.signal,
+        signal: combined.signal,
       });
+      await assertGenerationActive();
 
       if (!response.ok) {
         throw createChatProviderError("AI provider unavailable.", {
@@ -94,8 +107,12 @@ export async function callChatProvider<TOutput>(
         });
       }
 
-      return readProviderJson<TOutput>(await response.json(), type);
+      const payload: unknown = await response.json();
+      await assertGenerationActive();
+      return readProviderJson<TOutput>(payload, type);
     } catch (error) {
+      throwIfGenerationStopped(error);
+      await assertGenerationActive();
       if (error instanceof AppError) {
         lastError = error;
         continue;
@@ -117,10 +134,12 @@ export async function callChatProvider<TOutput>(
         type,
       });
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
+      combined?.dispose();
     }
   }
 
+  await assertGenerationActive();
   if (lastError instanceof AppError) {
     throw createChatProviderFallbackError(lastError, configs.length);
   }

@@ -1,4 +1,8 @@
 import { AppError } from "../../shared/errors.js";
+import {
+  assertGenerationActive, GenerationExecutionStopped,
+  getGenerationExecutionContext, throwIfGenerationStopped,
+} from "../../shared/generation-execution.js";
 import { resolveChatProviderConfig } from "./provider-config.js";
 import { createAiReviewRecord } from "./repository.js";
 import {
@@ -94,18 +98,31 @@ async function recordAiReview(params: {
   reviewType: string;
   status: "FALLBACK" | "SUCCEEDED";
 } & AiReviewTarget) {
-  const providerConfig = await resolveChatProviderConfig();
+  await assertGenerationActive();
+  try {
+    const providerConfig = await resolveChatProviderConfig();
+    await assertGenerationActive();
 
-  return createAiReviewRecord({
-    inputText: params.inputText,
-    model: providerConfig.model,
-    outputJson: toOutputJson(params.output),
-    provider: providerConfig.provider,
-    reviewType: params.reviewType,
-    status: params.status,
-    targetId: params.targetId,
-    targetType: params.targetType,
-  });
+    const review = await createAiReviewRecord({
+      inputText: params.inputText,
+      model: providerConfig.model,
+      outputJson: toOutputJson(params.output),
+      provider: providerConfig.provider,
+      reviewType: params.reviewType,
+      status: params.status,
+      targetId: params.targetId,
+      targetType: params.targetType,
+    });
+    await assertGenerationActive();
+    return review;
+  } catch (error) {
+    throwIfGenerationStopped(error);
+    // The provider may already have returned or the audit insert may have
+    // committed. A managed attempt cannot interpret storage failure as a
+    // material/provider failure and dispatch the split/fallback pipeline.
+    if (getGenerationExecutionContext()) throw new GenerationExecutionStopped("storage-uncertain");
+    throw error;
+  }
 }
 
 function parseAiResult<TOutput>(value: unknown, schema: AiResultSchema<TOutput>): TOutput {
@@ -124,7 +141,9 @@ async function runAi<TOutput>(params: {
   reviewType: string;
   providerCall: () => Promise<unknown>;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
+  await assertGenerationActive();
   const rawResult = await params.providerCall();
+  await assertGenerationActive();
   const result = params.parse(rawResult);
   const review = await recordAiReview({
     inputText: params.inputText,
@@ -134,6 +153,7 @@ async function runAi<TOutput>(params: {
     targetId: params.targetId,
     targetType: params.targetType,
   });
+  await assertGenerationActive();
 
   return {
     reviewId: review.id,
@@ -151,6 +171,8 @@ async function runAiWithFallback<TOutput>(params: {
   try {
     return await runAi(params);
   } catch (error) {
+    throwIfGenerationStopped(error);
+    await assertGenerationActive();
     if (!(error instanceof AppError) || error.code !== "AI_UNAVAILABLE") {
       throw error;
     }
@@ -164,6 +186,7 @@ async function runAiWithFallback<TOutput>(params: {
       targetId: params.targetId,
       targetType: params.targetType,
     });
+    await assertGenerationActive();
 
     return {
       reviewId: review.id,

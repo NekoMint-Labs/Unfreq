@@ -1,8 +1,8 @@
 import { createHmac, randomUUID } from "node:crypto";
 import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { fixtureSeed } from "./fixtures.js";
-import { createIntegrationHarness } from "./harness.js";
+import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
+import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -28,6 +28,7 @@ type ModerationStatus = "DRAFT" | "REVIEWING" | "HIDDEN" | "DELETED" | "PUBLISHE
 type RequestMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
 let h: Harness;
+let harnessPreparation: Promise<Harness> | undefined;
 let author: Session;
 let reader: Session;
 let admin: Session;
@@ -190,20 +191,32 @@ async function expectNotPublic(id: string, reviewing = false) {
 
 describe("real API core flow against isolated PostgreSQL and Redis", () => {
   beforeAll(async () => {
-    h = await createIntegrationHarness();
+    harnessPreparation = createIntegrationHarness();
+    h = await harnessPreparation;
+    await recordCoreSetupPhase("author-register-start");
     author = await register();
+    await recordCoreSetupPhase("author-register-complete");
     reader = await register();
+    await recordCoreSetupPhase("reader-register-complete");
     admin = await register();
+    await recordCoreSetupPhase("admin-register-complete");
     // Administrator setup affects only the synthetic identity in this run's
     // guarded disposable database. Authentication still uses the real cookie.
     await h.sql`update users set role = 'ADMIN' where id = ${admin.id}`;
     await h.sql`update frequencies set role = 'ADMIN' where id = ${admin.id}`;
+    await recordCoreSetupPhase("admin-promoted");
+    await recordCoreSetupPhase("control-create-start");
     publicControlId = await createDraft();
+    await recordCoreSetupPhase("control-create-complete");
     await publish(publicControlId);
+    await recordCoreSetupPhase("control-publish-complete");
   });
 
   afterAll(async () => {
-    await h?.close();
+    // A hook watchdog is not cancellation. Even if preparation finished late,
+    // wait for the owned harness and close it instead of abandoning its work.
+    const prepared = await harnessPreparation?.catch(() => undefined);
+    await prepared?.close();
   });
 
   it("persists registration, verifies passwords, and authenticates HttpOnly session cookies", async () => {
@@ -405,12 +418,34 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     },
   );
 
-  it("filters a deliberately inconsistent PUBLISHED row until generation is COMPLETED", async () => {
+  it("rejects a malformed managed PUBLISHED generation at the database boundary", async () => {
     const id = await createDraft();
     await publish(id);
-    // Synthetic malformed state, not an interrupted real task. No worker is
-    // running for this row; restore its terminal state before harness teardown.
-    await h.sql`update signals set generation_status = 'EXPANDING' where id = ${id}`;
+    try {
+      await expect(h.sql`update signals set generation_status = 'EXPANDING' where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_generation_execution_check" });
+      const [stored] = await h.sql`select generation_status, status, generation_attempt_count from signals where id = ${id}`;
+      expect(stored).toMatchObject({ generation_status: "COMPLETED", status: "PUBLISHED", generation_attempt_count: 1 });
+    } finally { await moderate(id, "DRAFT"); }
+  });
+
+  it("filters a deliberately inconsistent legacy PUBLISHED row until generation is COMPLETED", async () => {
+    // Explicit pre-0022 shape: old NULL-metadata records remain readable and
+    // must still pass every public-read filter. Do not weaken the new CHECK
+    // or erase execution metadata from a managed row to construct this case.
+    const { createSignalDraft } = await import("../../src/modules/signals/repository.js");
+    const { buildMinimalSignalProgram } = await import("../../src/modules/signals/service-mappers.js");
+    const legacy = await createSignalDraft({
+      authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+      expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
+      galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "EXPANDING", status: "PUBLISHED",
+      program: buildMinimalSignalProgram({
+        expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed,
+      }),
+    });
+    const id = legacy.id;
+    const [metadata] = await h.sql`select generation_attempt_count from signals where id = ${id}`;
+    expect(metadata).toEqual({ generation_attempt_count: null });
     try {
       await expectNotPublic(id);
       const own = await request("GET", `/api/signals/${id}`, author.cookie);

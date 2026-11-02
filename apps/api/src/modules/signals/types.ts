@@ -140,6 +140,8 @@ export type CreateSignalInput = {
   galaxyPosition?: SignalGalaxyPosition;
   generationError?: string | null;
   generationStatus?: SignalGenerationStatus;
+  /** Internal durable-worker opt-in. Absent means legacy/unmanaged. */
+  managedGeneration?: boolean;
   guestKey?: string;
   matchSignalId?: string;
   parentSignalId?: string;
