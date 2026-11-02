@@ -1,6 +1,6 @@
 # 本机隔离全栈验收与表单水合问题
 
-日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。本记录保留两处表单问题及各轮失败：登录表单修复后的 Linux39项已通过，真实全栈随后在首页输入处失败；首页修复后的新40项成品与完整真实流程仍待验收，不能据此宣布本轮通过。
+日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。两处表单修复后的Linux40项已通过，真实全栈经合成Provider和Caddy修正推进至15/16，仍有匿名Galaxy的React418错误。该问题的修复、新Linux41项及最终真实16组尚待验收，不能据此宣布本轮通过。
 
 ## 范围与隔离
 
@@ -71,4 +71,26 @@
 
 第二个最小修复仅为 `HomeFrequencyEntry.tsx` 增加客户端就绪状态：SSR禁用输入、发射及漫游按钮，表单显式POST；`production.spec.ts` 新增第二个JS gate回归，检查释放后的计数、提交body及导航，生产套件变为40项。未改Auth、API、合成响应、Provider或预算。
 
-首页修复后的本机Web完整检查已外层exit0，lint、类型、192项单测及生产构建全部通过，日志为 `test-results/local-stack-home-web-check-20261103.log`。新Linux40项与新成品的最终真实16组尚待执行。旧39项、两轮真实流程失败及两种受控诊断均保留其原范围；后续需另记精确来源、成品、完整失败/阻塞计数和清理读回。本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。
+首页修复后的本机Web完整检查已外层exit0，lint、类型、192项单测及生产构建全部通过，日志为 `test-results/local-stack-home-web-check-20261103.log`。提交为 `8a5153a66d65411fbb67d9a3532ddd647113fc0b`；下述新40项及后续真实流程使用各自实际成品，不继承旧39项成绩。
+
+## 40项成品与无Provider的实际失败
+
+完整Web构建 `run-0553346ddc991c39682780ab-EjOFeh` 生成镜像 `sha256:280eb662e8a91bef127d3b26381daf538fc9960f206a2d1779d6f2cf09b86daa`，Node22.23.4；浏览器40/40、240.12秒，无跳过或flaky，外层exit0、sourceVerified/cleaned=true。同run的 `independent-final-readback.json` 为12项通过、actualExit0，SHA256为 `cc008ff1fac43b8df7cfe62acdb9a03034ee9e2ade04d2306f02aaa096008b85`。
+
+使用该成品的 `run-41fa5e665e32f992233c7062-2JtOKa` 仍保持空Provider与零付费额度，浏览器5通过、1失败、10阻塞，外层exit1、sourceVerified/cleaned=true。首页已能真实提交，但主worker三次素材/扩写均为 `config_missing/AI_UNAVAILABLE`，最终 `FAILED/GENERATION_RETRY_EXHAUSTED`；当前主生成没有完整本地文学兜底，不能把辅助规则fallback当成主生成成功保证。部署指南中的过度承诺另作修正，未更改API或放开真实Provider。
+
+该轮独立 `independent-live-inspection.json` 实际捕获运行中配置并确认清理后零资源，SHA256为 `6d98075d88243420bab2264cf17756591431c134987d7b61d16510ac065071ef`；此前第五轮的现场观察与本轮独立证据分别保留。
+
+## 内部合成Provider：14/16，定位代理协议问题
+
+后续仅在本轮隔离网络加入自有HTTP合成Provider，使用固定合成凭证，chat额度上限8、其他Provider额度0；不使用真实密钥或外部模型。真实API/worker仍执行原路径，浏览器不替换API。`run-2ce0831cbfe67fc6c563fc0a-CTdJGA` 的27迁移及原smoke通过，合成服务实际接到 `signal-material`、`signal-expansion-review` 两次请求；浏览器14通过、2失败、0阻塞，外层exit1、sourceVerified/cleaned=true。
+
+两项失败为公开metadata协议从HTTPS变为HTTP，以及匿名浏览器记录一个React418错误；生成、作者确认发布、公开读取、实际OG、390px阅读/焦点、撤回及私密保留等已执行通过不能消除这两项失败。独立现场安全检查全通过，容器/网络/卷经拥有标签和Compose项目双过滤均为空；同run的独立JSON SHA256为 `59d9103fdda1e10c7c7106dfd865eb77906027e7f8051c84f0da59c665c5bf74`。
+
+## Caddy修正后15/16，Galaxy问题仍待验收
+
+仓库Caddy按server模式公网HTTPS约定，在Web上游明确覆盖 `X-Forwarded-Proto: https`；容器间仍HTTP，不直接沿用客户端伪造协议头。修正后的 `run-520ea8efc7c32eedad32404f-S4rRwe` 使用同一40项Web成品和内部合成Provider，浏览器15通过、1失败、0阻塞，外层exit1、sourceVerified/cleaned=true。公开metadata实际保持本轮HTTPS origin，伪造转发头不能改变该origin；这只验证本机双Caddy，不是实际NPM部署验收。
+
+唯一未通过组为无未捕获页面错误检查：记录匿名访问 `/galaxy` 时的React418。其余15组通过也不能将该运行改记为16/16；后续截图不替代错误断言。独立观察捕获七服务，现场安全检查全true，结束后双过滤容器/网络/卷全0；同run的 `independent-live-inspection.json` SHA256为 `7910ff04f042d6f69dbee3a81cc1b8eec22a9da18e3db825f030258c1e521113`。
+
+Galaxy水合问题正在修复，新增Linux41项与新成品的最终真实16组尚待执行。各轮原manifest、浏览器summary、失败、阻塞和独立观察保留，待最终另记精确来源、成品及清理读回。本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。

@@ -358,6 +358,56 @@ test("Galaxy hydrates its SSR time placeholder into the browser's local time zon
   }
 });
 
+test("focused Galaxy deep links hydrate before mounting the reader portal and restore focus on close", async ({ page, context, baseURL }, testInfo) => {
+  const fixture = await context.request.post(`${apiBaseUrl}/__runtime/e4-interpretations`);
+  expect(fixture.status()).toBe(200);
+  const focus = await context.request.get(`${apiBaseUrl}/api/signals/galaxy?focus=${e4OldConfirmedId}`);
+  expect(focus.status()).toBe(200);
+  expect((await focus.json()).data.coverage.focusSignalId).toBe(e4OldConfirmedId);
+  const origin = new URL(baseURL!).origin;
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let releaseJavaScript = () => {};
+  const javaScriptGate = new Promise<void>((resolve) => { releaseJavaScript = resolve; });
+  let heldRequests = 0;
+  let released = false;
+  const staticJavaScript = /\/_next\/static\/.*\.js(?:\?.*)?$/;
+  await context.route(staticJavaScript, async (route) => {
+    if (new URL(route.request().url()).origin === origin && !released) {
+      heldRequests += 1;
+      await javaScriptGate;
+    }
+    await route.continue();
+  });
+  try {
+    const response = await page.goto(`/galaxy?focus=${e4OldConfirmedId}`, { waitUntil: "commit" });
+    expect(response?.status()).toBe(200);
+    await expect(page.locator(".galaxy-stage")).toHaveClass(/galaxy-stage-focus/);
+    await expect.poll(() => heldRequests).toBeGreaterThan(0);
+    const reader = page.getByRole("dialog", { name: /信号阅读/ });
+    // The server has selected a real public point, but cannot render a body portal.
+    // The first hydration render must keep that same empty portal boundary.
+    await expect(reader).toHaveCount(0);
+    released = true;
+    releaseJavaScript();
+    await expect(reader).toBeVisible();
+    await expect(reader).toContainText(e4OldConfirmedBody);
+    await expect(reader.getByRole("button", { name: "关闭信号详情", exact: true })).toBeFocused();
+    await page.screenshot({ path: testInfo.outputPath("galaxy-focused-hydration-mobile.png") });
+    expect(pageErrors).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(reader).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(?:查看|收起)样本列表$/ })).toBeFocused();
+    expect(pageErrors).toEqual([]);
+  } finally {
+    released = true;
+    releaseJavaScript();
+    await context.unroute(staticJavaScript);
+  }
+});
+
 test("390px production Galaxy renders WebGL and navigates its frequency filter", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/galaxy");

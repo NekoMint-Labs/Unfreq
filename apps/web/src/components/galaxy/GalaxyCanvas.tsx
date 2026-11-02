@@ -3,7 +3,7 @@
 import { Canvas } from "@react-three/fiber";
 import Link from "next/link";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { GalaxyCoverage, GalaxySignalPoint, SignalPrimaryBand } from "@unfreq/contracts";
 import { galaxyHref } from "@/lib/galaxy-navigation";
 import { GalaxyScene } from "./GalaxyScene";
@@ -40,6 +40,10 @@ type GalaxyCanvasProps = {
   coverage?: GalaxyCoverage;
 };
 
+const subscribeToClientReady = () => () => {};
+const getClientReady = () => true;
+const getServerClientReady = () => false;
+
 export function GalaxyCanvas({
   bandOptions = [],
   generatedAt,
@@ -50,6 +54,7 @@ export function GalaxyCanvas({
   selectedTheme,
   coverage,
 }: GalaxyCanvasProps) {
+  const isClientReady = useSyncExternalStore(subscribeToClientReady, getClientReady, getServerClientReady);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const listToggleRef = useRef<HTMLButtonElement>(null);
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -381,7 +386,7 @@ export function GalaxyCanvas({
       <span aria-hidden="true" className="galaxy-reading-focus-mask" />
       <span aria-hidden="true" className="galaxy-top-fade-mask" />
 
-      {detailPoint !== undefined && typeof document !== "undefined"
+      {isClientReady && detailPoint !== undefined && typeof document !== "undefined"
         ? createPortal(
             <GalaxySignalSheet
               isVisible={isDetailVisible}
