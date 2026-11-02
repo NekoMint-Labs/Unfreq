@@ -25,7 +25,7 @@ docker compose up --build -d
 
 ## 环境变量
 
-根 `.env.example` 是服务器部署模板。正式部署前把 `SESSION_SECRET`、`PROVIDER_CONFIG_SECRET` 和 provider key 换成真实值。不要提交 `.env`。不要把真实 AI Key 写进仓库。
+根 `.env.example` 是服务器部署模板。正式部署前设置非占位的 `SESSION_SECRET`、`PROVIDER_CONFIG_SECRET`，并为实际启用的 Provider 配置地址、模型及所需凭证。不要提交 `.env`。不要把真实 AI Key 写进仓库。
 
 生产还必须设置 `ABUSE_PROTECTION_ENABLED=true` 和完整的 `ABUSE_LIMITS_JSON`。字段模板见 `deploy/abuse-policy.example.json`：其中所有额度为零，会拒绝对应入口，它只列出配置结构。先按预计流量、实测误封情况和 Provider 预算填写，再压成一行写入 `.env`；仓库尚无经业务基线确认的生产额度。所有 API 副本必须共用 Redis、命名空间、HMAC 密钥和相同策略。更换密钥或命名空间会开始新的计数空间，应按一次额度重置处理。
 
@@ -33,7 +33,7 @@ docker compose up --build -d
 
 C2 新增三个必填预算：`reportRequestUser`、`reportRequestIp`、`reportReadUser`。升级前按示例结构补齐全部 API 副本的策略；缺字段拒绝启动，不静默采用生产阈值。回退到旧 API 时同步恢复旧策略结构。举报接口只接受当前已确认公开的 SIGNAL，旧 USER 举报保留在后台处理；创建响应已收窄为私密状态回执。
 
-`ABUSE_HMAC_SECRET` 可留空以使用 `SESSION_SECRET`，也可配置至少 32 字符的独立密钥。Redis 不可用时，受保护入口和远端 Provider 派发返回安全失败。开发环境未填写完整策略时，可使用本地生成 fallback，但不能派发远端 Provider。
+`ABUSE_HMAC_SECRET` 可留空以使用 `SESSION_SECRET`，也可配置至少 32 字符的独立密钥。Redis 不可用时，受保护入口和远端 Provider 派发返回安全失败。策略未配置完整或调用额度不足时，不派发受保护的远端调用，也不能通过备用 Provider、重试或本地 fallback 绕过保护。辅助能力有本地规则不代表主生成能在该配置下完成。
 
 生产邮箱验证码登录默认关闭，且禁止 `local-log` 与验证码响应回显。当前尚未实现生产邮件发送，部署时保持 `AUTH_LOGIN_DELIVERY_MODE=disabled`、`AUTH_LOGIN_CODE_RESPONSE=disabled`，使用 FM 代号和密码注册登录。
 
@@ -44,10 +44,12 @@ WEB_ORIGIN                 公网访问地址，生产必须是 https://
 UNFREQ_PROXY_NETWORK       已存在的反代 Docker 网络，默认 npm_default
 SESSION_SECRET             会话签名密钥，生产必须是非占位强随机值
 PROVIDER_CONFIG_SECRET     Provider Key 加密密钥，生产必须是非占位强随机值
-AI_BASE_URL / AI_API_KEY   可选 AI 服务；为空时使用本地 fallback
-EMBEDDING_API_KEY          可选 embedding；为空时回到关键词/标签匹配
+AI_BASE_URL / AI_API_KEY   主生成需可用聊天 Provider；也可由后台配置，缺少可用配置会失败
+EMBEDDING_API_KEY          可选 embedding；缺少时匹配可回到规则或返回空结果
 TTS_API_KEY                可选服务端 TTS；为空时保留浏览器朗读 fallback
 ```
+
+主生成的素材与正文扩写需要可用的聊天 Provider，当前不以本地文学模板兜底。API 接收请求只表示任务已排队，不表示生成已完成；缺少 Provider 时会记录 `AI_UNAVAILABLE/config_missing`，受持久任务重试上限约束，最终可能为 `FAILED/GENERATION_RETRY_EXHAUSTED`。部分指纹、分类、审核和月度回顾具有各自的本地规则或模板，不能据此承诺无 Key 的完整生成闭环；[本机隔离验收](./implementation/local-stack-20261103.md)保留了相应实际失败。
 
 API 容器启动时会先执行数据库迁移。生产模式会拒绝占位 `SESSION_SECRET`、占位 `PROVIDER_CONFIG_SECRET`、占位域名和非 HTTPS `WEB_ORIGIN`。
 
@@ -76,6 +78,10 @@ Scheme:              http
 Forward Hostname/IP: unfreq-proxy
 Forward Port:        80
 ```
+
+公网入口必须使用 HTTPS，`server preflight` 也要求 `WEB_ORIGIN` 为 `https://`；NPM 到项目 Caddy 的这一跳仍是 HTTP。仓库 `deploy/Caddyfile` 因此在所有 Web 上游路由覆盖 `X-Forwarded-Proto: https`，向 Web 传递这一固定的 server 部署约定，不直接相信客户端传入的协议头。容器间的 `web:3000` 连接仍为 HTTP，这项设置不会为它启用 TLS，也不替代 API 的可信代理 CIDR 配置。
+
+该约定不表示实际 NPM 链已经验收；发布时仍须在目标入口核对 HTTPS、会话及 Web SSR/canonical/OG 的公开地址，不能用本机双 Caddy 的结果替代。
 
 如果反代网络不叫 `npm_default`，改 `.env`：
 
