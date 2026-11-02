@@ -17,7 +17,7 @@
     "api:recovery:verify": "npm run contracts:build && node scripts/run-api-integration.mjs --f2-recovery",
     "redis:recovery:verify": "node scripts/verify-redis-aof.mjs",
     "api:check": "npm run test:integration-tools && npm run api:lint && npm run api:typecheck && npm run api:test && npm run api:build",
-    "api:migrate": "npm --workspace @unfreq/api run migrate",
+    "api:migrate": "npm --workspace @unfreq/api run migrate --",
     "api:migrate:generate": "npm --workspace @unfreq/api run migrate:generate",
     "api:start": "npm run contracts:build && npm --workspace @unfreq/api run start",
     "api:test": "npm run contracts:build && npm --workspace @unfreq/api run test",

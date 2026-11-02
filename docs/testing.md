@@ -157,6 +157,8 @@ API成品的进行中任务专项可使用`npm run api:image:verify -- --resume-
 
 ## CI
 
+生产迁移器新增第9个完整集成文件，4组覆盖空库27项/幂等、故障DDL/数据/ledger整体回滚、不可达DB及空/blank URL不得迁移到受控PG默认库。CLI及SQL/journal纳入136份来源、112份产物保护，原8文件与预算不变。最终run-Yjpd5T实际139/139、exit0、cleaned=true；API检查84工具/767单测和构建通过，同锁Web192及构建另有完整check证据，详见[迁移器记录](./implementation/runtime-migrations-20261102.md)。
+
 现有 API、Web、部署脚本任务保留。Web 单测已并入 `web:check`，不再额外重复执行。新增独立 `Isolated API integration` job，运行同一个托管集成命令；不需要仓库 secrets 或收费 AI。
 
 PR #8 精确 Head `590f8f4` 的[运行41330941297](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41330941297)四项检查已通过：工具79、API767、Web192及真实 PG/Redis135/135。该提交为独立 Web job 补充 contracts 构建前置步骤；首次缺少 dist 的失败仍保留在[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。远端 CI 不替代主目录重新执行；主目录对应安装、原生加载、构建及来源/产物映射单独登记，未重跑完整 check、两个 Node 下界或完整集成。

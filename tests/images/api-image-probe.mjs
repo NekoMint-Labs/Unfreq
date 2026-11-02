@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile, lstat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -104,6 +105,33 @@ try {
   await check("development sources and credentials absent from image", async () => {
     for (const relative of [".env", ".env.local", ".git", "test-results", "tests", "apps/api/src/server.ts", "apps/web/src"]) {
       await assert.rejects(lstat(path.join("/app", relative)), { code: "ENOENT" });
+    }
+  });
+  await check("production migration CLI excludes the development toolkit", async () => {
+    const apiPackage = JSON.parse(await readFile("/app/apps/api/package.json", "utf8"));
+    assert.equal(apiPackage.scripts.migrate, "node dist/scripts/migrate.js");
+    assert.equal(apiPackage.dependencies["drizzle-kit"], undefined);
+    assert.ok(apiPackage.devDependencies["drizzle-kit"]);
+    assert.equal((await lstat("/app/apps/api/dist/scripts/migrate.js")).isFile(), true);
+    for (const relative of ["node_modules/drizzle-kit", "node_modules/@esbuild-kit/esm-loader",
+      "node_modules/@esbuild-kit/core-utils", "apps/api/drizzle.config.ts"]) {
+      await assert.rejects(lstat(path.join("/app", relative)), { code: "ENOENT" });
+    }
+  });
+  await check("bundled migration CLI rejects blank URLs instead of using PG defaults", async () => {
+    for (const empty of ["", " \t"]) {
+      const result = spawnSync(process.execPath, ["/app/apps/api/dist/scripts/migrate.js"], {
+        cwd: "/app/apps/api", encoding: "utf8", timeout: 5000,
+        env: { ...process.env, DATABASE_URL: empty, PGHOST: databaseUrl.hostname,
+          PGPORT: databaseUrl.port || "5432", PGUSER: decodeURIComponent(databaseUrl.username),
+          PGPASSWORD: decodeURIComponent(databaseUrl.password), PGDATABASE: databaseUrl.pathname.slice(1),
+          DOTENV_CONFIG_PATH: "/tmp/absent-owned-migration.env", DOTENV_CONFIG_QUIET: "true", DOTENV_CONFIG_OVERRIDE: "false" },
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.equal(result.signal, null);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "Database migration failed.\n");
     }
   });
   await check("all bundled migrations applied to empty synthetic database", async () => {

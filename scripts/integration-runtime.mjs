@@ -24,7 +24,23 @@ const criticalSourceModules = ["db/client", "config/env", "config/abuse", "share
   "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
   "modules/signals/interpretation", "modules/signals/frequency-taxonomy",
   "modules/monthly-recaps/service", "modules/monthly-recaps/types", "modules/ai/signal-types",
-  "shared/shutdown-budget", "shared/log-redaction", "server"];
+  "shared/shutdown-budget", "shared/log-redaction", "scripts/migrate", "server"];
+// This explicit inventory makes a new/renamed migration fail preparation until
+// its SQL is included in the same input and runtime-artifact freeze.
+export const migrationPayloadPaths = Object.freeze([
+  "apps/api/src/db/migrations/meta/_journal.json",
+  ...[
+    "0000_material_retro_girl", "0001_famous_the_anarchist", "0002_natural_omega_sentinel",
+    "0003_aberrant_thena", "0004_romantic_proemial_gods", "0005_milky_karen_page",
+    "0006_greedy_silver_sable", "0007_fast_skrulls", "0008_youthful_living_lightning",
+    "0009_clean_shadowcat", "0010_famous_the_anarchist", "0011_common_black_cat",
+    "0012_massive_ser_duncan", "0013_confused_paper_doll", "0014_calm_siren",
+    "0015_chunky_raider", "0016_tricky_mephistopheles", "0017_amazing_colossus",
+    "0018_exotic_kabuki", "0019_acoustic_ultragirl", "0020_provider_config_fallbacks",
+    "0021_absurd_firedrake", "0022_signal_generation_leases", "0023_b3_audio_attempt",
+    "0024_c1_publication_foundation", "0025_e1_provider_execution", "0026_f1_ai_signal_scheduler",
+  ].map((name) => `apps/api/src/db/migrations/${name}.sql`),
+]);
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
   runtimeEntryRelatives.abuse,
@@ -33,6 +49,7 @@ export const runtimeArtifactPaths = Object.freeze([
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
   "apps/api/src/modules/signals/generation-worker.js",
+  ...migrationPayloadPaths,
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
 export const runtimeSourcePaths = Object.freeze([
@@ -42,6 +59,7 @@ export const runtimeSourcePaths = Object.freeze([
   "package.json", "package-lock.json", "apps/api/package.json",
   "apps/api/tests/integration/postgres-eof.test.ts", "apps/api/tests/integration/failures.test.ts",
   "apps/api/tests/integration/core-flow.test.ts", "packages/contracts/src/signals.ts",
+  "apps/api/tests/integration/migration-cli.test.ts",
   "apps/api/tests/integration/provider-stub.ts", "apps/api/tests/integration/matching-evaluation.ts", "apps/api/tests/fixtures/e3-matches.v1.json", "apps/api/tests/fixtures/e3-matches.v1.sha256",
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
   "apps/api/tests/integration/generation-process-fixture.ts",
@@ -55,8 +73,7 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/tests/integration/f1-scheduler-process-fixture.ts",
   "apps/api/tests/integration/f2-recovery.test.ts", "scripts/deployment-stack.sh",
   "tests/integration/f2-linux-backup-permissions.sh",
-  "apps/api/src/db/migrations/0026_f1_ai_signal_scheduler.sql",
-  "apps/api/src/db/migrations/meta/_journal.json",
+  ...migrationPayloadPaths,
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.ts`),
 ]);
 const sourcePaths = runtimeSourcePaths;
@@ -101,11 +118,23 @@ export async function prepareIntegrationRuntime({ repositoryRoot, runDirectory, 
   const runtimeDirectory = path.join(run, "runtime");
   // Never adopt an old directory, shared dist output or a partial prior build.
   await mkdir(runtimeDirectory);
+  const journal = JSON.parse((await ordinaryFile(path.join(root, migrationPayloadPaths[0]))).toString("utf8"));
+  if (!Array.isArray(journal.entries) || journal.entries.length !== migrationPayloadPaths.length - 1 ||
+      journal.entries.some((entry, index) => !entry || typeof entry.tag !== "string" ||
+        `apps/api/src/db/migrations/${entry.tag}.sql` !== migrationPayloadPaths[index + 1])) fail();
   const inputs = await hashes(root, sourcePaths);
   await writeFile(path.join(runtimeDirectory, "package.json"), '{"type":"module"}\n', { flag: "wx" });
   await compile(runtimeDirectory);
+  // tsc emits the real CLI but does not emit its SQL payload. Copy only the
+  // registered ordinary inputs into the exclusively owned fresh runtime.
+  for (const relative of migrationPayloadPaths) {
+    const output = path.join(runtimeDirectory, relative);
+    await mkdir(path.dirname(output), { recursive: true });
+    await writeFile(output, await ordinaryFile(path.join(root, relative)), { flag: "wx" });
+  }
   equalHashes(await hashes(root, sourcePaths), inputs, sourcePaths);
   const files = await hashes(runtimeDirectory, runtimeArtifactPaths);
+  if (migrationPayloadPaths.some((relative) => files[relative] !== inputs[relative])) fail();
   const ownershipToken = randomBytes(32).toString("hex");
   const marker = {
     version: 1, runId, ownerPid: process.pid, sourceRoot: root,
