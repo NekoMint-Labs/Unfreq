@@ -1,15 +1,15 @@
 # 总实施规范进度
 
-依据所有者提供的 `Unfreq_Implementation_Spec_v1.md`。该文件是计划，不能当作完成记录。工作目录为 `E:\unfreq`；截至 2026-11-01 当前分支为 `codex/review-comments-20261101`。本轮从 `baf41d3` 接续，旧锁完整 Linux Web 镜像38/38保留；最终维护候选 `54cafe5` 已以 `04323b6` 同步回主工作区，当前锁安装、完整依赖树和两端构建产物已刷新。新锁的镜像、浏览器与基础设施恢复单独记录，不能继承旧38项成绩。此前 `778fdc0` 及 E4 工程补充基线 F4 `61a0ac3` 的结果保留，更早基线见各项记录。
+依据所有者提供的 `Unfreq_Implementation_Spec_v1.md`。该文件是计划，不能当作完成记录。工作目录为 `E:\unfreq`；截至北京时间 2026-11-02，当前分支为 `codex/postgres-v4-accepted-root-20261102`，接续提交为 `590f8f4`。当前 `postgres@4.0.0` 候选保留两文件生命周期补丁，锁 SHA256 为 `cdf351ca90d8d3325c349c16abefa71e35327d8aabd07a78ec3dfab16b64b3b4`。候选工作区、远端 CI、主目录安装与构建、各轮镜像的证据分别登记；旧锁和旧候选的通过或失败不转记为本轮结果。
 
 每次接续先核对 Git 差异及相应实施记录。各项按独立范围交付；历史通过只对应当时的代码及环境。下表不表示已合并或部署。
 
 | 项目 | 本地进度与证据 | 剩余边界 |
 | --- | --- | --- |
 | A1 / R22 | 已有实现；[依赖记录](./a1-next-security.md)；#1 经独立批准后由维护者 squash 合入 main `74c15dc` | 目标部署镜像需在实际发布时核对；合并不等于生产发布 |
-| A2 / R10 | 已有门禁和隔离运行器；[验收记录](./a2-isolated-integration.md)；#2 经批准 squash 合入 main `c80fef6`，#6 [必需集成检查设置及读回](./ruleset-integration-20261101.md)完成 | 真实集成、合成浏览器及生产验收分别报告；#7 v4 未通过，旧补丁保持 |
+| A2 / R10 | 已有门禁和隔离运行器；[验收记录](./a2-isolated-integration.md)；#2 经批准 squash 合入 main `c80fef6`，#6 [必需集成检查设置及读回](./ruleset-integration-20261101.md)完成 | 新 v4 候选的独立真实集成已通过，见 F4；#7 仍开放，候选审查、完整 API 镜像与生产验收分别报告 |
 | A3 / R06、R19 | [状态和副本设计](../data-lifecycle.md)，公开、撤回和历史确认规则已获确认；#3 的精确Head `39462e7` 经维护者正式批准后合入 main `3e145a3` | 保留期、硬删除、注销、备份销毁未批准；文档合并不等于运行时交付 |
-| B1、B2 / R01、R09 | 持久领取和晚到栅栏已有实现；[B1/B2 历史验收](./b1-b2-generation-reliability.md)、[C1 后续验收](./c1-publication-20261030.md)。#4 新增关停交错回归，已协调 main 为Head `b11d5cb`，新CI四项及47/47通过；56个B1文件blob与完整delta不变，见[评审接续](./review-comments-20261101.md) | #4已Ready并请求维护者独立复核，尚未批准/合并；历史 NULL pending 未自动纳管，部署切换另验 |
+| B1、B2 / R01、R09 | 持久领取和晚到栅栏已有实现；[B1/B2 历史验收](./b1-b2-generation-reliability.md)、[C1 后续验收](./c1-publication-20261030.md)。#4 的关停交错回归及 main 基线协调已完成，精确 Head `b11d5cb` 的四项 CI、真实47/47通过；[#4](https://github.com/NekoMint-Labs/Unfreq/pull/4)已合入 main `c0fb0e3` | 历史 NULL pending 未自动纳管，部署切换另验；#4 合并不等于后续 C1/F4 候选已合并或部署 |
 | B3 / R07 | 共享 Redis 预算和任务收尾已有实现；C1 记录包含后续78项集成。#5补充[23项pilot预算、成本假设与真实代理链验收提案](./b3-pilot-boundaries-20261101.md)，`34c2ae3` 四项CI及65/65通过 | #5仍Draft并堆叠#4；数值未启用、目标代理链未实测，生产额度未批准；不保证远端物理计算停止 |
 | C1 / R06 | [发布确认、撤回与全公开入口本地验收](./c1-publication-20261030.md) | 不含物理删除、第三方副本清除或生产部署 |
 | C2 / R06 | 已本地验收，见[举报记录](./c2-reporting-20261030.md)；对应当时 API 564、Web 112 单测，隔离 81/81、生产浏览器 10/10、既有开发 E2E 6/6 | 生产须新增三个举报预算，物理手机/读屏器未实测 |
@@ -24,10 +24,16 @@
 | F1 / R17、R18 | 身份镜像与每日调度已本地验证，见[本轮记录](./f1-identity-scheduler-20261031.md)；API 701、Web 136 单测、运行器 14/14、最终隔离 106/106、开发浏览器 6/6，两端构建通过 | users 权威、事务镜像与只读审计；业务时区、单日持久领取、预算及关闭排空。调度默认关闭，0026 仅在隔离数据库应用；未修复历史身份差异，目标环境迁移、配置、费用与生产发布待验收 |
 | F2 / R19 | 合成恢复、副本清单、审计关联、日志与 GET 只读见[首轮记录](./f2-recovery-replicas-20261031.md)；[后续任务观察](./f2-generation-observation-20261101.md)对应 API 732、运行器 15/15、任务专项 10/10、完整隔离 111/111，恢复检查约 11.60 秒。前轮 Web 138 和两端构建成绩保留。[独立 Redis AOF 演练](./f2-redis-aof-20261101.md)新增真实 19/19、安全/协议 20/20，来源指纹、同连接屏障和清理已核对 | AOF 为真实生产 Lua 与合成 Redis 持久层验证；旧检查点能复活挑战并退回额度。生产旧 AOF 的较新状态衔接、真实生产恢复、第三方协议及 A3 数据处置仍未验收；不构成旧延迟目标或生产性能结论 |
 | F3 / R20 | 已完成[能力登记与冻结](./f3-capability-inventory-20261101.md)，六类未接入能力的 API/页面/任务/数据/权限已盘点；路由专项 73/73、API lint 与类型检查通过，README/演示及旧规范已同步 | 未关闭现存实验 API、未删旧表/卷；静态无调用不等于无外部消费者，退役与数据处置另审 |
-| F4 / R22 常规部分 | 前轮[API安全维护](./f4-dependency-maintenance-20261101.md)及[Linux补充](./f4-linux-web-runner-20261101.md)保留。[最终维护候选](./f4-maintenance-final-candidate-20261101.md) `54cafe5` 保留旧驱动补丁，工具77/API767/Web192、真实113/113通过，主工作区安装与产物刷新完成；新锁Linux Web原生/停止/38项浏览器、来源/清理，以及精确缓存预填后的API开发/生产依赖与真实探针均通过 | 网络与引擎失败分别保留；未运行完整API runner。官方完整审计210秒截止未完成，前轮28包仅作历史；上游链、生产部署、有状态镜像及实体设备仍分开验收 |
+| F4 / R22 | 前轮[最终维护候选](./f4-maintenance-final-candidate-20261101.md)及旧 v4 失败保留。新[v4候选](./postgres-v4-upgrade-20261101.md)保留两文件生命周期补丁，候选本地工具79/API767/Web192、真实135/135及两个 Node 下界通过；精确 `590f8f4` 的[四项 CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41330941297)全绿。Linux Web 成品38/38，以及 API 开发/生产依赖阶段独立通过；本轮[完整 API 成品](./api-image-20261102.md)以同一镜像的构建、受限续验两阶段补齐，运行18/18、迁移27项、停止及清理通过，最终工具82/82 | 原 full run 在构建后因 DockerHub 鉴权 EOF 而 exit1；通过的18项来自同成品续验，不改标整轮成功。最终锁完整 audit 为20条 moderate、0 high/critical，16条 dev-only、4条正式依赖树；不等于零告警。#8 尚未据此认定合并，#7 保持开放；生产、有状态镜像与实体设备另验 |
 | R21 | 已备[事实与证据模板](../competition-evidence.md)，届别、学校/赛区、权属与贡献事实待提供 | 不推定 2026 规则等于后续届别，也不代作参赛资格结论 |
 
-F2 已完成合成 SQL/媒体恢复、副本与日志及任务观察的工程范围，后续独立补齐 Redis AOF 合成演练19/19，保留旧备份危险反例；不据此自动恢复生产旧 AOF。F3 登记冻结、前轮 F4 分组维护与 E4 未知指纹保护已有本地验收，本轮继续完整 Linux Web runner，在实际图片和跨时区浏览器中发现并修正问题。旧失败与新口径分别保留，不把通过成绩当作旧延迟指标或性能根因已解决。保留期、硬删除、注销和备份销毁仍按 A3 待决。E3/E4 的真实效果继续待样本、独立人工标注及获批模型/费用范围；当前没有脱敏集，用户已确认先做代码和合成验证。历史通过只对应各轮代码与环境，未授权合并、生产操作或收费调用。
+F2 已完成合成 SQL/媒体恢复、副本与日志及任务观察的工程范围，后续独立补齐 Redis AOF 合成演练19/19，保留旧备份危险反例；不据此自动恢复生产旧 AOF。F3 登记冻结、前轮 F4 分组维护与 E4 未知指纹保护已有本地验收。本轮已补齐完整 Linux API 成品的构建与同成品运行阶段，以及下述有限范围的源码/依赖回退演练。旧失败与新口径分别保留，不把通过成绩当作旧延迟指标或性能根因已解决。保留期、硬删除、注销和备份销毁仍按 A3 待决。E3/E4 的真实效果继续待样本、独立人工标注及获批模型/费用范围；当前没有脱敏集，用户已确认先做代码和合成验证。历史通过只对应各轮代码与环境，未授权合并、生产操作或收费调用。
+
+2026-11-02，主目录已同步精确 `590f8f4`，实际重做正常安装、新补丁2/2、完整依赖树、原生加载、两端构建及集成运行产物编译。`test-results/root-v4-finalize-20261102/final-readback.json` 记录来源与规范化产物映射，结果通过；其中明确 `rootRepeatedFullCheck=false`、`rootRepeatedNodeBoundaries=false`、`rootRepeatedIntegration=false`。候选工作区与远端 CI 的成绩仍属于各自运行，不能写成主目录重新执行了完整 check 或135项集成。以下日期段落保留各阶段历史，当前状态以上表及本段为准。
+
+本轮 API 成品的 `run37d9722` 已构建 deps/prod-deps/runner，成品为 `sha256:80d5376b8bba140643ff3b9f400f05a6a7804de0c228d8ad72e6f087ee1b15bc`；构建器清理通过，后续 pgvector 鉴权 EOF 使原运行 exit1，未启动 runtime。受限入口核对原311份 COPY 输入、探针/构建器及原 image ID 后，`run-5dd3535dc5ed52358a915845-nXZsky` 使用本机已有官方 RepoDigest 完成同成品18/18、27项迁移、PID1为node、SIGTERM后506ms退出0，sourceVerified/cleaned=true、cleanupFailures为空、续验外层exit0。最终独立核对314份来源（311份 COPY、3份验证输入）哈希零漂移，容器/网络/卷读回均为空。首次运行、清理枚举错误及首次续验作用域错误分别保留，见[实施记录](./api-image-20261102.md)。最终工具门禁82/82、无失败/取消/跳过/todo，exit0；该成绩不扩大为重新运行全部业务或135项数据库集成。
+
+独立回退演练固定 `c54f7e4`（tree `65912f17eeb413d2c4e0cf4a4324fc03eb9f9606`），568份 canonical 归档逐一核对 Git blob。正常权限安装542包，旧3.4.9四文件补丁4/4、幂等0/4及原生ESM/CJS、Drizzle构造通过；首次全树仍有7条 WASM extraneous，完整保留移出6个根目录、116文件哈希不变后，最终树 exit0且所有问题为空。源码及主目录4.0安装哈希不变。原 CRLF 归档、默认沙箱 symlink EPERM、初次树问题和正常权限重试均保留在 `test-results/postgres-rollback-20261102/`；报告为 `report.md`，最终 summary SHA256为 `3835f100253b2ba404a7172eae7bfc9a723258a53c3b0f311c48abefc23a81ef`。这只验证独立副本的源码/依赖组恢复，未做旧数据库、业务/FIN、镜像或生产回退。
 
 仓库同步：C2/D1/D2 的 `e3c6c1c` 与 D3 的 `27447c6` 已推送并核对。D4 独立代码提交为 `eddca9c`，已推送至 [D4 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/d4-polling-history)。E1 独立代码提交为 `2292eaa`，已推送至 [E1 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e1-provider-lineage)。E2 独立代码提交为 `bfc6e98`，已推送至 [E2 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e2-rerank-scores)。E3 独立代码提交为 `befb027`，已推送至 [E3 工作分支](https://github.com/NekoMint-Labs/Unfreq/tree/codex/e3-match-recall)，并核对远程引用与本地提交一致；随后追加同步记录。历史实施记录中的“未推送”描述对应各项首次验收时点。尚未合并或部署；分支推送不会自动触发只在 main 推送/PR 上运行的 CI，本表成绩来自本地执行。
 

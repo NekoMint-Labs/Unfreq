@@ -45,7 +45,7 @@ sha512-kBh8qXtcvvIAc00DftQyOxz7M/3Zxww1tRMXZPLzipNXXl5PIzHml+9zB3Mrge2U8ldc0WF1Z
 
 安装器先核验全部输入和计算出的输出，再逐文件写临时文件并重命名。已知修补状态只验证，已知原始/修补混合状态可以补齐；未知版本、integrity、上下文或内容一律失败。逐文件重命名不是跨文件磁盘事务，中途 I/O 失败必须保留失败，不能忽略错误启动应用。
 
-两个Dockerfile的开发与生产依赖阶段均已实际安装并核对新补丁。Web另完成Linux成品及38项浏览器验收；API的Linux证据仅含依赖阶段和模块/TypeScript探针，不含完整API runner。`--ignore-scripts` 会跳过补丁，不能把这样的安装当作本候选正常安装。
+两个Dockerfile的开发与生产依赖阶段均已实际安装并核对新补丁。Web另完成Linux成品及38项浏览器验收。API随后补齐[完整runner构建及同一成品运行验收](./implementation/api-image-20261102.md)：生产模式合成检查18/18、空库27次迁移、PID 1关停与资源清理通过；完整重建后遇registry EOF、经输入/镜像指纹核对恢复运行的两阶段证据分别保留。`--ignore-scripts` 会跳过补丁，不能把这样的安装当作本候选正常安装。
 
 ## 当前证据与待验收范围
 

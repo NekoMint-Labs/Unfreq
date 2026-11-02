@@ -7,7 +7,7 @@ npm ci
 npm run check
 ```
 
-`check` 包含 contracts 类型检查、API lint / 类型检查 / 单测 / 构建，以及 Web lint / 类型检查 / **Web 单测** / 构建。也可单独运行 `npm run api:check`、`npm run web:check` 或 `npm run web:test`。
+`check` 包含 contracts 类型检查、API lint / 类型检查 / 单测 / 构建，以及 Web lint / 类型检查 / **Web 单测** / 构建。也可单独运行 `npm run api:check`、`npm run web:check` 或 `npm run web:test`。根 `web:test` 会先构建 contracts，再运行 Web 单测，独立检查不依赖此前 API 构建留下的 dist。
 
 API 默认 Vitest 只收集 `src/**/*.test.ts`，不会因为新增集成用例而突然要求本机已有数据库。单测配置禁载项目 `.env`，清空外部 Provider 地址和密钥，并将数据库配置指向不可用的本地测试地址；业务替身须显式定义，不应依赖真实服务失败后回退。单测最多使用 2 个 worker，限制冷启动时多个 Fastify / TypeScript 实例的资源争用，保留默认 5 秒用例超时和全部用例。
 
@@ -127,7 +127,7 @@ node --test tests/recovery/redis-aof-safety.test.mjs
 
 真实演练 run-d736a665ead0 为19/19，来源及清理核对通过；第二条的参数、所有权及协议安全测试为20/20，其中协议路径使用管道替身，不能代替真实恢复。安全测试已纳入 test:integration-tools，真实演练仍须显式运行，不使普通 check 自动依赖 Docker。三次失败、协议探针及完整证据见[独立实施记录](./implementation/f2-redis-aof-20261101.md)。该范围不验证 API 登录、PostgreSQL/会话签名或生产旧备份的安全衔接，也不授权自动重放旧 AOF。
 
-## 完整 Linux Web 镜像（仍待验收）
+## 完整 Linux Web 镜像
 
 ```powershell
 npm run web:image:verify
@@ -135,10 +135,28 @@ npm run web:image:verify
 
 该入口从冻结来源构建 Dockerfile.web 的真实 runner，记录基础镜像、最终成品及 BUILD_ID；探测原生依赖和实际包/许可材料，使用镜像内 Next 与合成 API 验证页面和离线分享图。宿主 Chromium 访问 Linux Web 镜像，不作为 Linux 浏览器或实体设备结论。运行器/OG 的专项结果与完整镜像成绩分别记录，见[本轮实施记录](./implementation/f4-linux-web-runner-20261101.md)。
 
-本轮 source-map-js 1.2.2、baseline-browser-mapping 2.11.34 和Vite近层esbuild0.28.2已完成正常安装、平台残留保留移出后的完整依赖树、原生加载及全量本地检查（工具41/API765/Web184及两端构建）。完整镜像四轮因Docker环境失败，仍无最终runner/成品探针/37项镜像浏览器的通过成绩；干净来源和失败/清理分别记录，不沿用前轮成绩。先释放本机资源，再继续完整验收。生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
+当前 `postgres@4.0.0` 候选已完成独立 Linux Web 成品验收：`run-876dc359ed169e6e5dad38d9` 实际浏览器38/38，无跳过、重试或 flaky，SWC/sharp 原生探针、停止、来源读回和清理通过。158份 Docker 输入与12份验证输入前后核验通过；精确输入、镜像及 BUILD_ID 见[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。较早的 Docker 环境失败、37/38及中断记录保留在[Linux补充记录](./implementation/f4-linux-web-runner-20261101.md)，不由最终通过覆盖。该 Web 服务使用合成 API；生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
+
+## 完整 Linux API 镜像
+
+```powershell
+npm run api:image:verify
+```
+
+该入口冻结 `Dockerfile.api` 的实际输入，构建开发、生产依赖及最终 runner，在新建隔离 PG/Redis 上执行真实入口迁移、应用请求与停止检查；不读取实际 `.env` 或连接生产。来源、资源所有权、完整运行及受限续验的规则见[API镜像记录](./implementation/api-image-20261102.md)。
+
+本轮为同一成品的两阶段证据：`run37d9722` 完成全部构建阶段与构建器清理，随后 DockerHub pgvector 鉴权 EOF 使原 full run exit1、runtime未启动；核对同一311份 COPY 输入、探针/构建器与原 image ID 后，`run-5dd3535dc5ed52358a915845-nXZsky` 使用本机已有官方 RepoDigest 完成18/18、27项迁移、PID1为node、SIGTERM后506ms退出0，sourceVerified/cleaned=true、cleanupFailures为空，续验外层exit0。314份来源（311份 COPY、3份验证输入）的最终独立哈希核对无漂移，容器/网络/卷独立读回均为空。不能将续验通过改写为原整轮 exit0；较早的清理枚举错误和首次续验失败另存原记录。已有 `api:integration` 的135项、成品18项和工具82项属于不同门禁，互不替代。
+
+## 源码与依赖组回退演练
+
+2026-11-02 在独立 Git archive 副本完成 `c54f7e4` 的有限范围演练：568份文件与原 Git blob 一致；正常权限 `npm ci` 实装542包，保留旧3.4.9四文件 postinstall，补丁SHA、幂等0/4、原生ESM/CJS与Drizzle构造通过，零SQL。首次全树虽exit0仍有7条多余 WASM 记录，先完整保留移出6个根目录并核对116文件哈希，再确认最终全树exit0且顶层及递归问题为空。源码及主目录4.0安装未变。日志、原沙箱EPERM、初始树和最终报告在 `test-results/postgres-rollback-20261102/`；不据此认定旧数据库恢复、业务/FIN、镜像或生产回退通过。
 
 ## CI
 
 现有 API、Web、部署脚本任务保留。Web 单测已并入 `web:check`，不再额外重复执行。新增独立 `Isolated API integration` job，运行同一个托管集成命令；不需要仓库 secrets 或收费 AI。
+
+PR #8 精确 Head `590f8f4` 的[运行41330941297](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41330941297)四项检查已通过：工具79、API767、Web192及真实 PG/Redis135/135。该提交为独立 Web job 补充 contracts 构建前置步骤；首次缺少 dist 的失败仍保留在[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。远端 CI 不替代主目录重新执行；主目录对应安装、原生加载、构建及来源/产物映射单独登记，未重跑完整 check、两个 Node 下界或完整集成。
+
+本轮新增 API 成品工具后的完整工具门禁实际82/82、无失败/取消/跳过/todo，exit0，13.71秒，日志为 `test-results/api-image-tools-complete-20261102.log`。首轮80/82的资源超时和 CLI 帮助文本断言问题、修正范围见 API 镜像记录；未放宽原预算或输入/远端保护。该工具成绩不转记为两端全部业务单测或完整数据库集成。
 
 普通 `npm run check` 仍不强制要求 Docker 或测试浏览器；真实服务集成由显式命令和独立 CI job 负责。

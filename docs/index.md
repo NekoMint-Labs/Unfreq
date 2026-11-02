@@ -41,6 +41,8 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [F4 最终兼容依赖维护候选](./implementation/f4-maintenance-final-candidate-20261101.md)
 - [Main 必需集成检查验收](./implementation/ruleset-integration-20261101.md)
 - [postgres v4 兼容性负向评估](./implementation/postgres-v4-20261101.md)
+- [postgres v4 生命周期补丁候选与验收](./implementation/postgres-v4-upgrade-20261101.md)
+- [完整 API 镜像与独立 Web 测试入口](./implementation/api-image-20261102.md)
 - [B3 pilot 预算提案与真实代理链验收](./implementation/b3-pilot-boundaries-20261101.md)
 - [参赛事实与证据待办](./competition-evidence.md)
 - [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)

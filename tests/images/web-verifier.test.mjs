@@ -31,3 +31,33 @@ test("remote Docker refusal never executes Docker during cleanup", () => {
   assert.match(result.stderr, /Remote Docker endpoints are refused/);
   assert.doesNotMatch(result.stderr, /spawn|ENOENT/);
 });
+
+function invokeApi(args, extra = {}) {
+  return spawnSync(process.execPath, [path.join(root, "scripts", "verify-api-image.mjs"), ...args], {
+    cwd: root, env: { ...process.env, ...extra }, encoding: "utf8", windowsHide: true, timeout: 10_000,
+  });
+}
+test("API image help works without Docker or inherited credentials", () => {
+  const result = invokeApi(["--help"], { DOCKER_HOST: "tcp://forbidden.invalid:2375", PATH: "" });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /disposable PostgreSQL\/Redis/);
+  assert.equal(result.stderr, "");
+});
+test("API image verifier rejects caller-selected resources before Docker", () => {
+  for (const args of [["--image", "existing-production"], ["--database-url=postgres://localhost/production"], ["--resume-runtime=../other"], ["--resume-runtime=abc"], ["--help", "extra"]]) {
+    const result = invokeApi(args, { PATH: "" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage:/);
+    assert.doesNotMatch(result.stderr, /spawn|ENOENT/i);
+  }
+});
+test("API image verifier refuses remote and UNC endpoints without cleanup calls", () => {
+  for (const DOCKER_HOST of ["tcp://forbidden.invalid:2375", "npipe:////remote-server/pipe/docker_engine"]) {
+    for (const args of [[], ["--resume-runtime=1234567890abcdef12345678"]]) {
+      const result = invokeApi(args, { DOCKER_HOST, PATH: "" });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Remote Docker endpoints are refused/);
+      assert.doesNotMatch(result.stderr, /spawn|ENOENT/);
+    }
+  }
+});

@@ -1,3 +1,6 @@
+# Keep the Linux container entrypoint executable after Windows checkouts.
+scripts/api-entrypoint.sh text eol=lf
+
 # Frozen evaluation files are hashed as bytes; preserve them across checkouts.
 apps/api/tests/fixtures/e3-matches.v1.json -text
 apps/api/tests/fixtures/e3-matches.v1.sha256 -text whitespace=cr-at-eol
