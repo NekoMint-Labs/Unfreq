@@ -6,7 +6,7 @@
 
 2026-11-02后续交付：首批API镜像/Web独立测试收尾已保存为 `7ba5787` 并经明确授权推送，建立[草稿PR #9](https://github.com/NekoMint-Labs/Unfreq/pull/9)，基于PR #8的精确590f8f4；该提交[四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41452643082)通过。随后新增[旧版真实回退全回归](./rollback-faults-20261102.md)113/113、原预算不变且资源清理通过，以及[同成品进行中任务专项](./api-active-shutdown-20261102.md)18+4通过；最终关停均早于原任务期限、重启不重放。两类来源及已有135项v4集成仍分别报告，不代表main合并或生产恢复。剩余依赖正以生产迁移器候选独立验证，未把候选审计成绩当作当前已安装或已部署成绩。
 
-本轮[生产迁移器](./runtime-migrations-20261102.md)已正常安装并通过完整树、driver/原生加载读回；最终独立audit为20条moderate全部开发依赖、生产范围0条。Kit/runner迁移兼容5/5、原SQL未改；空URL默认连接差异已补保护。最终API检查84工具/767单测及构建通过，Web同锁完整检查192通过；新增第9文件后的真实完整集成139/139、原预算、exit0且已清理。新生产镜像的最终20组及Web成品仍单独执行后登记，不把首轮19或此前38项当作最终代码成绩。PR #9的最终f906bd1也已[四项CI全绿](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41456924092)，本生产依赖变更另作堆叠草稿审查，不合并main或部署。
+本轮[生产迁移器](./runtime-migrations-20261102.md)已正常安装并通过完整树、driver/原生加载读回；最终独立audit为20条moderate全部开发依赖、生产范围0条。Kit/runner迁移兼容5/5、原SQL未改；空URL默认连接差异已补保护。最终API检查84工具/767单测及构建通过，Web同锁完整检查192通过；新增第9文件后的真实完整集成139/139、原预算、exit0且已清理。最终Linux API完整构建及20组通过，同成品20+4关停/重启通过；最终Linux Web完整构建后宿主等待失败，修复后[同成品续验](./web-runtime-readiness-20261102.md)38/38、来源及清理通过，原失败保留。工具修复后的门禁87/87，生产镜像实际无kit及旧loader。PR #9最终f906bd1的[四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41456924092)及本轮d470fae的[四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41466874537)均通过；本轮独立交付为[草稿PR #10](https://github.com/NekoMint-Labs/Unfreq/pull/10)，不合并main或部署。
 
 | 项目 | 本地进度与证据 | 剩余边界 |
 | --- | --- | --- |

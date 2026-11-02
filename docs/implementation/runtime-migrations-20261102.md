@@ -33,16 +33,24 @@ API的生产迁移命令改为编译后的 `dist/scripts/migrate.js`，复用已
 
 安装读回在其9项输入前后不变的窗口独立执行；随后根命令参数转发与CLI空URL保护在源码层补齐，依赖声明和锁未变，由最终API检查及真实CLI回归覆盖，不将安装时的源码字节断言延伸到后续改动。候选首次真实PG检查因驱动NOTICE使固定输出断言失败，原exit1/cleaned=true保留；加入明确的NOTICE处理后重编译并重跑全部5组，未泛化吞掉任意stderr。
 
-## 持续集成与待收齐结果
+## 持续集成与最终成品
 
 新增第9个真实集成文件 `migration-cli.test.ts`，4组覆盖本轮实际编译CLI的空库27迁移/幂等、追加私有迁移后的DDL/数据/账本整体回滚、不可达数据库的固定错误，以及空/空白URL不得迁移到受控PG环境默认库。回滚检查使用非事务sequence推进到2，证明两份故障前SQL确已执行；空URL用例先证明自有目标库可达，再确认失败后仍没有ledger或业务表。原8文件及预算不改。
 
-runtime显式冻结27份SQL和journal，复制后逐字节核对并将CLI、测试与payload纳入来源/产物清单；未登记SQL或两侧篡改均拒绝。轻量guard9/9通过，32KB marker上限不变。完整9文件集成、新Linux API成品及Web成品结果在本轮执行后补记，不预填通过。
+runtime显式冻结27份SQL和journal，复制后逐字节核对并将CLI、测试与payload纳入来源/产物清单；未登记SQL或两侧篡改均拒绝。轻量guard9/9通过，32KB marker上限不变。
 
 最终API检查仍为84工具、767单测及lint/类型/构建全部通过；最终完整集成 `run-Yjpd5T / 2ca2b1c981e0` 为9文件139/139，失败/待执行/todo均为0，外层exit0、cleaned=true。四个迁移CLI用例全部实际执行，原8文件及预算保持；来源/产物保护现覆盖136份输入、112份产物。证据为 `runtime-migration-api-check-final-20261102.log`、`runtime-migration-integration-final-20261102.log` 及对应run目录，串行执行记录 `runtime-migration-final-check-run-20261102.json` 两阶段退出均为0。
 
 首轮9文件完整集成 `run-kBGox6 / f27320b05859` 已138/138，外层exit0、cleaned=true；首个新生产API成品 `run-f3b4c496335f1750161dbcdc-2NinB5` 也19/19、sourceVerified/cleaned=true、exit0，确认旧kit/loader确实不在成品中。其后复核从旧kit校验和postgres4 parseUrl源码发现空URL的默认连接差异，补回明确拒绝及第4个回归；上述138/19只保留修改前范围，不转记为最终139/20结果。修正后API完整检查再次84工具、767单测和lint/类型/构建通过；Web192及构建对应此前同锁完整check，其源码未变。
 
 dev generate额外的网络度量首轮把tsx父进程命名管道IPC误当IP网络而失败，原记录保留。独立重验仍拒绝所有被钩住的API，确认唯一调用是被拒绝的本地Windows命名管道；HTTP/TCP IP请求为0，generate本身自然exit0，原SQL不变。该Node级guard不等于操作系统出口防火墙。
+
+最终干净提交 `d470fae9c855aebef85e013fc425933bfef41ca4` 的Linux API完整构建 `run-ac8e873d8fe30c8e9c57f0b7-KCpip9` 为20/20、外层exit0、sourceVerified/cleaned=true；镜像 `sha256:e27c26b864fabd154008b92d5d386e66852c02e7c01c76528b9c19bde8e5cbd1`，27项迁移通过，实际不含kit、esm-loader、core-utils及旧配置，空/blank URL子进程确实拒绝。316份来源独立核对无漂移，容器/网络/卷独立读回为空。
+
+同一最终API成品的 `run-8858d0fbd74b7f84024c7feb-qXbIVU` 再跑20组及4组进行中任务关停/重启，全部通过、外层exit0、sourceVerified/cleaned=true。两次停止约1.494/1.523秒，从探针开始的完整宿主窗口约2.728/2.930秒，均小于镜像内原25秒期限；重启宿主PID改变、旧请求不重放，之后新的受控请求实际到达。319份来源无漂移，自有资源独立读回为空；该成绩只证明合成本地Provider路径。
+
+上述提交的[四项远端CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41466874537)全部通过。后续Web宿主验证器修复只改变验证工具，不改变这两个API成品的构建输入或139项集成的受保护来源。
+
+最终Web同锁成品的三阶段完整构建已完成，首轮在宿主waitHttp发生unsettled top-level await、未进入浏览器。修复有引用超时后，受限续验核对同一158份构建输入和固定镜像 `60b1bca5587d…`，`run-cb56e66fd506dc0b35cb0e1c-5krnkN` 实际38/38、外层exit0、sourceVerified/cleaned=true；当前13份验证来源也全部冻结，旧失败保留。成品165包按名及嵌套路径均无kit/loader/core-utils/esbuild，原生探针、中文及占位字形OG、两种停止通过，详见[Web补充记录](./web-runtime-readiness-20261102.md)。最终工具测试87/87；这次工具修复后再次独立核对API136输入/112产物无漂移。
 
 回退需成组恢复manifest、lock、迁移脚本、Docker及测试接线至基线；不回退既有SQL或数据库账本。KIT与runner的双向幂等不构成生产恢复结论。本轮没有main合并、生产部署、真实数据迁移或收费模型调用。

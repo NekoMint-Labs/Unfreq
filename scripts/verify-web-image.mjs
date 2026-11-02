@@ -1,16 +1,18 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { createOwnedWebBuilder } from "./web-image-builder.mjs";
 import { assertOwnedWebStop } from "./web-image-stop.mjs";
+import { runWithReferencedTimeout } from "./image-http-ready.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const usage = "Usage: node scripts/verify-web-image.mjs\nBuild and verify a fresh, locally owned Linux Web image with synthetic data only.\n";
+const usage = "Usage: node scripts/verify-web-image.mjs [--resume-runtime=<owned-run-id>]\nBuild and verify a fresh, locally owned Linux Web image with synthetic data only.\nResume verifies a prior owned image with unchanged build inputs and fixtures.\n";
 if (process.argv.length === 3 && process.argv[2] === "--help") { console.log(usage); process.exit(0); }
-if (process.argv.length !== 2) { console.error(usage); process.exit(1); }
+const resumeMatch = process.argv.length === 3 ? /^--resume-runtime=([a-f0-9]{24})$/u.exec(process.argv[2]) : null;
+if (process.argv.length !== 2 && !resumeMatch) { console.error(usage); process.exit(1); }
 const runId = randomBytes(12).toString("hex");
 const labelKey = "com.unfreq.web-image-verification.run";
 const imageTag = `unfreq-web-verify:${runId}`;
@@ -21,6 +23,10 @@ const fixturePaths = [
   ["tests/e2e/publication-fixture.mjs", "publication-fixture.mjs"],
   ...["web-image-probe.mjs", "web-fetch-guard.mjs", "web-runtime.mjs"].map((name) => [`tests/images/${name}`, name]),
 ];
+const hostVerifierPaths = ["scripts/verify-web-image.mjs", "scripts/image-http-ready.mjs"];
+const verificationPaths = [...fixturePaths.map(([relative]) => relative), ...hostVerifierPaths,
+  "scripts/web-image-builder.mjs", "scripts/web-image-stop.mjs",
+  "playwright.image.config.ts", "tests/e2e/runtime/production.spec.ts", "tests/e2e/runtime/image-only.spec.ts"];
 const containers = new Set();
 const liveContainers = new Set();
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => [
@@ -102,12 +108,120 @@ async function waitHttp(url, predicate) {
   const deadline = performance.now() + 60_000;
   while (performance.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(1500), redirect: "error" });
-      if (response.ok && await predicate(response)) return;
+      const matched = await runWithReferencedTimeout(async (signal) => {
+        const response = await fetch(url, { signal, redirect: "error" });
+        return response.ok && await predicate(response);
+      }, Math.max(1, Math.min(1500, Math.ceil(deadline - performance.now()))));
+      if (matched) return;
     } catch { /* bounded startup observation */ }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error("Owned Web image did not become ready.");
+}
+async function ordinaryFile(base, relative) {
+  const boundary = path.resolve(base);
+  const filename = path.resolve(boundary, relative);
+  assert.ok(filename.startsWith(boundary + path.sep), "Owned file escaped its directory");
+  for (let current = filename; current !== boundary; current = path.dirname(current)) {
+    assert.equal((await lstat(current)).isSymbolicLink(), false, "Linked owned file/ancestor refused");
+  }
+  assert.equal((await lstat(filename)).isFile(), true, "Owned input must be an ordinary file");
+  assert.equal((await realpath(filename)).toLowerCase(), filename.toLowerCase(), "Owned file path was redirected");
+  return readFile(filename);
+}
+async function resumeOwnedBuild(id) {
+  const base = path.join(root, "test-results", "web-image");
+  const matches = (await readdir(base, { withFileTypes: true })).filter((entry) => entry.name.startsWith(`run-${id}-`));
+  assert.equal(matches.length, 1, "Resume requires exactly one prior owned run directory");
+  assert.ok(matches[0].isDirectory() && !matches[0].isSymbolicLink(), "Prior run must be an ordinary directory");
+  const previousDirectory = path.join(base, matches[0].name);
+  for (let current = previousDirectory; current !== root; current = path.dirname(current)) {
+    assert.equal((await lstat(current)).isSymbolicLink(), false, "Linked prior run directory refused");
+  }
+  const bytes = await ordinaryFile(previousDirectory, "manifest.json");
+  const previous = JSON.parse(bytes);
+  assert.equal(previous.runId, id);
+  assert.equal(previous.syntheticOnly, true);
+  assert.equal(previous.builderReleasedBeforeRuntime, true);
+  assert.equal(previous.builder?.cleaned, true, "Prior builder must have finished cleanup");
+  assert.equal(previous.builder.name, `unfreq-web-${id}`);
+  assert.equal(previous.builder.containerName, `buildx_buildkit_unfreq-web-${id}0`);
+  assert.equal(previous.builder.volumeName, `buildx_buildkit_unfreq-web-${id}0_state`);
+  assert.deepEqual(previous.builder.cleanupFailures, []);
+  assert.deepEqual(previous.buildStages?.map(({ target, output }) => ({ target, output })), [
+    { target: "deps", output: "cacheonly" }, { target: "prod-deps", output: "cacheonly" }, { target: "runner", output: "image" },
+  ], "Resume requires all three real build stages, not another runtime-only result");
+  assert.ok(previous.buildStages.every((stage) => Number.isFinite(stage.elapsedMs) && stage.elapsedMs > 0));
+  assert.deepEqual(previous.inputs, manifest.inputs, "Build inputs changed since the prior image");
+  assert.equal(previous.sourceTreeSha256, manifest.sourceTreeSha256);
+  for (const [relative, expected] of Object.entries(previous.inputs)) {
+    assert.equal(sha(await ordinaryFile(path.join(previousDirectory, "context"), relative)), expected, `Prior frozen input changed: ${relative}`);
+    assert.equal(sha(await ordinaryFile(root, relative)), expected, `Current build input changed: ${relative}`);
+  }
+  const previousKeys = Object.keys(previous.fixtureInputs ?? {}).sort();
+  const expectedKeys = verificationPaths.filter((relative) => relative !== "scripts/image-http-ready.mjs" || Object.hasOwn(previous.fixtureInputs ?? {}, relative)).sort();
+  assert.deepEqual(previousKeys, expectedKeys, "Prior verification source set is not recognized");
+  const verifierChanges = [];
+  let unchangedFixtureSources = 0;
+  for (const [relative, expected] of Object.entries(previous.fixtureInputs)) {
+    assert.match(expected, /^[a-f0-9]{64}$/u);
+    const current = manifest.fixtureInputs[relative];
+    if (hostVerifierPaths.includes(relative)) {
+      if (current !== expected) verifierChanges.push({ path: relative, beforeSha256: expected, afterSha256: current });
+    } else {
+      assert.equal(current, expected, `Runtime/browser fixture changed: ${relative}`);
+      unchangedFixtureSources++;
+    }
+  }
+  for (const relative of hostVerifierPaths) {
+    if (!Object.hasOwn(previous.fixtureInputs, relative)) verifierChanges.push({ path: relative, beforeSha256: null, afterSha256: manifest.fixtureInputs[relative] });
+  }
+  // Old runs recorded twelve source hashes but copied only these six runtime
+  // files. Verify the files that actually exist; do not invent old snapshots.
+  for (const [relative, destination] of fixturePaths) {
+    assert.equal(sha(await ordinaryFile(path.join(previousDirectory, "fixtures"), destination)), previous.fixtureInputs[relative], `Prior copied fixture changed: ${relative}`);
+  }
+  const buildMetadata = [];
+  for (const target of ["deps", "prod-deps", "runner"]) {
+    const metadataBytes = await ordinaryFile(previousDirectory, `build-metadata-${target}.json`);
+    const metadata = JSON.parse(metadataBytes);
+    const args = metadata["buildx.build.provenance"]?.invocation?.parameters?.args;
+    assert.equal(args?.target, target);
+    assert.equal(args[`label:${labelKey}`], id);
+    assert.equal(args["label:com.unfreq.web-image-verification.source"], previous.sourceTreeSha256);
+    assert.equal(args["label:org.opencontainers.image.revision"], previous.sourceCommit);
+    assert.ok(typeof metadata["buildx.build.ref"] === "string" && metadata["buildx.build.ref"].startsWith(`unfreq-web-${id}/`));
+    if (target === "runner") assert.equal(metadata["containerimage.digest"], previous.image?.id);
+    const logBytes = await ordinaryFile(previousDirectory, `build-${target}.log`);
+    assert.ok(logBytes.length > 0, "Prior successful build log is missing");
+    buildMetadata.push({ target, metadataSha256: sha(metadataBytes), logSha256: sha(logBytes) });
+  }
+  assert.match(previous.image?.id ?? "", /^sha256:[a-f0-9]{64}$/u);
+  const inspected = JSON.parse((await docker(["image", "inspect", previous.image.id])).stdout)[0];
+  assert.equal(inspected.Id, previous.image.id);
+  assert.equal(inspected.Config.Labels[labelKey], id);
+  assert.equal(inspected.Config.Labels["com.unfreq.web-image-verification.source"], manifest.sourceTreeSha256);
+  assert.equal(inspected.Config.Labels["org.opencontainers.image.revision"], previous.sourceCommit);
+  assert.equal(inspected.Os, "linux");
+  assert.equal(inspected.Architecture, "amd64");
+  assert.deepEqual(inspected.Config.Cmd, ["npm", "--workspace", "@unfreq/web", "run", "start"]);
+  assert.equal((await docker(["container", "ls", "--all", "--quiet", "--filter", `label=${labelKey}=${id}`])).stdout.trim(), "", "Prior runtime resources must be cleaned before resuming");
+  assert.equal((await docker(["network", "ls", "--quiet", "--filter", `label=${labelKey}=${id}`])).stdout.trim(), "", "Prior runtime network must be cleaned before resuming");
+  assert.equal((await docker(["container", "ls", "--all", "--quiet", "--filter", `name=^/buildx_buildkit_unfreq-web-${id}0$`])).stdout.trim(), "", "Prior builder container remains");
+  assert.equal((await docker(["volume", "ls", "--quiet", "--filter", `name=^buildx_buildkit_unfreq-web-${id}0_state$`])).stdout.trim(), "", "Prior builder state volume remains");
+  assert.equal((await docker(["volume", "ls", "--quiet", "--filter", `label=com.unfreq.web-image-builder.run=${id}`])).stdout.trim(), "", "Prior builder volume remains");
+  manifest.image = { tag: previous.image.tag, id: inspected.Id, os: inspected.Os, architecture: inspected.Architecture,
+    repoDigests: inspected.RepoDigests, cmd: inspected.Config.Cmd, sizeBytes: inspected.Size };
+  manifest.baseImage = previous.baseImage;
+  manifest.runtimeOnly = true;
+  manifest.buildReference = { runId: id, directory: previousDirectory, manifestSha256: sha(bytes), imageId: inspected.Id,
+    sourceCommit: previous.sourceCommit, sourceTreeSha256: previous.sourceTreeSha256,
+    dockerInputsVerified: Object.keys(previous.inputs).length, completedBuildStages: previous.buildStages,
+    currentVerificationSources: verificationPaths.length, previousDeclaredVerificationSources: previousKeys.length,
+    unchangedFixtureSources, previousCopiedFixturesVerified: fixturePaths.length,
+    previousUncopiedSourcesChecked: "Current source bytes compared to prior recorded hashes; no claim of prior frozen copies.",
+    verifierChanges, buildMetadata };
+  console.log(`Resuming runtime of owned Web image ${inspected.Id}`);
 }
 async function stopContainer(id, role) {
   const before = await inspectContainer(id);
@@ -146,12 +260,13 @@ try {
   // Freeze verification sources before the potentially long image build too.
   manifest.fixtureInputs = {};
   const fixtureBytes = new Map();
-  for (const relative of [...fixturePaths.map(([relative]) => relative), "scripts/verify-web-image.mjs",
-    "scripts/web-image-builder.mjs", "scripts/web-image-stop.mjs",
-    "playwright.image.config.ts", "tests/e2e/runtime/production.spec.ts", "tests/e2e/runtime/image-only.spec.ts"]) {
+  for (const relative of verificationPaths) {
     const bytes = await readFile(path.join(root, relative));
     fixtureBytes.set(relative, bytes);
     manifest.fixtureInputs[relative] = sha(bytes);
+    const destination = path.join(directory, "verification", relative);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, bytes);
   }
   console.log(`Linux Web image verification: ${runId}\nEvidence: ${directory}`);
 
@@ -173,6 +288,9 @@ try {
     await writeFile(path.join(frozen, relative), bytes);
   }
   manifest.sourceTreeSha256 = sha(JSON.stringify(manifest.inputs));
+  if (resumeMatch) {
+    await resumeOwnedBuild(resumeMatch[1]);
+  } else {
   const nodeDescriptor = JSON.parse((await docker(["buildx", "imagetools", "inspect", "node:22-alpine", "--format", "{{json .Manifest}}"], { timeoutMs: 120_000 })).stdout);
   assert.match(nodeDescriptor.digest, /^sha256:[a-f0-9]{64}$/);
   manifest.baseImage = { name: "node:22-alpine", descriptor: nodeDescriptor };
@@ -211,6 +329,7 @@ try {
   // Building and browsing do not need to overlap. Release the private daemon
   // and its cache before starting native probes or host Chromium processes.
   assert.equal(await ownedBuilder.cleanup(), true, "Owned builder could not be released before runtime checks");
+  }
   manifest.builderReleasedBeforeRuntime = true;
   await save();
   const fixtures = path.join(directory, "fixtures");
@@ -224,7 +343,7 @@ try {
   }
   const mount = `type=bind,source=${fixtures},target=/fixtures,readonly`;
   const probe = await docker(["run", "--rm", "--label", `${labelKey}=${runId}`, "--network", "none", "--read-only",
-    "--tmpfs", "/tmp:rw,nosuid,size=16m", "--mount", mount, "--entrypoint", "node", inspected.Id, "/fixtures/web-image-probe.mjs"]);
+    "--tmpfs", "/tmp:rw,nosuid,size=16m", "--mount", mount, "--entrypoint", "node", manifest.image.id, "/fixtures/web-image-probe.mjs"]);
   const inventory = JSON.parse(probe.stdout);
   await writeFile(path.join(directory, "image-inventory-and-notices.json"), `${JSON.stringify(inventory, null, 2)}\n`);
   manifest.probe = { node: inventory.node, buildId: inventory.buildId, packageCount: inventory.packageCount,
@@ -259,12 +378,19 @@ try {
   assert.ok(report.stats.expected >= 38);
   manifest.browsers = report.stats;
   manifest.playwrightVersion = JSON.parse(await readFile(path.join(root, "node_modules", "playwright", "package.json"), "utf8")).version;
-  const identity = await (await fetch(`http://127.0.0.1:${port}/__image/identity`)).json();
+  const identity = await runWithReferencedTimeout(async (signal) =>
+    (await fetch(`http://127.0.0.1:${port}/__image/identity`, { signal, redirect: "error" })).json(), 1500);
   assert.equal(identity.blockedFetch, 0);
   manifest.blockedExternalFetch = identity.blockedFetch;
   await stopContainer(runtimeId, "runtime");
   for (const [relative, expected] of Object.entries({ ...manifest.inputs, ...manifest.fixtureInputs })) {
     assert.equal(sha(await readFile(path.join(root, relative))), expected, `Source changed during validation: ${relative}`);
+  }
+  for (const [relative, expected] of Object.entries(manifest.inputs)) {
+    assert.equal(sha(await readFile(path.join(frozen, relative))), expected, `Frozen build input changed: ${relative}`);
+  }
+  for (const [relative, expected] of Object.entries(manifest.fixtureInputs)) {
+    assert.equal(sha(await readFile(path.join(directory, "verification", relative))), expected, `Frozen verification source changed: ${relative}`);
   }
   manifest.sourceVerified = true;
   exitCode = 0;

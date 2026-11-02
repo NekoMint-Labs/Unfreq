@@ -135,6 +135,8 @@ npm run web:image:verify
 
 该入口从冻结来源构建 Dockerfile.web 的真实 runner，记录基础镜像、最终成品及 BUILD_ID；探测原生依赖和实际包/许可材料，使用镜像内 Next 与合成 API 验证页面和离线分享图。宿主 Chromium 访问 Linux Web 镜像，不作为 Linux 浏览器或实体设备结论。运行器/OG 的专项结果与完整镜像成绩分别记录，见[本轮实施记录](./implementation/f4-linux-web-runner-20261101.md)。
 
+生产迁移器锁的最终成品已在 `run-1f4107d248add6f442bc5369` 完成三阶段构建，宿主等待提前退出后保留原失败并核对清理。`npm run web:image:verify -- --resume-runtime=<自有构建runId>` 可严格复用来源未变、原资源已清理的同一成品，重新运行全部探针与浏览器，不接受任意镜像或URL。本轮 `run-cb56e66fd506dc0b35cb0e1c` 实际38/38、来源/停止/清理和外层exit0；158构建输入及13验证输入全部核对，成品实际不含旧kit工具链。等待修复、原失败和图片限制见[补充记录](./implementation/web-runtime-readiness-20261102.md)。
+
 当前 `postgres@4.0.0` 候选已完成独立 Linux Web 成品验收：`run-876dc359ed169e6e5dad38d9` 实际浏览器38/38，无跳过、重试或 flaky，SWC/sharp 原生探针、停止、来源读回和清理通过。158份 Docker 输入与12份验证输入前后核验通过；精确输入、镜像及 BUILD_ID 见[v4实施记录](./implementation/postgres-v4-upgrade-20261101.md)。较早的 Docker 环境失败、37/38及中断记录保留在[Linux补充记录](./implementation/f4-linux-web-runner-20261101.md)，不由最终通过覆盖。该 Web 服务使用合成 API；生产部署、真实 API/Provider、实机和完整分发合规仍需各自验收。
 
 ## 完整 Linux API 镜像
@@ -144,6 +146,8 @@ npm run api:image:verify
 ```
 
 该入口冻结 `Dockerfile.api` 的实际输入，构建开发、生产依赖及最终 runner，在新建隔离 PG/Redis 上执行真实入口迁移、应用请求与停止检查；不读取实际 `.env` 或连接生产。来源、资源所有权、完整运行及受限续验的规则见[API镜像记录](./implementation/api-image-20261102.md)。
+
+生产迁移器最终提交d470fae的完整API构建 `run-ac8e873d8fe30c8e9c57f0b7` 实际20/20，同一成品 `e27c26b864fa…` 的 `run-8858d0fbd74b7f84024c7feb` 再验20+4进行中任务关停/重启；均外层exit0、来源及清理通过。空/blank URL子进程拒绝、27项迁移及kit/loader实际缺失均覆盖，详见[迁移器记录](./implementation/runtime-migrations-20261102.md)。下段18项仍仅属旧成品历史范围。
 
 本轮为同一成品的两阶段证据：`run37d9722` 完成全部构建阶段与构建器清理，随后 DockerHub pgvector 鉴权 EOF 使原 full run exit1、runtime未启动；核对同一311份 COPY 输入、探针/构建器与原 image ID 后，`run-5dd3535dc5ed52358a915845-nXZsky` 使用本机已有官方 RepoDigest 完成18/18、27项迁移、PID1为node、SIGTERM后506ms退出0，sourceVerified/cleaned=true、cleanupFailures为空，续验外层exit0。314份来源（311份 COPY、3份验证输入）的最终独立哈希核对无漂移，容器/网络/卷独立读回均为空。不能将续验通过改写为原整轮 exit0；较早的清理枚举错误和首次续验失败另存原记录。已有 `api:integration` 的135项、成品18项和工具82项属于不同门禁，互不替代。
 
