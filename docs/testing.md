@@ -11,6 +11,14 @@ npm run check
 
 API 默认 Vitest 只收集 `src/**/*.test.ts`，不会因为新增集成用例而突然要求本机已有数据库。单测配置禁载项目 `.env`，清空外部 Provider 地址和密钥，并将数据库配置指向不可用的本地测试地址；业务替身须显式定义，不应依赖真实服务失败后回退。单测最多使用 2 个 worker，限制冷启动时多个 Fastify / TypeScript 实例的资源争用，保留默认 5 秒用例超时和全部用例。
 
+## 本机隔离全栈
+
+[本机隔离全栈记录](./implementation/local-stack-20261103.md)另行验证宿主Chromium → 回环HTTPS测试入口 → 仓库Caddy → 生产Web/API成品 → 全新PostgreSQL/Redis。浏览器使用真实后端，不用页面路由替身代替API；16组检查包括页面注册/登录、SSR会话、生成worker、私密草稿、作者确认发布、匿名公开DTO和HTTPS分享地址、真实OG图片、390px星图阅读/焦点、撤回后的公开隔离与作者历史。
+
+主生成需要聊天Provider。无配置时实际任务失败的记录保留；功能闭环使用同轮internal网络内的固定HTTP合成Provider，只有测试用chat额度8，其他Provider额度0，未配置真实密钥或外部模型。合成生成内容、审核分数和浏览器宽度不能作为模型质量、人评或实体手机证据。
+
+每轮使用独立拥有标签、合成环境、新卷和网络；只有测试HTTPS入口发布到127回环，API/Web/数据库/Redis/合成Provider仅在自有internal网络。来源、镜像、原preflight/smoke、27项迁移、实际浏览器错误、独立现场观察及最终资源清理分别记载；失败或阻塞不转记为通过。测试入口使用自有CA，不安装到系统信任库；本机双Caddy不代替实际NPM、生产TLS及客户端IP验收。
+
 ## 真实 API / PostgreSQL / Redis 集成
 
 需要 Node.js 22、npm 依赖和已启动的本地 Docker Engine / Docker Compose：

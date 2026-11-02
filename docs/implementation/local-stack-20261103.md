@@ -1,6 +1,6 @@
-# 本机隔离全栈验收与表单水合问题
+# 本机隔离全栈验收与首屏交互、HTTPS修复
 
-日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。两处表单修复后的Linux40项已通过，真实全栈经合成Provider和Caddy修正推进至15/16，仍有匿名Galaxy的React418错误。该问题的修复、新Linux41项及最终真实16组尚待验收，不能据此宣布本轮通过。
+日期：2026-11-03（北京时间）；基线 `d843461`，分支 `codex/local-stack-acceptance-20261103`。用户选择本机 Docker 隔离验收。本轮发现并修复两处表单首屏输入问题、HTTPS分享地址降级及定位星图水合异常；最终Linux成品41/41、真实后端全栈16/16均通过，来源及清理核对完成。生成使用内部固定合成Provider，不构成真实模型或生产环境验收。以下保留原失败、阻塞及逐轮证据，不把后续成功改写为首次成功。
 
 ## 范围与隔离
 
@@ -12,7 +12,7 @@
 
 ## TLS 与客户端夹具的首四次失败
 
-证据根目录为 `test-results/local-stack-20261103/`，`run-index.json` 保存首六轮目录、原退出码与 manifest 指纹；后续轮次按下文原目录另记。以下四轮均 exit1、cleaned=true，sourceVerified=false；未完成的来源验证不补填成功。
+证据根目录为 `test-results/local-stack-20261103/`，`run-index-initial-six.json` 保留首六轮索引，最终 `run-index.json` 汇总全部12份原manifest的目录、退出码和指纹，未修改原manifest；TLS探针和镜像验收另记。以下四轮均 exit1、cleaned=true，sourceVerified=false；未完成的来源验证不补填成功。
 
 | runId / 目录后缀 | 原失败 | 范围 |
 | --- | --- | --- |
@@ -87,10 +87,34 @@
 
 两项失败为公开metadata协议从HTTPS变为HTTP，以及匿名浏览器记录一个React418错误；生成、作者确认发布、公开读取、实际OG、390px阅读/焦点、撤回及私密保留等已执行通过不能消除这两项失败。独立现场安全检查全通过，容器/网络/卷经拥有标签和Compose项目双过滤均为空；同run的独立JSON SHA256为 `59d9103fdda1e10c7c7106dfd865eb77906027e7f8051c84f0da59c665c5bf74`。
 
-## Caddy修正后15/16，Galaxy问题仍待验收
+## 中间轮次：Caddy修正后15/16，定位Galaxy异常
 
 仓库Caddy按server模式公网HTTPS约定，在Web上游明确覆盖 `X-Forwarded-Proto: https`；容器间仍HTTP，不直接沿用客户端伪造协议头。修正后的 `run-520ea8efc7c32eedad32404f-S4rRwe` 使用同一40项Web成品和内部合成Provider，浏览器15通过、1失败、0阻塞，外层exit1、sourceVerified/cleaned=true。公开metadata实际保持本轮HTTPS origin，伪造转发头不能改变该origin；这只验证本机双Caddy，不是实际NPM部署验收。
 
 唯一未通过组为无未捕获页面错误检查：记录匿名访问 `/galaxy` 时的React418。其余15组通过也不能将该运行改记为16/16；后续截图不替代错误断言。独立观察捕获七服务，现场安全检查全true，结束后双过滤容器/网络/卷全0；同run的 `independent-live-inspection.json` SHA256为 `7910ff04f042d6f69dbee3a81cc1b8eec22a9da18e3db825f030258c1e521113`。
 
-Galaxy水合问题正在修复，新增Linux41项与新成品的最终真实16组尚待执行。各轮原manifest、浏览器summary、失败、阻塞和独立观察保留，待最终另记精确来源、成品及清理读回。本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。
+该轮结束时Galaxy水合问题尚未修复，新Linux41项与最终真实16组尚未执行；后续结果见下文。各轮原manifest、浏览器summary、失败、阻塞和独立观察均保留。本轮不包含实机、读屏器、真实模型、人评、生产部署或 A3 数据处置。
+
+## 星图首帧修复与最终验证
+
+提交 `9fb0e6e0191715e736dcad0a265f28310574fa2b` 保留定位点和原关闭逻辑，仅让 `GalaxyCanvas` 的阅读portal在服务器与首次水合时都为空，客户端就绪后再挂载到body。新增生产回归直接打开有效公开点的focus链接，拦住真实Next脚本检查SSR无弹窗，释放后检查正文、初始焦点、Escape关闭及焦点恢复，并要求全部pageerror为空；生产浏览器总数变为41。独立代码复核未发现阻断。
+
+本机首轮Web检查在受限沙箱完成lint/类型检查，但Vitest的23个文件均在临时缓存rename时遭遇EPERM、实际执行测试0，外层exit1，原日志 `test-results/local-stack-galaxy-web-check-20261103.log` 保留。随后以正常Windows权限运行相同 `npm run web:check`，未修改用例或时间预算，lint、类型、192项单测及生产构建全部通过，外层exit0，日志为 `test-results/local-stack-galaxy-web-check-normal-20261103.log`。原部署脚本11组回归已外层exit0；Windows日志明确不能验证POSIX权限，不把它当作Linux权限验收。
+
+`run-f8389f29a20128ddb583d01d-jqJ4Jy` 从上述提交完整构建Linux amd64成品 `sha256:cec1ad3d251fc21a707a07b2c7b33d00da29b609b359863f1f104fcfecbf52db`，sourceTree为 `473089ed8bf01a8a4f5327284c97a514f37f06d200f69560c6086a0462092a81`。三阶段构建、158份构建输入和13份验证来源核对通过；生产浏览器41/41、258.41秒，无跳过、失败或flaky，外层exit0、sourceVerified/cleaned=true。直接停止143/3550.51ms、受监督运行停止0/1398.54ms，均无OOM。该套使用合成API，真实后端16组另记；旧39/40及15/16均保留原成绩。
+
+独立 `independent-final-readback.json` 的SHA256为 `52667b6cf94cd10dfc41a9f9e2d4a63b7b072473ce45bc94fc3aa0039b99c436`，8条只读命令全部exit0，171份current/frozen来源、三份构建metadata、镜像身份和165包/17嵌套路径核对通过，四个旧工具名称及路径均不存在。六类资源在复用前已读回为0；之后才允许全栈复用该镜像，避免继承镜像验证标签的全栈容器污染前一验收的清理时点。
+
+## 最终真实后端全栈16/16
+
+`run-93255a628a0af8e89a454143-DyjOEh` 复用上述新Web成品，API为既有已验证成品 `sha256:e27c26b864fabd154008b92d5d386e66852c02e7c01c76528b9c19bde8e5cbd1`；API来源未变化。原仓库preflight、HTTPS smoke、七服务健康和全新PG的27项迁移均通过。浏览器报告 `browser-2026-11-02T19-06-56-129Z-02e270fae3/summary.json` 为16通过、0失败、0阻塞；整轮外层exit0、sourceVerified/cleaned=true、cleanupFailures为空。
+
+实际UI注册、退出/登录、secure/httpOnly会话及SSR刷新、首页提交和真实worker、草稿对匿名/非作者不可读、作者确认精确预览、匿名公开DTO及页面、HTTPS metadata与伪造转发头拒绝、真实匿名OG、390px星图定位阅读/关闭焦点、UI撤回、撤回后各公开入口隔离及作者历史全部执行。pageErrors和外域请求均为空；浏览器正常关闭。
+
+内部合成Provider实际仅接收 `signal-material`、`signal-expansion-review` 两次请求，未触及chat上限8；其他Provider额度为0。生成解释来源为 `provider/unverified`，固定正文107字符，不是模型质量成绩。没有修改真实Provider配置、生产额度、依赖锁或API逻辑。
+
+真实OG为1200×630、89095字节，SHA256 `afdd0b83df743b4faa99d6b178eda61fc5ce0f90b0c7c96880d3e3e437f6d0a0`，已实际查看中文排版；390×844星图阅读截图亦已查看，WebGL启用、正文可读、Escape恢复焦点。浏览器仿真不代表实体手机或读屏器验收。
+
+独立 `independent-live-inspection.json` 的SHA256为 `ef6282139f5d67d8ca1610a9a17777b244d4dd59352488181807589c3fa881fc`：运行中七服务、镜像、固定合成Provider配置、端口和网络安全检查全通过；结束按本轮拥有标签及Compose项目双过滤，容器/网络/卷均为空，观察器自然exit0。仅移除本轮自有资源，验收镜像和证据保留，没有全局prune、用户数据处置或系统CA安装。
+
+代码提交 `9fb0e6e` 的[四项CI](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41503998647)全部通过；交付保持[草稿PR #11](https://github.com/NekoMint-Labs/Unfreq/pull/11)，基于PR #10的精确 `d843461`，不合并main。真实模型/双人评测、实际NPM与生产TLS/IP/额度、旧生产数据恢复、实机/读屏器、A3处置和参赛事实仍需相应对象与决定。
