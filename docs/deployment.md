@@ -81,7 +81,7 @@ Forward Port:        80
 
 公网入口必须使用 HTTPS，`server preflight` 也要求 `WEB_ORIGIN` 为 `https://`；NPM 到项目 Caddy 的这一跳仍是 HTTP。仓库 `deploy/Caddyfile` 因此在所有 Web 上游路由覆盖 `X-Forwarded-Proto: https`，向 Web 传递这一固定的 server 部署约定，不直接相信客户端传入的协议头。容器间的 `web:3000` 连接仍为 HTTP，这项设置不会为它启用 TLS，也不替代 API 的可信代理 CIDR 配置。
 
-该约定不表示实际 NPM 链已经验收；发布时仍须在目标入口核对 HTTPS、会话及 Web SSR/canonical/OG 的公开地址，不能用本机双 Caddy 的结果替代。
+[后续本机局部验收](./implementation/remaining-local-20261103.md)已实际使用固定NPM2.16.0、自有证书、当前Caddy和已验Web成品，核对HTTPS公开地址、接口分流和伪造头处理；它使用只读合成API，不代替生产部署。发布时仍须在目标入口核对HTTPS、会话及Web SSR/canonical/OG，真实访客IP、可信CIDR及生产额度也需单独验收。
 
 如果反代网络不叫 `npm_default`，改 `.env`：
 

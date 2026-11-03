@@ -29,6 +29,8 @@ AI service call -> callProvider()
   -> fallback or AI_UNAVAILABLE
 ```
 
+Only tasks with an explicit business fallback can finish with a local-rules result. Main `signal-material` and `signal-expansion` use `runAi` without a local body fallback; missing configuration or failed expansion can therefore end the managed task as FAILED. The historical `generateSignalExpansionWithFallback` function name does not promise a complete no-Provider flow. Distinguish this from auxiliary classification/fingerprint/review fallbacks and matching with empty results; see [deployment requirements](../deployment.md) and the [observed local failure](../implementation/local-stack-20261103.md).
+
 ## Useful Checks
 
 - Run `npm --workspace @unfreq/api run test -- provider.test.ts provider-config.test.ts ai/service.test.ts signals/service.test.ts`.

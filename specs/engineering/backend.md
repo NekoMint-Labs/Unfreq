@@ -40,14 +40,14 @@ apps/api/src/shared       shared helpers and the AppError type
 
 - Zod validates request bodies, params, and query at the route boundary; AI provider output is parsed as structured JSON against a schema before storage.
 - Environment variables are parsed with Zod in `config`, which also exposes AI provider selection and capability status (`configured | degraded | disabled`).
-- AI provider adapters live in `modules/ai`; a provider failure must return a deterministic fallback rather than a raw error or partial object.
+- AI provider adapters live in `modules/ai`; only tasks with an explicit business fallback may return a validated local result. Main material/body generation requires an available chat Provider and reports a typed task failure when it cannot complete. Never substitute partial or fabricated body text, expose raw provider errors, or bypass a protection denial through fallback.
 - Secrets (provider API keys) stay server-side and are never returned by admin APIs.
 
 ## BEE-004 Async work
 
 - Managed signal generation uses the PostgreSQL-backed worker: claim, attempt identity, owner, lease, phase, and deadline fence progress and final writes. On restart the worker scans persisted tasks; legacy rows with NULL attempt metadata remain unmanaged. Recovery distinguishes work not dispatched from dispatched attempts with an uncertain outcome; it must not blindly repeat a Provider call. See [generation operations](../../docs/implementation/b1-generation-operations.md).
 - The daily system-AI scheduler is disabled by default. When explicitly enabled, it uses a business time zone, a persistent single-day batch claim, and fixed signal/dispatch budgets. Scheduler, generation, and audio workers stop and drain in Fastify `preClose` while database connections remain available. Tests use explicit factories/configuration rather than assuming every timer runs under `NODE_ENV=test`.
-- Redis holds session, cache, and queue state only — primary data must survive Redis loss.
+- Redis holds login challenges, shared protection counters, and short-lived state. PostgreSQL owns the durable generation queue and dispatch/recovery decisions. Redis loss can invalidate challenges or reset usage counters; recovery must preserve those boundaries rather than silently treating the restored service as an unchanged budget window.
 
 ## BEE-005 Admin writes
 

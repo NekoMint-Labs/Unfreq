@@ -19,6 +19,8 @@ API 默认 Vitest 只收集 `src/**/*.test.ts`，不会因为新增集成用例�
 
 每轮使用独立拥有标签、合成环境、新卷和网络；只有测试HTTPS入口发布到127回环，API/Web/数据库/Redis/合成Provider仅在自有internal网络。来源、镜像、原preflight/smoke、27项迁移、实际浏览器错误、独立现场观察及最终资源清理分别记载；失败或阻塞不转记为通过。测试入口使用自有CA，不安装到系统信任库；本机双Caddy不代替实际NPM、生产TLS及客户端IP验收。
 
+后续[本地收尾专项](./implementation/remaining-local-20261103.md)分别记录无Speech API的真实媒体播放回归、配置文件的Linux权限与失败清理、媒体命名卷归档/空目标恢复，以及真正NPM组件的本机局部协议测试。NPM局部测试使用只读合成API，不覆盖真实PG/worker，也不替代目标环境的访客IP、可信CIDR或生产额度验收。镜像、脚本、文档命令及各轮失败分别核对，不将旧成品成绩移到新来源。
+
 ## 真实 API / PostgreSQL / Redis 集成
 
 需要 Node.js 22、npm 依赖和已启动的本地 Docker Engine / Docker Compose：
