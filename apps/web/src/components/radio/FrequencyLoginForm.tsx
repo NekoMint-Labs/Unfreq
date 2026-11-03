@@ -24,6 +24,9 @@ const getClipboardAvailability = () => {
 };
 
 const getServerClipboardAvailability = () => false;
+const subscribeToClientReady = () => () => {};
+const getClientReady = () => true;
+const getServerClientReady = () => false;
 
 type FrequencyLoginFormProps = {
   returnPath?: string;
@@ -31,6 +34,11 @@ type FrequencyLoginFormProps = {
 
 export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
   const router = useRouter();
+  const isClientReady = useSyncExternalStore(
+    subscribeToClientReady,
+    getClientReady,
+    getServerClientReady,
+  );
   const safeReturnPath = sanitizeAuthReturnPath(returnPath);
   const loginSuccessPath = getAuthSuccessPath(safeReturnPath, "login");
   const registrationSuccessPath = getAuthSuccessPath(safeReturnPath, "registration");
@@ -128,7 +136,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
 
   return (
     <div className="login-form-stack">
-      <form className="login-pane login-pane-primary grid gap-5 p-5 sm:p-6" onSubmit={register}>
+      <form className="login-pane login-pane-primary grid gap-5 p-5 sm:p-6" method="post" onSubmit={register}>
         <div>
           <p className="radio-kicker">NEW FREQUENCY</p>
           <h2 className="mt-3 text-xl font-semibold text-[color:var(--text-primary)]">
@@ -144,6 +152,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
           <input
             autoComplete="new-password"
             className="radio-field"
+            disabled={!isClientReady}
             id="registerPassword"
             minLength={8}
             name="registerPassword"
@@ -162,7 +171,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
         {registeredFrequencyCode === undefined ? (
           <button
             className="radio-button-primary login-primary-action min-h-12 w-full text-sm"
-            disabled={isRegisterPending}
+            disabled={!isClientReady || isRegisterPending}
             type="submit"
           >
             {isRegisterPending ? "正在创建" : "创建我的 FM 频率"}
@@ -212,7 +221,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
         ) : null}
       </form>
 
-      <form className="login-pane login-pane-form grid gap-5 p-5 sm:p-6" onSubmit={login}>
+      <form className="login-pane login-pane-form grid gap-5 p-5 sm:p-6" method="post" onSubmit={login}>
         <div>
           <p className="radio-kicker">RETURNING FREQUENCY</p>
           <h2 className="mt-3 text-lg font-semibold text-[color:var(--text-primary)]">
@@ -228,6 +237,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
           <input
             autoComplete="username"
             className="radio-field"
+            disabled={!isClientReady}
             id="frequencyCode"
             name="frequencyCode"
             onChange={(event) => {
@@ -247,6 +257,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
           <input
             autoComplete="current-password"
             className="radio-field"
+            disabled={!isClientReady}
             id="password"
             minLength={8}
             name="password"
@@ -273,7 +284,7 @@ export function FrequencyLoginForm({ returnPath }: FrequencyLoginFormProps) {
 
         <button
           className="radio-button-primary w-fit"
-          disabled={isLoginPending}
+          disabled={!isClientReady || isLoginPending}
           type="submit"
         >
           {isLoginPending ? "接入中" : "FM 登录"}

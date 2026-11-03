@@ -58,6 +58,7 @@ const relationshipSignal = makeSignal(
     frequencyProfile: { ...profile, primaryBand: "relationship_nebula", subFeeling: "loneliness" },
   },
 );
+let acceptedGeneration;
 const signals = new Map([privateSignal, publicSignal, relationshipSignal].map((signal) => [signal.id, signal]));
 
 function identity(request) {
@@ -111,6 +112,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/__runtime/reset") {
     privateSignal.status = "DRAFT"; privateSignal.publicationVersion = 0; privateSignal.withdrawn = false;
     publicSignal.withdrawn = false; revokeAfterPublicReads = undefined;
+    acceptedGeneration = undefined;
     return ok(response, { synthetic: true });
   }
   if (request.method === "POST" && url.pathname === "/__runtime/revoke-after-first-public-read") {
@@ -149,6 +151,23 @@ const server = createServer(async (request, response) => {
       { label: "意义深空", value: "meaning_deep_space" },
       { label: "关系星云", value: "relationship_nebula" },
     ], themeOptions: [] });
+  }
+  if (request.method === "POST" && url.pathname === "/api/signals") {
+    if (current === undefined) return fail(response, 401, "UNAUTHORIZED");
+    let body;
+    try { body = await readBody(request); } catch { return fail(response, 400, "VALIDATION_ERROR"); }
+    if (typeof body.seedText !== "string" || body.seedText.length < 5 || body.seedText.length > 200) {
+      return fail(response, 400, "VALIDATION_ERROR");
+    }
+    acceptedGeneration = {
+      id: "runtime-created-001", createdAt: now, updatedAt: now, seedText: body.seedText,
+      generationStatus: "RECEIVED", status: "DRAFT", visibility: "GENERATION_OWNER",
+    };
+    return ok(response, { signal: acceptedGeneration });
+  }
+  if (request.method === "GET" && url.pathname === "/api/signals/runtime-created-001") {
+    return current?.id === owner.id && acceptedGeneration !== undefined
+      ? ok(response, { signal: acceptedGeneration }) : fail(response, 404, "NOT_FOUND");
   }
   const match = /^\/api\/signals\/([^/]+)(?:\/(publish|withdraw|publication-preview|audio))?$/.exec(url.pathname);
   if (match !== null) {

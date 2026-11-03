@@ -45,3 +45,14 @@ publishing changes only the mock server's process-local state.
 The C1 cases also cover withdrawal and fresh author confirmation before
 republication, versioned OG URLs, revocation while a PNG is rendering, and an
 already open public page refusing local speech after the API denies access.
+The readiness regressions hold the real Next client scripts after the SSR document
+commits. Login credentials and the home seed stay disabled until handlers are ready;
+after release, they verify the submitted values and the existing session cookie.
+The tests/deployment/caddy-web-proto.test.mjs regression separately runs the repository
+Caddy configuration against synthetic Web/API upstreams on a disposable Linux runner.
+
+The Web readiness workflow builds the actual Dockerfile.web runner with the
+loopback synthetic API URL embedded at build time. The image-only Playwright
+configuration reuses these same cases and starts the default image command from
+its immutable iidfile. Its helper records image identity, checkout and owned
+container cleanup; it does not use the maintenance stack's image verifier.
