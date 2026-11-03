@@ -1,0 +1,63 @@
+name: Container acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container-acceptance.yml"
+      - "Dockerfile.*"
+      - ".dockerignore"
+      - "package*.json"
+      - "apps/**"
+      - "packages/**"
+      - "patches/**"
+      - "scripts/**"
+      - "tests/images/**"
+      - "tests/e2e/**"
+      - "playwright.image.config.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: ${{ matrix.component }} image acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, web]
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install host Chromium
+        if: matrix.component == 'web'
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build and verify the real Linux image with synthetic data
+        run: npm run ${{ matrix.component }}:image:verify
+      - name: Preserve verification manifests and reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ matrix.component }}-image-acceptance
+          if-no-files-found: warn
+          path: |
+            test-results/${{ matrix.component }}-image/**/manifest.json
+            test-results/${{ matrix.component }}-image/**/probe.json
+            test-results/${{ matrix.component }}-image/**/playwright.json
+            test-results/${{ matrix.component }}-image/**/metadata*.json

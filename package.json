@@ -25,7 +25,7 @@
     "check": "npm run contracts:typecheck && npm run api:check && npm run web:check",
     "deploy:test": "sh scripts/test-deployment-scripts.sh",
     "e2e": "npm run contracts:build && playwright test",
-    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/postgres-module.test.mjs tests/integration/runtime-guard.test.mjs tests/images/web-verifier.test.mjs tests/recovery/redis-aof-safety.test.mjs tests/images/og-webpack.test.mjs tests/images/web-fetch-guard.test.mjs tests/images/web-stop-policy.test.mjs tests/images/web-builder.test.mjs",
+    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/postgres-module.test.mjs tests/integration/runtime-guard.test.mjs tests/integration/dependency-overrides.test.mjs tests/images/web-verifier.test.mjs tests/recovery/redis-aof-safety.test.mjs tests/images/og-webpack.test.mjs tests/images/web-fetch-guard.test.mjs tests/images/web-stop-policy.test.mjs tests/images/web-builder.test.mjs",
     "api:image:verify": "node scripts/verify-api-image.mjs",
     "web:image:verify": "node scripts/verify-web-image.mjs",
     "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
@@ -40,5 +40,13 @@
   },
   "devDependencies": {
     "playwright": "^1.60.0"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.3"
+    },
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    }
   }
 }
