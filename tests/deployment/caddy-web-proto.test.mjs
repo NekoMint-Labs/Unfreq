@@ -58,7 +58,7 @@ test("Caddy routes Web requests with the server HTTPS policy and preserves API r
       "--label", "unfreq.test=web-readiness", "--network", "host",
       "--add-host", "web:127.0.0.1", "--add-host", "api:127.0.0.1",
       "--read-only", "--tmpfs", "/config", "--tmpfs", "/data",
-      "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges",
       "--mount", "type=bind,src=" + config + ",dst=/etc/caddy/Caddyfile,readonly",
       image);
     const base = "http://127.0.0.1:" + proxyPort;
