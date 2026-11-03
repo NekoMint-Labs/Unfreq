@@ -22,7 +22,7 @@ API URLs to match. The config always starts its own mock and production server;
 it does not reuse an already running service. Do not run a Next dev server or
 another build against `apps/web/.next` while this suite is active.
 
-The seven cases check native FM login, an HttpOnly synthetic cookie surviving SSR
+The ten cases check native FM login, an HttpOnly synthetic cookie surviving SSR
 and reload, author/anonymous/non-author draft visibility, metadata and draft OG
 exclusion, author publication, anonymous public reading, PNG signature and
 1200x630 dimensions, share-link copying, and 390px Galaxy WebGL/filter navigation.
@@ -31,8 +31,8 @@ its permission implementation is not evidence about real backend authorization.
 Galaxy checks here do not establish keyboard accessibility, point-selection
 usability, frame rate or physical-device performance.
 
-Each case resets only the mock's process-local publication state through a test-only
-loopback endpoint, so publication does not make cases or retries depend on order.
+Each case resets the mock's process-local publication and accepted-generation state
+through a test-only loopback endpoint, so cases and retries do not depend on order.
 For denied HTML pages, the assertion accepts Next's documented streaming status
 200 or non-streaming 404, and requires visible not-found UI, `noindex`, no OG
 image and absence of both private markers. OG route responses still require 404.
