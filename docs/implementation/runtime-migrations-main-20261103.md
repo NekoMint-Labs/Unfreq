@@ -21,3 +21,5 @@
 PG4 组合首轮 [41659595523](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41659595523) 因重基自动保留了两份 manifest/lock 注册而被原来源校验拒绝，API 工具与集成均未通过；未放宽哈希、输入数或 marker 上限，仅去掉三个重复清单项后重新验收。
 
 组合首轮镜像 [41659595775](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41659595775) 已通过实际构建、生产依赖裁剪、Node PID1、24 项账本及空 URL 检查，但新增挂起任务探针误用了 `/api/auth/frequency/register`，收到真实 404；已按 main 注册路由改为 `/api/auth/register`，不改变应用或断言。原 artifact 保留，cleaned=true，后续必须重跑完整最终镜像。
+
+后续组合 [41660907424](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41660907424) 四项必需 CI 已通过，但独立成品 [41660907588](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41660907588) 的新混合配置（worker attempt 25000、lease 10000、heartbeat 1000、grace 默认 10000）在 SIGTERM 后自然 exit1、持久化 OUTCOME_UNKNOWN，资源清理成功。它不能称为完整默认生产配置的缺陷或验收。为忠实保留 #9 原验收，后续直接复用其三个原始合成 helper：grace1000/scan100、worker 原默认 attempt180000/lease30000，并读取实际 signal-material Provider 预算25000作为严格停止上界；exit0、失败持久化、重启控制任务、无重放/晚到写入断言原样保留。没有修改产品代码或放宽25秒上界。

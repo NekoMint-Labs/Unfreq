@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 // This deliberately small verifier has no F4 builder/resume dependencies.
@@ -44,9 +44,9 @@ async function waitFor(checker, timeoutMs = 30_000) {
     await delay(250);
   }
 }
-function create(role, serviceImage, options = [], command = []) {
+function create(role, serviceImage, options = [], command = [], start = true) {
   const name = `${prefix}-${role}`;
-  const id = docker(["run", "--detach", "--name", name, "--label", `${label}=${runId}`,
+  const id = docker([start ? "run" : "create", ...(start ? ["--detach"] : []), "--name", name, "--label", `${label}=${runId}`,
     "--network", network, "--network-alias", role, ...options, serviceImage, ...command]).stdout.trim();
   assert.match(id, /^[a-f0-9]{64}$/u);
   containers.push(id);
@@ -64,7 +64,8 @@ const apiReady = (id) => probe(id, "const r=await fetch('http://127.0.0.1:4000/h
 const ownedPaths = run("git", ["ls-files", "--cached", "-z"]).stdout.split("\0").filter((name) =>
   [".dockerignore", "Dockerfile.api", "package.json", "package-lock.json", "apps/web/package.json",
     "scripts/apply-postgres-lifecycle-patch.mjs", "scripts/api-entrypoint.sh",
-    "scripts/verify-api-migration-image.mjs"].includes(name) || /^(apps\/api\/|packages\/contracts\/|patches\/)/u.test(name)).sort();
+    "scripts/verify-api-migration-image.mjs"].includes(name) || /^(apps\/api\/|packages\/contracts\/|patches\/)/u.test(name) ||
+  /^tests\/images\/api-image-(active-shutdown|held-provider|active-probe)\.mjs$/u.test(name)).sort();
 const hashes = async () => Object.fromEntries(await Promise.all(ownedPaths.map(async (name) => {
   const filename = path.join(root, name);
   const info = await lstat(filename);
@@ -95,29 +96,27 @@ try {
   docker(["network", "create", "--internal", "--label", `${label}=${runId}`, network]);
   networkCreated = true;
   const password = randomBytes(24).toString("hex");
-  const pg = create("postgres", "pgvector/pgvector:pg17", ["--tmpfs", "/var/lib/postgresql/data", "--env", `POSTGRES_PASSWORD=${password}`, "--env", "POSTGRES_DB=unfreq_migration_image"]);
+  const pg = create("postgres", "pgvector/pgvector:pg17", ["--tmpfs", "/var/lib/postgresql/data", "--env", `POSTGRES_PASSWORD=${password}`, "--env", "POSTGRES_DB=unfreq_image"]);
   const redis = create("redis", "redis:7-alpine", ["--tmpfs", "/data"]);
-  await waitFor(() => exec(pg, ["pg_isready", "-U", "postgres", "-d", "unfreq_migration_image"], { allowFailure: true }).status === 0);
+  await waitFor(() => exec(pg, ["pg_isready", "-U", "postgres", "-d", "unfreq_image"], { allowFailure: true }).status === 0);
   await waitFor(() => exec(redis, ["redis-cli", "ping"], { allowFailure: true }).stdout.trim() === "PONG");
-  const providerSource = `import http from 'node:http';let count=0;http.createServer((req,res)=>{if(req.url==='/received'){res.end(String(count));return;}if(req.method==='POST'){count++;req.resume();return;}res.writeHead(404).end();}).listen(8080,'0.0.0.0');`;
-  create("provider", built.Id, ["--entrypoint", "node"], ["--input-type=module", "-e", providerSource]);
   const ruleNames = ["registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite", "passwordFailureIp", "passwordFailureIdentityIp", "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite", "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"];
   const paid = new Set(["embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"]);
   const policy = { namespace: `migration-${runId}`, budgets: Object.fromEntries(ruleNames.map((name) => [name, { limit: paid.has(name) ? 0 : 100, windowMs: 60_000 }])), pendingPerUser: 2, ttsConcurrency: 1, ttsTaskTimeoutMs: 1000 };
-  const env = { NODE_ENV: "production", API_HOST: "0.0.0.0", WEB_ORIGIN: "https://migration-image.example",
-    DATABASE_URL: `postgres://postgres:${password}@postgres:5432/unfreq_migration_image`, REDIS_URL: "redis://redis:6379",
+  const env = { NODE_ENV: "production", API_HOST: "0.0.0.0", API_PORT: "4000", WEB_ORIGIN: "https://migration-image.example",
+    DATABASE_URL: `postgres://postgres:${password}@postgres:5432/unfreq_image`, REDIS_URL: "redis://redis:6379",
     SESSION_SECRET: randomBytes(32).toString("hex"), PROVIDER_CONFIG_SECRET: randomBytes(32).toString("hex"),
     AUTH_LOGIN_DELIVERY_MODE: "disabled", AUTH_LOGIN_CODE_RESPONSE: "disabled", ABUSE_PROTECTION_ENABLED: "true", ABUSE_LIMITS_JSON: JSON.stringify(policy),
-    AI_API_KEY: "synthetic-migration-image-provider-key", AI_BASE_URL: "http://provider:8080/v1", AI_MODEL: "synthetic-held-model", AI_PROVIDER: "openai-compatible",
-    SIGNAL_GENERATION_WORKER_ENABLED: "true", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "25000", SIGNAL_GENERATION_LEASE_MS: "10000", SIGNAL_GENERATION_HEARTBEAT_MS: "1000",
-    SIGNAL_GENERATION_SCAN_INTERVAL_MS: "25", DOTENV_CONFIG_QUIET: "true", NPM_CONFIG_UPDATE_NOTIFIER: "false" };
+    SIGNAL_GENERATION_WORKER_ENABLED: "false", AI_SIGNAL_SCHEDULER_ENABLED: "false",
+    UNFREQ_IMAGE_VERIFICATION_RUN: runId,
+    SIGNAL_GENERATION_SCAN_INTERVAL_MS: "100", DOTENV_CONFIG_QUIET: "true", NPM_CONFIG_UPDATE_NOTIFIER: "false" };
   const api = create("api", built.Id, Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]));
   await waitFor(() => apiReady(api));
   check("production entrypoint migrated a fresh database before serving HTTP");
   const packageProbe = probe(api, `import assert from 'node:assert/strict';import fs from 'node:fs';for(const name of ['drizzle-kit','@esbuild-kit/core-utils','@esbuild-kit/esm-loader']){assert.equal(fs.existsSync('/app/node_modules/'+name),false);}assert.equal(JSON.parse(fs.readFileSync('/app/node_modules/postgres/package.json')).version,'4.0.0');const command=fs.readFileSync('/proc/1/cmdline','utf8').split('\\0').filter(Boolean);assert.deepEqual(command,['node','dist/server.js']);console.log(JSON.stringify({driver:'4.0.0',pid1:command,developmentToolkitAbsent:true}));`);
   report.packages = JSON.parse(packageProbe.stdout);
   check("omit-dev runner excludes the toolkit and keeps postgres 4.0.0; Node is PID 1");
-  const query = (sql) => exec(pg, ["psql", "-U", "postgres", "-d", "unfreq_migration_image", "-At", "-c", sql]).stdout.trim();
+  const query = (sql) => exec(pg, ["psql", "-U", "postgres", "-d", "unfreq_image", "-At", "-c", sql]).stdout.trim();
   const ledgerSql = "select json_agg(t)::text from (select id,hash,created_at from drizzle.__drizzle_migrations order by id) t";
   const ledger = query(ledgerSql);
   assert.equal(JSON.parse(ledger).length, 24);
@@ -128,27 +127,30 @@ try {
   const blank = docker(["exec", "--env", "DATABASE_URL=", api, "node", "apps/api/dist/scripts/migrate.js"], { allowFailure: true });
   assert.equal(blank.status, 1); assert.equal(blank.stdout, ""); assert.equal(blank.stderr, "Database migration failed.\n");
   check("the production CLI rejects an empty URL with bounded fixed failure output");
-  const submitted = probe(api, `import assert from'node:assert/strict';const auth=await fetch('http://127.0.0.1:4000/api/auth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'synthetic-image-password'})});assert.equal(auth.status,201);const cookie=auth.headers.get('set-cookie').split(';')[0];const made=await fetch('http://127.0.0.1:4000/api/signals',{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify({seedText:'Only this synthetic migration-image signal is held for shutdown.'})});assert.ok([201,202].includes(made.status));const id=(await made.json()).data.signal.id;assert.match(id,/^[a-f0-9-]{36}$/);console.log(JSON.stringify({id}));`);
-  const { id } = JSON.parse(submitted.stdout);
-  const providerCount = () => Number(probe(api, "console.log(await(await fetch('http://provider:8080/received')).text());").stdout.trim());
-  await waitFor(() => providerCount() > 0, 10_000);
-  const count = providerCount();
-  const started = Date.now();
-  docker(["stop", "--time", "15", api], { timeout: 20_000 });
-  const elapsedMs = Date.now() - started;
-  const stopped = inspect(api);
-  assert.equal(stopped.State.ExitCode, 0); assert.equal(stopped.State.OOMKilled, false); assert.ok(elapsedMs < 25_000);
-  const stateSql = `select json_build_object('status',generation_status,'attempt',generation_attempt_count,'owner',generation_lease_owner,'until',generation_lease_until)::text from signals where id='${id}'`;
-  const state = query(stateSql);
-  const parsed = JSON.parse(state);
-  assert.equal(parsed.status, "FAILED"); assert.equal(parsed.owner, null); assert.equal(parsed.until, null);
-  report.activeShutdown = { elapsedMs, exitCode: stopped.State.ExitCode, oomKilled: false, state: parsed };
-  check("SIGTERM during an actual held provider request exits naturally before its 25-second attempt deadline");
-  docker(["start", api]); await waitFor(() => apiReady(api)); await delay(750);
-  assert.equal(query(stateSql), state); assert.equal(providerCount(), count); assert.equal(query(ledgerSql), ledger);
-  check("the same container restarts without replaying the stopped generation or changing the ledger");
   docker(["stop", "--time", "15", api], { timeout: 20_000 });
   assert.equal(inspect(api).State.ExitCode, 0); assert.equal(inspect(api).State.OOMKilled, false);
+  check("the production entrypoint completes an idle SIGTERM naturally");
+  // Reuse the already defined #9 synthetic fixture and every one of its
+  // shutdown, restart/control-task, no-replay and 25-second assertions.
+  const verification = path.join(evidence, "verification/tests/images");
+  await mkdir(verification, { recursive: true });
+  for (const name of ["api-image-active-shutdown.mjs", "api-image-active-probe.mjs", "api-image-held-provider.mjs"]) {
+    const bytes = await readFile(path.join(root, "tests/images", name));
+    assert.equal(hash(bytes), inputs[`tests/images/${name}`]);
+    await writeFile(path.join(verification, name), bytes, { flag: "wx" });
+  }
+  const { verifyActiveShutdown } = await import(pathToFileURL(path.join(verification, "api-image-active-shutdown.mjs")).href);
+  report.activeShutdown = {};
+  await verifyActiveShutdown({
+    docker: (args, options = {}) => docker(args, { timeout: options.timeoutMs ?? 60_000 }),
+    createContainer: create,
+    untilReady: (id, args) => waitFor(() => exec(id, args, { allowFailure: true }).status === 0),
+    inspectOwned: async (kind, id) => { assert.equal(kind, "container"); return inspect(id); },
+    imageId: built.Id, apiEnv: env, policy, pg, directory: evidence, runId,
+    record: report.activeShutdown,
+    save: () => writeFile(path.join(evidence, "summary.json"), JSON.stringify(report, null, 2) + "\n"),
+  });
+  check("the original active-job fixture preserves clean SIGTERM, failed outcome, restart/control task and no replay within 25 seconds");
   assert.deepEqual(await hashes(), inputs);
   report.sourceVerified = true;
   check("all frozen build inputs remain unchanged through the real image verification");
