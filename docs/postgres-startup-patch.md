@@ -1,3 +1,5 @@
+> Historical postgres 3.4.9 patch record. The current v4 candidate and its remaining two-file lifecycle patch are described in [postgres-driver.md](./postgres-driver.md). Historical verification below is not evidence for the reconciled candidate.
+
 # PostgreSQL 驱动启动断连补丁
 
 ## 问题与范围

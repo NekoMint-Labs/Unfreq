@@ -1,0 +1,289 @@
+diff --git a/node_modules/postgres/src/pool.js b/node_modules/postgres/src/pool.js
+index 48f679c..a08a97f 100644
+--- a/node_modules/postgres/src/pool.js
++++ b/node_modules/postgres/src/pool.js
+@@ -41,6 +41,12 @@ export function Pool(options, types) {
+     , typesFailed = 0
+     , failure = null
+     , typesLoading = false
++    , typesOwner = null
++    , typeToken = 0
++    , acquisition = null
++    , acquisitionId = 0
++
++  const attempts = new Set()
+ 
+   const pool = {
+     query,
+@@ -141,6 +147,7 @@ export function Pool(options, types) {
+   }
+ 
+   function wait(job) {
++    job.acquisition = acquisition
+     if (!options.queue_timeout)
+       return job
+ 
+@@ -300,8 +307,9 @@ export function Pool(options, types) {
+     if (ending && waiting.length === 0)
+       return
+ 
++    waiting.length && !acquisition && !healthy() && acquire()
+     if (failingSince !== null) {
+-      if (opening || !waiting.length || retryTimer)
++      if (opening || !waiting.length || retryTimer || [...connections].some(x => x.loading))
+         return
+       const wait = nextAttempt - now()
+       return wait > 0
+@@ -322,10 +330,87 @@ export function Pool(options, types) {
+       connect()
+   }
+ 
++  // A cold acquisition owns only jobs that have not reached a ready connection.
++  // A busy/reserved healthy connection is not a cold pool or a queue deadline.
++  function healthy() {
++    for (const c of connections)
++      if (!c.closed && !c.closing && !c.loading)
++        return true
++    return false
++  }
++
++  function acquire() {
++    if (acquisition || !waiting.length || healthy())
++      return acquisition
++    const x = acquisition = { id: ++acquisitionId, active: true, timer: null }
++    retryTimer && (clearTimeout(retryTimer), retryTimer = null)
++    retries = nextAttempt = 0
++    failingSince = failure = null
++    attempts.forEach(attempt => attempt.acquisition = x)
++    connections.forEach(c => c.loading && !c.closed && !c.closing && (c.acquisition = x))
++    typesLoading && (typesOwner = x)
++    waiting.take().forEach(job => (job.acquisition = x, waiting.push(job)))
++    options.connect_timeout && (x.timer = setTimeout(() => failAcquisition(x,
++      Errors.connection('CONNECT_TIMEOUT', options, options.host[0], options.port[0])
++    ), options.connect_timeout * 1000))
++    return x
++  }
++
++  function completeAcquisition() {
++    if (!acquisition)
++      return
++    acquisition.active = false
++    acquisition.completed = true
++    acquisition.timer && clearTimeout(acquisition.timer)
++    acquisition = null
++  }
++
++  function stopAttempt(x) {
++    if (!x.active)
++      return false
++    x.active = false
++    attempts.delete(x)
++    opening--
++    return true
++  }
++
++  function abortAttempt(x) {
++    stopAttempt(x)
++    x.signal.aborted = true
++    x.signal.sockets.forEach(socket => socket.destroy())
++  }
++
++  function failAcquisition(x, error) {
++    if (!x || !x.active || acquisition !== x)
++      return
++    // Invalidate before socket callbacks or rejected promises can run again.
++    x.active = false
++    acquisition = null
++    used = false
++    x.timer && clearTimeout(x.timer)
++    retryTimer && (clearTimeout(retryTimer), retryTimer = null)
++    retries = nextAttempt = 0
++    failingSince = failure = null
++    if (typesOwner === x) {
++      typesLoading = false
++      typesOwner = null
++      typeToken++
++    }
++    const jobs = waiting.take()
++    attempts.forEach(attempt => attempt.acquisition === x && abortAttempt(attempt))
++    connections.forEach(c => c.acquisition === x && c.loading && c.destroy())
++    jobs.forEach(job => job.acquisition === x ? reject(job, copy(error)) : waiting.push(job))
++    ending && finishing()
++  }
++
+   function connect() {
++    const attempt = { active: true, acquisition: acquire(), signal: { aborted: signal.aborted, sockets: new Set() } }
++    attempts.add(attempt)
+     opening++
+     retryTimer && (clearTimeout(retryTimer), retryTimer = null)
+-    ;(options.open || startup)(options, signal, replacing.length ? replacing.shift() : 0).then(opened, failed)
++    ;(options.open || startup)(options, attempt.signal, replacing.length ? replacing.shift() : 0).then(
++      ready => opened(ready, attempt), error => failed(error, attempt)
++    )
+   }
+ 
+   function copy(error) {
+@@ -339,7 +424,7 @@ export function Pool(options, types) {
+   }
+ 
+   function failingFast() {
+-    return !!failure && retries > 1 && opening === 0 && now() < nextAttempt && stuck()
++    return !!failure && retries > 1 && opening === 0 && now() < nextAttempt && (acquisition || healthy()) && stuck()
+   }
+ 
+   function stuck() {
+@@ -350,11 +435,11 @@ export function Pool(options, types) {
+     return true
+   }
+ 
+-  function opened(ready) {
+-    opening--
+-    retries = 0
+-    failingSince = null
+-    failure = null
++  function opened(ready, attempt) {
++    if (!stopAttempt(attempt) || (attempt.acquisition && !attempt.acquisition.active && !attempt.acquisition.completed)) {
++      ready.socket.destroy()
++      return ending && finishing()
++    }
+ 
+     if (signal.aborted || (ending && waiting.length === 0)) {
+       ready.socket.destroy()
+@@ -364,13 +449,22 @@ export function Pool(options, types) {
+     Object.entries(ready.parameters).forEach(([k, v]) => onparameter(k, v))
+     const c = Connection(ready, options, events)
+     c.index = ready.index || 0
++    c.acquisition = attempt.acquisition
+     connections.add(c)
+     lifetime(c)
+     listened(channels.pool) && event('open', c)
+     typesLoaded || typesLoading ? (c.loading = !typesLoaded) : loadTypes(c)
++    c.loading || recovered()
+     drain()
+   }
+ 
++  function recovered() {
++    completeAcquisition()
++    retries = 0
++    failingSince = null
++    failure = null
++  }
++
+   function retype() {
+     if (!typesError)
+       return null
+@@ -386,19 +480,33 @@ export function Pool(options, types) {
+ 
+   function loadTypes(c) {
+     hold(c)
+-    typesLoading = true
++    const token = ++typeToken
++    typesLoading = token
++    typesOwner = c.acquisition
+     c.loading = true
+     types.load(text => new Promise((resolve, reject) => {
+       const q = new Query([text], [], Object.assign(() => {}, { options }), { simple: true })
+       q.executed = true
+       q.then(resolve, reject)
+       c.simple(q, text)
+-    })).then(() => typesLoaded = true, error => error instanceof PostgresError
+-      ? typesLoaded = true
+-      : error && error.code === 'TYPE_NOT_FOUND' && (typesError = error, typesFailed = now())
+-    ).then(() => {
++    })).then(() => {
++      if (typesLoading === token)
++        typesLoaded = true
++    }, error => {
++      if (typesLoading !== token)
++        return
++      error instanceof PostgresError
++        ? typesLoaded = true
++        : error && error.code === 'TYPE_NOT_FOUND'
++          ? (typesError = error, typesFailed = now())
++          : c.acquisition && failAcquisition(c.acquisition, error)
++    }).then(() => {
++      if (typesLoading !== token)
++        return
+       typesLoading = false
++      typesOwner = null
+       connections.forEach(x => x.loading = !typesLoaded && !typesError)
++      ;(typesLoaded || typesError) && recovered()
+       typesError
+         ? waiting.take().forEach(job => reject(job, copy(typesError)))
+         : typesLoaded || [...connections].some(x => !x.closed && (loadTypes(x), true))
+@@ -406,21 +514,30 @@ export function Pool(options, types) {
+     })
+   }
+ 
+-  function failed(error) {
+-    opening--
++  function failed(error, attempt) {
++    if (!stopAttempt(attempt))
++      return ending && finishing()
+     if (signal.aborted)
+       return finishing()
+ 
++    if (attempt.acquisition && attempt.acquisition.active) {
++      failAcquisition(attempt.acquisition, error)
++      return
++    }
++    attempted(error)
++    ending ? finishing() : grow()
++  }
++
++  function attempted(error) {
+     failingSince === null && (failingSince = now())
+     retries++
+     nextAttempt = now() + 1000 * (typeof options.backoff === 'function' ? options.backoff(retries) : options.backoff)
+ 
+     const transient = !!error && (error.code === 'CONNECTION_CLOSED' || error.code === '53300')
+-        , expired = now() - failingSince >= options.connect_timeout * 1000
++        , expired = options.connect_timeout && now() - failingSince >= options.connect_timeout * 1000
+ 
+     failure = !transient || expired ? { error } : null
+     stuck() && opening === 0 && (failure || ending) && waiting.take().forEach((job, i) => reject(job, i ? copy(error) : error))
+-    ending ? finishing() : grow()
+   }
+ 
+   function reject(job, error) {
+@@ -507,6 +624,11 @@ export function Pool(options, types) {
+ 
+   function onclose(c, error) {
+     connections.delete(c)
++    if (c.loading && !signal.aborted) {
++      c.acquisition && c.acquisition.active
++        ? failAcquisition(c.acquisition, error)
++        : (!c.acquisition || c.acquisition.completed) && attempted(copy(error))
++    }
+     ending || replacing.push((c.index + 1) % (options.path ? 1 : options.host.length))
+     replacing.length > options.max && replacing.shift()
+     c.retired && c.retired.forEach(r => r())
+@@ -651,6 +773,15 @@ export function Pool(options, types) {
+   function destroy() {
+     endTimer = null
+     signal.aborted = true
++    if (acquisition) {
++      acquisition.active = false
++      acquisition.timer && clearTimeout(acquisition.timer)
++      acquisition = null
++      typesLoading = false
++      typesOwner = null
++      typeToken++
++    }
++    attempts.forEach(abortAttempt)
+     signal.sockets.forEach(x => x.destroy())
+     const error = Errors.connection('CONNECTION_DESTROYED', options, options.host[0], options.port[0])
+     waiting.take().forEach(job => reject(job, error))
+diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
+index 1f46d32..1611743 100644
+--- a/node_modules/postgres/src/index.js
++++ b/node_modules/postgres/src/index.js
+@@ -245,6 +245,8 @@ function Postgres(a, b) {
+         })
+         if (uncaught && !stopped())
+           throw uncaught
++        if (lease.connection.closed)
++          throw lease.connection.closed
+       } catch (error) {
+         context && !name && (context.outcome = 'rollback')
+         stopped()
