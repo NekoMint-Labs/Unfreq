@@ -13,6 +13,7 @@ export default defineConfig({
       ...runtime.webServer[1],
       command: "node tests/e2e/runtime/start-web-image.mjs",
       name: "linux-web-image",
+      gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
     },
   ],
 });

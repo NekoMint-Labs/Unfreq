@@ -43,6 +43,12 @@ jobs:
           docker build --file Dockerfile.web --build-arg NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:4200 --label org.opencontainers.image.revision="$EXPECTED_WEB_REVISION" --iidfile test-results/web-readiness-image.id .
       - name: Verify the production browser
         run: npx --no-install playwright test --config playwright.web-image.config.ts --reporter=github,json
+      - name: Clean and independently verify the owned Web container
+        if: always()
+        run: |
+          if [ -f test-results/web-readiness-image.json ]; then
+            node tests/e2e/runtime/cleanup-web-image.mjs
+          fi
       - name: Preserve browser reports and failure evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
