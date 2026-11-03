@@ -305,4 +305,3 @@ test("READY server audio plays and stops when browser speech synthesis is unavai
   await expect(page.getByRole("button", { name: "播放", exact: true }).locator("..").getByRole("alert")).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
-
