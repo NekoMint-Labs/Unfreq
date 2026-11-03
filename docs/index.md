@@ -60,6 +60,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [D4 轮询、续写与历史统计](./implementation/d4-polling-history-20261030.md)
 - [B1 生成任务配置与切换说明（本地已验收）](./implementation/b1-generation-operations.md)
 - [B1/B2 生成可靠性历史验收记录](./implementation/b1-b2-generation-reliability.md)
+- [B3 基线整理与复验记录](./implementation/b3-reconcile-20261103.md)
 
 ## 其他
 

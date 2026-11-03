@@ -34,6 +34,63 @@ async function unknown(h: GenerationHarness, id: string, attemptId: string | nul
 }
 
 describe("real generation checkpoints and process lifecycle", () => {
+  it("preserves a request admitted before stop while its INSERT is awaiting and completes the same ID after restart", async () => {
+    await withGenerationHarness("admission", async (h) => {
+      const first = await h.start("admission-producer");
+      const author = await h.register(first);
+      const gate = await h.holdAdmission(author);
+      let acceptedSettled = false;
+      const accepted = h.createPending(first, author).finally(() => { acceptedSettled = true; });
+      void accepted.catch(() => {});
+      let stopping: ReturnType<GenerationProcess["shutdown"]> | undefined;
+      try {
+        // This is a real HTTP request in the production createPendingSignal:
+        // reaching the INSERT trigger proves its initial accepting check has
+        // passed and its database await is still pending.
+        await gate.reached();
+        expect(acceptedSettled).toBe(false);
+        expect(h.provider.tasks).toEqual([]);
+        stopping = first.shutdown();
+        void stopping.catch(() => {});
+        const deadline = Date.now() + 1_500;
+        let state: GenerationWorkerState;
+        do {
+          state = await first.request<GenerationWorkerState>({ kind: "worker-state" }, 1_000);
+          if (state.consumerStopped) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        } while (Date.now() < deadline);
+        // accepting=false alone is insufficient: an earlier claim may still
+        // be draining. Release only after real.stop() has closed its own pool.
+        expect(state!).toEqual({ mode: "worker", accepting: false, activeCount: 0, consumerStopped: true });
+        expect(acceptedSettled).toBe(false);
+        const [beforeCommit] = await h.sql<{ count: number }[]>`select count(*)::int as count from signals where author_id = ${author.id}`;
+        expect(beforeCommit.count).toBe(0);
+        h.record("shutdown-stopped-consumer-before-admitted-insert-committed", { pid: first.pid });
+        await gate.release();
+        const id = await accepted;
+        expect(await stopping).toMatchObject({ blockedHttp: 0, unhandled: 0, pendingHttp: 0, abortedHttp: 0 });
+        expect(first.child.exitCode).toBe(0);
+        expect(first.child.signalCode).toBeNull();
+        await h.waitNoAppConnections();
+        expect(await h.row(id)).toMatchObject({ id, status: "DRAFT", generation_status: "RECEIVED",
+          generation_attempt_count: 0, generation_attempt_id: null, generation_lease_owner: null,
+          generation_dispatch_started_at: null });
+        expect(h.provider.tasks).toEqual([]);
+        const second = await h.start("admission-recovery");
+        expect(second.pid).not.toBe(first.pid);
+        expect(await finish(h, id)).toMatchObject({ id, generation_attempt_count: 1 });
+        expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
+        const [after] = await h.sql<{ count: number; id: string }[]>`select count(*)::int as count, min(id::text) as id from signals where author_id = ${author.id}`;
+        expect(after).toEqual({ count: 1, id });
+        expect(h.journal.filter((event) => event.event === "owned-kill" && event.pid === first.pid)).toEqual([]);
+        h.record("admitted-request-recovered-after-real-shutdown", { id, originalPid: first.pid, recoveredPid: second.pid });
+      } finally {
+        await gate.release();
+        await Promise.allSettled([accepted, ...(stopping === undefined ? [] : [stopping])]);
+      }
+    });
+  }, twoBootBudget);
+
   it("recovers a committed unclaimed pending after pure API death behind the real queue advisory key", async () => {
     await withGenerationHarness("preclaim", async (h) => {
       const gate = await h.holdClaims();

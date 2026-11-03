@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { request as requestHttp, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +42,7 @@ export type GenerationShutdownDiagnostics = GenerationDiagnostics & {
   pendingHttp: number; abortedHttp: number; shutdownAbortedHttp: number;
   closeStartedAt: number; closeFinishedAt: number;
 };
-export type GenerationWorkerState = { mode: "worker" | "repository"; accepting: boolean; activeCount: number };
+export type GenerationWorkerState = { mode: "worker" | "repository"; accepting: boolean; activeCount: number; consumerStopped?: boolean };
 export type GenerationHttpAbortReason = "shutdown" | "deadline" | "obsolete" | "storage-uncertain" | "aborted" | "other";
 export type GenerationHttpTiming = {
   seq: number; callId: number;
@@ -89,7 +90,7 @@ async function validateEnvironment() {
   const runId = env.UNFREQ_INTEGRATION_RUN_ID ?? "";
   const caseId = env.UNFREQ_GENERATION_CASE ?? "";
   const nonce = env.UNFREQ_GENERATION_NONCE ?? "";
-  const cases = new Set(["restart", "parallel", "hidden", "deleted", "stale", "failure", "preclaim", "predispatch", "prewrite", "capacity", "aba", "close", "closeearly", "retry", "exhaust"]);
+  const cases = new Set(["restart", "parallel", "hidden", "deleted", "stale", "failure", "preclaim", "predispatch", "prewrite", "capacity", "aba", "close", "closeearly", "retry", "exhaust", "admission"]);
   if (env.UNFREQ_INTEGRATION_MANAGED !== "1" || env.UNFREQ_GENERATION_FIXTURE !== "1" ||
       !/^[a-zA-Z0-9_-]{8,96}$/u.test(runId) || !/^[a-z]{3,12}$/u.test(caseId) || !cases.has(caseId) ||
       !/^[a-f0-9]{24}$/u.test(nonce) || Number(env.UNFREQ_GENERATION_PARENT_PID) !== process.ppid) {
@@ -257,6 +258,7 @@ async function main() {
   const generationRepository = owned.mode === "repository" ? actualRepository : undefined;
   const controls = createGenerationTestControls(actualRepository, owned.caseId);
   let worker: SignalGenerationWorker | undefined;
+  let consumerStopped = false;
   await checkpoint("app-import-complete");
   await checkpoint("app-build-start");
   const app: FastifyInstance = await buildApp({
@@ -273,7 +275,11 @@ async function main() {
       } : {
         get accepting() { return real.accepting; }, get activeCount() { return real.activeCount; },
         start() { real.start(); }, wake() { real.wake(); },
-        stop() { controls.stopScanGate(); return real.stop(); },
+        stop() {
+          controls.stopScanGate();
+          const stopped = real.stop();
+          return owned.caseId !== "admission" ? stopped : stopped.then(() => { consumerStopped = true; });
+        },
       };
       return worker;
     },
@@ -281,11 +287,16 @@ async function main() {
   await checkpoint("app-build-complete");
   await checkpoint("app-ready-start");
   await app.ready();
+  // This case must use a real socket: app.close() must wait for its admitted
+  // HTTP request, rather than a light-my-request injection with no server I/O.
+  const loopbackOrigin = owned.caseId === "admission"
+    ? await app.listen({ host: "127.0.0.1", port: 0 }) : undefined;
   await checkpoint("app-ready-complete");
   const staged = new Map<"older" | "newer", { fence: GenerationClaim; output: GenerationOutput }>();
   const registeredAuthors = new Set<string>();
   const leaseOwnerId = randomUUID();
   let closing = false;
+  const routeReplies = new Set<Promise<void>>();
 
   const fatal = () => {
     unhandled += 1;
@@ -304,11 +315,16 @@ async function main() {
   }
 
   async function execute(command: GenerationCommand, phase: (value: CommandPhase) => void): Promise<unknown> {
-    if (closing) throw new Error("Generation fixture is closing.");
+    // Read-only observation of the worker is allowed during this one shutdown
+    // case. No route, mutation or checkpoint can enter after closing starts.
+    if (closing && !(owned.caseId === "admission" && command.kind === "worker-state")) {
+      throw new Error("Generation fixture is closing.");
+    }
     if (command.kind === "diagnostics") return { blockedHttp, unhandled } satisfies GenerationDiagnostics;
     if (command.kind === "worker-state") {
       if (worker === undefined) throw new Error("Generation worker was not constructed.");
-      return { mode: owned.mode, accepting: worker.accepting, activeCount: worker.activeCount } satisfies GenerationWorkerState;
+      return { mode: owned.mode, accepting: worker.accepting, activeCount: worker.activeCount,
+        ...(owned.caseId === "admission" ? { consumerStopped } : {}) } satisfies GenerationWorkerState;
     }
     if (command.kind === "control-state") return controls.state satisfies GenerationControlState;
     if (command.kind === "http-state") return {
@@ -325,10 +341,34 @@ async function main() {
     if (command.kind === "inject") {
       phase("HTTP");
       if (!allowedRequest(command)) throw new Error("Generation route is not allowed.");
-      const response = await app.inject({
+      const response = loopbackOrigin === undefined ? await app.inject({
         method: command.method, url: command.url,
         headers: command.cookie === undefined ? {} : { cookie: command.cookie },
         ...(command.payload === undefined ? {} : { payload: command.payload }),
+      }) : await new Promise<{ statusCode: number; headers: IncomingHttpHeaders; json<T>(): T }>((resolveResponse, reject) => {
+        // The origin is created above by this process; command URLs have already
+        // passed the fixed route allowlist. This never accepts a caller origin.
+        const payload = command.payload === undefined ? undefined : JSON.stringify(command.payload);
+        const outgoing = requestHttp(new URL(command.url, loopbackOrigin), {
+          method: command.method, agent: false,
+          headers: { connection: "close", ...(command.cookie === undefined ? {} : { cookie: command.cookie }),
+            ...(payload === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }) },
+        }, (incoming) => {
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          incoming.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > 65_536) outgoing.destroy(new Error("Owned loopback response exceeded its fixture budget."));
+            else chunks.push(chunk);
+          });
+          incoming.once("error", reject);
+          incoming.once("aborted", () => reject(new Error("Owned loopback response was aborted.")));
+          incoming.once("end", () => resolveResponse({ statusCode: incoming.statusCode ?? 0, headers: incoming.headers,
+            json: <T>() => JSON.parse(Buffer.concat(chunks).toString("utf8")) as T }));
+        });
+        outgoing.once("error", reject);
+        outgoing.setTimeout(4_500, () => outgoing.destroy(new Error("Owned loopback request exceeded its fixture budget.")));
+        outgoing.end(payload);
       });
       const cookies = response.headers["set-cookie"];
       const cookie = (Array.isArray(cookies) ? cookies : [String(cookies ?? "")])
@@ -424,10 +464,13 @@ async function main() {
       return;
     }
     const { id, command } = parsed.data;
-    void (async () => {
+    const task = (async () => {
       let phase: CommandPhase = "START";
       try {
         const value = await execute(command, (value) => { phase = value; });
+        // app.close waits for server requests; also deliver their IPC replies
+        // before this fixture disconnects its parent channel.
+        if (command.kind === "shutdown") await Promise.all([...routeReplies]);
         await send({ kind: "reply", id, ok: true, value });
         if (command.kind === "shutdown") {
           globalThis.fetch = originalFetch;
@@ -440,6 +483,10 @@ async function main() {
         await send({ kind: "reply", id, ok: false, error: `GENERATION_COMMAND_FAILED:${phase}:${category}` });
       }
     })();
+    if (command.kind === "inject") {
+      routeReplies.add(task);
+      void task.finally(() => routeReplies.delete(task)).catch(fatal);
+    }
   });
   await send({ kind: "ready", pid: process.pid });
 }

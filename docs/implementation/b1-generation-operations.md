@@ -14,7 +14,7 @@
 - claim 使用同数据库的固定事务级 advisory lock、有效租约计数和 `FOR UPDATE SKIP LOCKED`。生成期间不持有该锁、行锁或事务。
 - 进度、派发标记、心跳、完成与失败都检查 attempt / owner / phase / lease / deadline / DRAFT；管理员状态变化原子使旧执行失效。
 - 新 pending 链在最终提交前等待坐标和可选 embedding 工作；取消贯通 chat、改写、审查、匹配及 Provider fallback 的本轮回归已通过，不能外推为真实供应商远程计算一定停止。
-- app.ready 后开始消费。worker 关闭、尚未启动、停止中或 fatal 时，新创建返回 503，拒绝静默接收无人处理的任务。纯 mock 单测的 stub 不构成 worker 验证；真实集成入口显式启用同一实现。
+- app.ready 后开始消费。创建进入时若 worker 尚未启动、已关闭、停止中或 fatal，则返回 503。关闭开始前已经通过准入检查的在途请求仍可能在等待父对象检查或 INSERT 后完成入库；该请求写入的是持久 managed pending，后续由同数据库的其他消费者或新启动的消费者领取。wake 仅作加速，不是任务唯一载体；计划停机后未启动消费者期间，这类任务会等待，不能承诺停机期间继续完成。纯 mock 单测的 stub 不构成 worker 验证；真实集成入口显式启用同一实现。
 
 源码入口：[配置](../../apps/api/src/config/env.ts)、[worker](../../apps/api/src/modules/signals/generation-worker.ts)、[repository](../../apps/api/src/modules/signals/generation-repository.ts)、[0022 迁移](../../apps/api/src/db/migrations/0022_signal_generation_leases.sql)。
 
@@ -117,6 +117,12 @@ server 总预算 = shutdown grace + 2 × I/O 收尾预算 + 5000 ms
 如果增大 shutdown grace 或 DB timeout，必须重新计算总预算，并相应调高 API 的 `stop_grace_period` 与任何外部停止命令宽限。40s 是 Compose 配置，不由 API `env_file` 自动联动；需要改 Compose 或使用经过审阅的 override，不能只改环境变量后仍假定 40s 足够。现有部署脚本通过 `UNFREQ_COMPOSE_FILES` 选择 Compose 文件，使用 override 时也须检查实际渲染结果。
 
 若外层提前强杀，剩余工作只能走租约恢复。SIGKILL 和远程 Provider 继续计算的边界仍须通过隔离故障测试分别记录。
+
+### 关闭前已准入请求的针对性回归
+
+PR #4 评审补充一项待执行的真实 HTTP / PostgreSQL 交错回归：仅在本轮隔离数据库为合成作者安装 INSERT 前屏障；请求通过初始准入、实际进入 INSERT 等待后触发 app.close，观察真实 worker 停止接收而 HTTP 响应仍未完成，再释放屏障。验收要求同一响应 ID 保持 RECEIVED、attempt_count=0 和未派发状态，原进程自然退出；新 PID 从同库领取该 ID 完成，作者行数仍为一，每个预期 Provider 阶段仅派发一次。屏障键与生产 claim 键不同，不能阻塞 worker 扫描来伪造交错。
+
+此回归不修改运行时准入、任务或关闭协议，不用重复 accepting 检查声称消除整个 INSERT 等待窗口。实际执行结果与失败、来源指纹和清理结果另记；准备测试不代表该场景已经通过。历史 NULL pending、同 C 的副本配置、未知外发不重放及 C1 待接入边界维持原规则。
 
 ## 7. 回退和备份恢复
 
