@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -24,6 +25,7 @@ function run(command, args, { timeout = 60_000, allowFailure = false } = {}) {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8", timeout,
     windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   if (!allowFailure) {
+    if (result.status !== 0 || result.error) appendFileSync(path.join(evidence, "failed-command.log"), `${command} ${args[0]}\n${result.stdout ?? ""}${result.stderr ?? ""}\n`);
     assert.equal(result.error, undefined, `${command} could not finish.`);
     assert.equal(result.signal, null, `${command} was terminated.`);
     assert.equal(result.status, 0, `${command} ${args[0]} failed.`);
@@ -126,7 +128,7 @@ try {
   const blank = docker(["exec", "--env", "DATABASE_URL=", api, "node", "apps/api/dist/scripts/migrate.js"], { allowFailure: true });
   assert.equal(blank.status, 1); assert.equal(blank.stdout, ""); assert.equal(blank.stderr, "Database migration failed.\n");
   check("the production CLI rejects an empty URL with bounded fixed failure output");
-  const submitted = probe(api, `import assert from'node:assert/strict';const auth=await fetch('http://127.0.0.1:4000/api/auth/frequency/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'synthetic-image-password'})});assert.equal(auth.status,201);const cookie=auth.headers.get('set-cookie').split(';')[0];const made=await fetch('http://127.0.0.1:4000/api/signals',{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify({seedText:'Only this synthetic migration-image signal is held for shutdown.'})});assert.ok([201,202].includes(made.status));const id=(await made.json()).data.signal.id;assert.match(id,/^[a-f0-9-]{36}$/);console.log(JSON.stringify({id}));`);
+  const submitted = probe(api, `import assert from'node:assert/strict';const auth=await fetch('http://127.0.0.1:4000/api/auth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'synthetic-image-password'})});assert.equal(auth.status,201);const cookie=auth.headers.get('set-cookie').split(';')[0];const made=await fetch('http://127.0.0.1:4000/api/signals',{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify({seedText:'Only this synthetic migration-image signal is held for shutdown.'})});assert.ok([201,202].includes(made.status));const id=(await made.json()).data.signal.id;assert.match(id,/^[a-f0-9-]{36}$/);console.log(JSON.stringify({id}));`);
   const { id } = JSON.parse(submitted.stdout);
   const providerCount = () => Number(probe(api, "console.log(await(await fetch('http://provider:8080/received')).text());").stdout.trim());
   await waitFor(() => providerCount() > 0, 10_000);

@@ -19,3 +19,5 @@
 本候选最初直接从 main 提取；为使新增连接工厂遵守 postgres v4 的显式参数推断约定，随后将整个小 PR 重放到 #17。上述 main/PG3 的本地 guard 和首轮失败只保留历史范围，最终通过必须来自 PG4 组合精确 Head 的完整 CI、真实兼容与镜像验收，不能代替未来与 C1 合并后的复验。
 
 PG4 组合首轮 [41659595523](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41659595523) 因重基自动保留了两份 manifest/lock 注册而被原来源校验拒绝，API 工具与集成均未通过；未放宽哈希、输入数或 marker 上限，仅去掉三个重复清单项后重新验收。
+
+组合首轮镜像 [41659595775](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41659595775) 已通过实际构建、生产依赖裁剪、Node PID1、24 项账本及空 URL 检查，但新增挂起任务探针误用了 `/api/auth/frequency/register`，收到真实 404；已按 main 注册路由改为 `/api/auth/register`，不改变应用或断言。原 artifact 保留，cleaned=true，后续必须重跑完整最终镜像。
