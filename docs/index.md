@@ -33,6 +33,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [数据公开与生命周期设计（规则已确认，待实施）](./data-lifecycle.md)
 - [B1 生成任务配置与切换说明（本地已验收）](./implementation/b1-generation-operations.md)
 - [B1/B2 生成可靠性验收记录（B2 局部通过，C1 待实施）](./implementation/b1-b2-generation-reliability.md)
+- [B3 基线整理与复验记录](./implementation/b3-reconcile-20261103.md)
 
 ## 其他
 
