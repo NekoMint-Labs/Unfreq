@@ -13,6 +13,8 @@
 
 main 的 generation harness、进程夹具、checkpoint 用例，以及真实 Cookie 契约修正均完整保留。新增的“请求已准入、INSERT 等待期间完成关停、新 PID 接续同一 ID”回归没有被旧 B3 基线覆盖。未放宽超时、删除用例或降低断言。
 
+远端 PR #5 已改为以 main 为 Base，GitHub 读回确认 `mergeable=true`，原内容冲突已解除。该值不代表正式批准；独立评审、全部必需 CI 与分支保护仍须分别满足，PR 保持 Draft。
+
 ## 验收记录
 
 本地原始日志及集成 manifest 保存在 Git 忽略的 `test-results`，不把原始日志、缓存或合成凭据提交进仓库。下述计数只属于本轮上述功能 Head，不复用旧 65/65 或其他 PR 的成绩。最终同步 Head 的 GitHub CI 另在 [PR 检查页](https://github.com/NekoMint-Labs/Unfreq/pull/5/checks) 和本轮处理评论中记录。
