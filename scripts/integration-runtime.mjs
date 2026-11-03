@@ -11,7 +11,7 @@ export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRel
 const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
   "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
-  "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
+  "modules/signals/service-creation", "modules/signals/scheduler", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/service-queries", "modules/signals/service-matching", "modules/signals/service-interactions",
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
   "modules/signals/publication-policy", "modules/signals/repository", "modules/signals/generation-repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",

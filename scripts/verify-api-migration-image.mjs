@@ -79,6 +79,26 @@ await writeFile(path.join(evidence, "inputs.json"), JSON.stringify(inputs, null,
 
 try {
   assert.equal(process.platform, "linux", "This verification requires a Linux Docker host.");
+  const migrationFolder = path.join(root, "apps/api/src/db/migrations");
+  const journal = JSON.parse(await readFile(path.join(migrationFolder, "meta/_journal.json"), "utf8"));
+  assert.deepEqual({ ...journal, entries: [] }, { version: "7", dialect: "postgresql", entries: [] });
+  assert.equal(journal.entries.length, 25, "The release candidate must contain exactly the original 24 migrations and C1.");
+  // Pin the original main e5b459c entries/SQL and the exact C1 388bc5c append.
+  // Git stores LF; source provenance tolerates only checkout CRLF conversion.
+  // The real ledger hash below still uses the actual SQL bytes read by Drizzle.
+  assert.equal(hash(JSON.stringify(journal.entries.slice(0, 24))), "cde2e7f2a9c908009d98c12b5df4e030896ce8e142ab124044b3f2a90e33bd28");
+  assert.deepEqual(journal.entries[24], { idx: 24, version: "7", when: 1793221491240,
+    tag: "0024_c1_publication_foundation", breakpoints: true });
+  const migrations = await Promise.all(journal.entries.map(async ({ tag, when }) => {
+    assert.match(tag, /^[a-zA-Z0-9_-]+$/u);
+    const sql = await readFile(path.join(migrationFolder, tag + ".sql"));
+    return { tag, when, hash: hash(sql), sourceHash: hash(sql.toString("utf8").replaceAll("\r\n", "\n")) };
+  }));
+  const sourceManifest = migrations.map(({ tag, when, sourceHash }) => ({ tag, when, hash: sourceHash }));
+  assert.equal(hash(JSON.stringify(sourceManifest.slice(0, 24))), "556cec334a4260908800a878a46b1d6470690b329bf4970849e6c59fb785c43e");
+  assert.equal(migrations[24].sourceHash, "9405d5d05704875af7e9cdd5df5db9234a8f5c3422ab2661c4da48a0b0e3d021");
+  const expectedLedger = migrations.map(({ hash, when }) => ({ hash, createdAt: when }));
+  report.migrations = { count: expectedLedger.length, sourceManifestSha256: hash(JSON.stringify(sourceManifest)) };
   const build = docker(["build", "--platform", "linux/amd64", "--file", "Dockerfile.api", "--target", "runner",
     "--label", `${label}=${runId}`, "--label", `org.opencontainers.image.revision=${report.sourceCommit}`,
     "--label", `com.unfreq.migration-source=${report.sourceTreeSha256}`, "--tag", image, "."], { timeout: 900_000, allowFailure: true });
@@ -119,11 +139,11 @@ try {
   const query = (sql) => exec(pg, ["psql", "-U", "postgres", "-d", "unfreq_image", "-At", "-c", sql]).stdout.trim();
   const ledgerSql = "select json_agg(t)::text from (select id,hash,created_at from drizzle.__drizzle_migrations order by id) t";
   const ledger = query(ledgerSql);
-  assert.equal(JSON.parse(ledger).length, 24);
+  assert.deepEqual(JSON.parse(ledger).map(({ hash, created_at }) => ({ hash, createdAt: created_at })), expectedLedger);
   const rerun = exec(api, ["npm", "run", "api:migrate"]);
   assert.match(rerun.stdout, /Database migrations completed\./u);
   assert.equal(query(ledgerSql), ledger);
-  check("the bundled compiled CLI is idempotent on the original 24-entry ledger");
+  check("the bundled compiled CLI preserves every SQL hash and timestamp in the exact 25-entry C1 ledger and is idempotent");
   const blank = docker(["exec", "--env", "DATABASE_URL=", api, "node", "apps/api/dist/scripts/migrate.js"], { allowFailure: true });
   assert.equal(blank.status, 1); assert.equal(blank.stdout, ""); assert.equal(blank.stderr, "Database migration failed.\n");
   check("the production CLI rejects an empty URL with bounded fixed failure output");

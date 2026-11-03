@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,8 @@ let runtime: IntegrationRuntime;
 let directory: string;
 let emptyEnv: string;
 let journal: Journal;
+let expectedLedger: Array<{ hash: string; created_at: string }>;
+const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 beforeAll(async () => {
   const managed = assertManagedIntegrationEnvironment();
@@ -34,7 +36,23 @@ beforeAll(async () => {
   emptyEnv = join(directory, "empty.env");
   await writeFile(emptyEnv, "# Deliberately empty migration CLI test environment.\n", { flag: "wx" });
   journal = JSON.parse(await readFile(join(runtime.runtimeDirectory, payloadRelative, "meta/_journal.json"), "utf8")) as Journal;
-  expect(journal.entries).toHaveLength(24);
+  expect({ ...journal, entries: [] }).toEqual({ version: "7", dialect: "postgresql", entries: [] });
+  expect(journal.entries).toHaveLength(25);
+  // Main e5b459c owns the original 24 entries/SQL; C1 388bc5c owns the only append.
+  expect(hash(JSON.stringify(journal.entries.slice(0, 24)))).toBe("cde2e7f2a9c908009d98c12b5df4e030896ce8e142ab124044b3f2a90e33bd28");
+  expect(journal.entries[24]).toEqual({ idx: 24, version: "7", when: 1793221491240,
+    tag: "0024_c1_publication_foundation", breakpoints: true });
+  const migrations = await Promise.all(journal.entries.map(async ({ tag, when }) => {
+    expect(tag).toMatch(/^[a-zA-Z0-9_-]+$/u);
+    const sql = await readFile(join(runtime.runtimeDirectory, payloadRelative, tag + ".sql"));
+    // Git LF pins admit checkout CRLF only. Ledger expectations retain raw SQL
+    // bytes so the same test observes the actual Windows or Linux migrator hash.
+    return { tag, when, hash: hash(sql), sourceHash: hash(sql.toString("utf8").replaceAll("\r\n", "\n")) };
+  }));
+  const sourceManifest = migrations.map(({ tag, when, sourceHash }) => ({ tag, when, hash: sourceHash }));
+  expect(hash(JSON.stringify(sourceManifest.slice(0, 24)))).toBe("556cec334a4260908800a878a46b1d6470690b329bf4970849e6c59fb785c43e");
+  expect(migrations[24]!.sourceHash).toBe("9405d5d05704875af7e9cdd5df5db9234a8f5c3422ab2661c4da48a0b0e3d021");
+  expectedLedger = migrations.map(({ hash, when }) => ({ hash, created_at: String(when) }));
   admin = postgres(managed.databaseUrl, { infer: true, max: 1, prepare: false, connect_timeout: 3, onnotice: false });
 });
 
@@ -121,14 +139,16 @@ function expectOutcome(result: ProcessResult, success: boolean) {
 }
 
 async function ledger(sql: Sql) {
-  return [...await sql`select id, hash, created_at::text as created_at from drizzle.__drizzle_migrations order by id`];
+  const rows = [...await sql`select id, hash, created_at::text as created_at from drizzle.__drizzle_migrations order by id`];
+  expect(rows.map(({ hash, created_at }) => ({ hash, created_at }))).toEqual(expectedLedger);
+  return rows;
 }
 
 it("runs the compiled CLI on an empty database and preserves the same ledger on a second run", async () => {
   await withDatabase(async (url, sql) => {
     expectOutcome(await runCli(url), true);
     const first = await ledger(sql);
-    expect(first).toHaveLength(24);
+    expect(first).toHaveLength(25);
     const [tables] = await sql`select to_regclass('public.users')::text as users, to_regclass('public.signals')::text as signals`;
     expect(tables).toEqual({ users: "users", signals: "signals" });
     expectOutcome(await runCli(url), true);
@@ -154,7 +174,10 @@ it("rolls pending DDL, data and ledger entries back together when a private copi
       await copyFile(join(runtime.runtimeDirectory, payloadRelative, `${entry.tag}.sql`), join(payload, `${entry.tag}.sql`), constants.COPYFILE_EXCL);
     }
     const last = journal.entries.at(-1)!;
-    const pending = ["0024_migration_cli_before_failure", "0025_migration_cli_failed_ddl"];
+    const nextNumber = Number(last.tag.slice(0, 4)) + 1;
+    const pending = ["before_failure", "failed_ddl"].map((suffix, index) =>
+      `${String(nextNumber + index).padStart(4, "0")}_migration_cli_${suffix}`);
+    expect(journal.entries.some(({ tag }) => pending.includes(tag))).toBe(false);
     const copiedJournal = { ...journal, entries: [...journal.entries, ...pending.map((tag, index) => ({
       idx: journal.entries.length + index, version: last.version, when: last.when + index + 1, tag, breakpoints: true,
     }))] };
@@ -243,7 +266,7 @@ it("preserves the existing toolkit ledger in both toolkit-to-runner and runner-t
       if (toolkitFirst) await toolkitRun();
       else expectOutcome(await runCli(url), true);
       const original = await ledger(sql);
-      expect(original).toHaveLength(24);
+      expect(original).toHaveLength(25);
       if (toolkitFirst) expectOutcome(await runCli(url), true);
       else await toolkitRun();
       expect(await ledger(sql)).toEqual(original);

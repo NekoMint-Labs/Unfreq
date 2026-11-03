@@ -22,6 +22,7 @@ const baseProductionEnv = {
   ABUSE_PROTECTION_ENABLED: undefined,
   ABUSE_LIMITS_JSON: JSON.stringify(completePolicy),
   ABUSE_HMAC_SECRET: undefined,
+  AI_SIGNAL_SCHEDULER_ENABLED: undefined,
   TRUSTED_PROXY_CIDRS: "",
   NODE_ENV: "production",
   PROVIDER_CONFIG_SECRET: "provider-config-secret-with-32-chars",
@@ -43,6 +44,17 @@ afterEach(() => {
 });
 
 describe("API environment validation", () => {
+  it.each(["production", "development", "test"])("disables scheduled AI generation by default in %s", async (mode) => {
+    const { env } = await importEnv({ NODE_ENV: mode });
+    expect(env.aiSignalSchedulerEnabled).toBe(false);
+  });
+
+  it("requires an explicit valid scheduler opt-in", async () => {
+    expect((await importEnv({ AI_SIGNAL_SCHEDULER_ENABLED: "true" })).env.aiSignalSchedulerEnabled).toBe(true);
+    expect((await importEnv({ AI_SIGNAL_SCHEDULER_ENABLED: "false" })).env.aiSignalSchedulerEnabled).toBe(false);
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_ENABLED: "yes" })).rejects.toThrow(/AI_SIGNAL_SCHEDULER_ENABLED/u);
+  });
+
   it("accepts non-placeholder production deployment values", async () => {
     const imported = await importEnv();
     expect(imported).toMatchObject({
