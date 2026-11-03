@@ -3,9 +3,10 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const source = process.cwd();
-const target = path.resolve(process.argv[2] ?? "runtime-candidate");
+const source = fileURLToPath(new URL("../../", import.meta.url));
+const target = path.resolve(source, process.argv[2] ?? "runtime-candidate");
 const { FIXED_MAIN: main, FIXED_RUNTIME: runtime, SECURITY_HEAD: security } = process.env;
 for (const revision of [main, runtime, security]) assert.match(revision ?? "", /^[a-f0-9]{40}$/u);
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" });
