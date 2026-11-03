@@ -1,0 +1,2 @@
+# Preserve the Linux container entrypoint across Windows checkouts.
+scripts/api-entrypoint.sh text eol=lf
