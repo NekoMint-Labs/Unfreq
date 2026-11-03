@@ -16,6 +16,7 @@ import { closeAbuseControl } from "./shared/abuse-control.js";
 import { safeRequestId } from "./shared/request-identity.js";
 import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
 import { apiLogRedactionPaths } from "./shared/log-redaction.js";
+import { ApiLogController } from "./shared/log-controller.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
 import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
@@ -51,7 +52,7 @@ const resolveLoggerOptions = (options: BuildAppOptions) => {
 
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify<RawServerDefault>({
-    disableRequestLogging: true,
+    logController: new ApiLogController(),
     trustProxy: env.trustedProxyCidrs.length === 0 ? false : env.trustedProxyCidrs,
     genReqId: (request) => safeRequestId(request.headers["x-request-id"]),
     logger: resolveLoggerOptions(options),

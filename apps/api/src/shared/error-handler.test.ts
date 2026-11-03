@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { errorHandler } from "./error-handler.js";
+import { ApiLogController } from "./log-controller.js";
 import { AppError } from "./errors.js";
 import { safeRequestId } from "./request-identity.js";
 
@@ -16,7 +17,7 @@ beforeAll(async () => {
 function errorApp() {
   const logs: string[] = [];
   const app = Fastify({
-    disableRequestLogging: true,
+    logController: new ApiLogController(),
     logger: { level: "warn", stream: { write(line: string) { logs.push(line); } } },
     genReqId: (request) => safeRequestId(request.headers["x-request-id"]),
   });

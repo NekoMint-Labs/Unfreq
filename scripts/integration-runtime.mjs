@@ -16,7 +16,7 @@ const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-contr
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
   "modules/signals/publication-policy", "modules/signals/repository", "modules/signals/generation-repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
   "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
-  "shared/shutdown-budget", "shared/log-redaction", "scripts/migrate", "server"];
+  "shared/shutdown-budget", "shared/log-redaction", "shared/log-controller", "scripts/migrate", "server"];
 // Freeze the exact existing SQL payload alongside the compiled migration CLI.
 export const migrationPayloadPaths = Object.freeze([
   "apps/api/src/db/migrations/meta/_journal.json",
@@ -43,7 +43,8 @@ export const migrationPayloadPaths = Object.freeze([
   "apps/api/src/db/migrations/0020_provider_config_fallbacks.sql",
   "apps/api/src/db/migrations/0021_absurd_firedrake.sql",
   "apps/api/src/db/migrations/0022_signal_generation_leases.sql",
-  "apps/api/src/db/migrations/0023_b3_audio_attempt.sql"
+  "apps/api/src/db/migrations/0023_b3_audio_attempt.sql",
+  "apps/api/src/db/migrations/0024_c1_publication_foundation.sql"
 ]);
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
