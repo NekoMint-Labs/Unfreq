@@ -1,5 +1,5 @@
 import cors from "@fastify/cors";
-import Fastify, { type FastifyServerOptions, type RawServerDefault } from "fastify";
+import Fastify, { LogController, type FastifyServerOptions, type RawServerDefault } from "fastify";
 import { env } from "./config/env.js";
 import { closeDatabaseConnection } from "./db/client.js";
 import { adminRoutes } from "./modules/admin/routes.js";
@@ -51,7 +51,7 @@ const resolveLoggerOptions = (options: BuildAppOptions) => {
 
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify<RawServerDefault>({
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: env.trustedProxyCidrs.length === 0 ? false : env.trustedProxyCidrs,
     genReqId: (request) => safeRequestId(request.headers["x-request-id"]),
     logger: resolveLoggerOptions(options),
