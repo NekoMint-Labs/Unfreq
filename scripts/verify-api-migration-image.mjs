@@ -61,7 +61,7 @@ const probe = (id, source, options) => exec(id, ["node", "--input-type=module", 
 const apiReady = (id) => probe(id, "const r=await fetch('http://127.0.0.1:4000/health',{signal:AbortSignal.timeout(1000)});if(r.status!==200)process.exit(1);", { allowFailure: true }).status === 0;
 const ownedPaths = run("git", ["ls-files", "--cached", "-z"]).stdout.split("\0").filter((name) =>
   [".dockerignore", "Dockerfile.api", "package.json", "package-lock.json", "apps/web/package.json",
-    "scripts/apply-postgres-startup-patch.mjs", "scripts/api-entrypoint.sh",
+    "scripts/apply-postgres-lifecycle-patch.mjs", "scripts/api-entrypoint.sh",
     "scripts/verify-api-migration-image.mjs"].includes(name) || /^(apps\/api\/|packages\/contracts\/|patches\/)/u.test(name)).sort();
 const hashes = async () => Object.fromEntries(await Promise.all(ownedPaths.map(async (name) => {
   const filename = path.join(root, name);
@@ -112,9 +112,9 @@ try {
   const api = create("api", built.Id, Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]));
   await waitFor(() => apiReady(api));
   check("production entrypoint migrated a fresh database before serving HTTP");
-  const packageProbe = probe(api, `import assert from 'node:assert/strict';import fs from 'node:fs';for(const name of ['drizzle-kit','@esbuild-kit/core-utils','@esbuild-kit/esm-loader']){assert.equal(fs.existsSync('/app/node_modules/'+name),false);}assert.equal(JSON.parse(fs.readFileSync('/app/node_modules/postgres/package.json')).version,'3.4.9');const command=fs.readFileSync('/proc/1/cmdline','utf8').split('\\0').filter(Boolean);assert.deepEqual(command,['node','dist/server.js']);console.log(JSON.stringify({driver:'3.4.9',pid1:command,developmentToolkitAbsent:true}));`);
+  const packageProbe = probe(api, `import assert from 'node:assert/strict';import fs from 'node:fs';for(const name of ['drizzle-kit','@esbuild-kit/core-utils','@esbuild-kit/esm-loader']){assert.equal(fs.existsSync('/app/node_modules/'+name),false);}assert.equal(JSON.parse(fs.readFileSync('/app/node_modules/postgres/package.json')).version,'4.0.0');const command=fs.readFileSync('/proc/1/cmdline','utf8').split('\\0').filter(Boolean);assert.deepEqual(command,['node','dist/server.js']);console.log(JSON.stringify({driver:'4.0.0',pid1:command,developmentToolkitAbsent:true}));`);
   report.packages = JSON.parse(packageProbe.stdout);
-  check("omit-dev runner excludes the toolkit and keeps postgres 3.4.9; Node is PID 1");
+  check("omit-dev runner excludes the toolkit and keeps postgres 4.0.0; Node is PID 1");
   const query = (sql) => exec(pg, ["psql", "-U", "postgres", "-d", "unfreq_migration_image", "-At", "-c", sql]).stdout.trim();
   const ledgerSql = "select json_agg(t)::text from (select id,hash,created_at from drizzle.__drizzle_migrations order by id) t";
   const ledger = query(ledgerSql);

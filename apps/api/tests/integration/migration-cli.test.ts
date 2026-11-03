@@ -35,7 +35,7 @@ beforeAll(async () => {
   await writeFile(emptyEnv, "# Deliberately empty migration CLI test environment.\n", { flag: "wx" });
   journal = JSON.parse(await readFile(join(runtime.runtimeDirectory, payloadRelative, "meta/_journal.json"), "utf8")) as Journal;
   expect(journal.entries).toHaveLength(24);
-  admin = postgres(managed.databaseUrl, { max: 1, prepare: false, connect_timeout: 3, onnotice: () => undefined });
+  admin = postgres(managed.databaseUrl, { infer: true, max: 1, prepare: false, connect_timeout: 3, onnotice: false });
 });
 
 async function dropOwnedDatabase(name: string) {
@@ -67,7 +67,7 @@ async function withDatabase(work: (url: string, sql: Sql) => Promise<void>) {
   ownedDatabases.add(name);
   const url = new URL(managed.databaseUrl);
   url.pathname = `/${name}`;
-  const sql = postgres(url.toString(), { max: 1, prepare: false, connect_timeout: 3, onnotice: () => undefined });
+  const sql = postgres(url.toString(), { infer: true, max: 1, prepare: false, connect_timeout: 3, onnotice: false });
   try { await work(url.toString(), sql); }
   finally {
     await sql.end({ timeout: 0 });

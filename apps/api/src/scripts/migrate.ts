@@ -20,8 +20,9 @@ async function main() {
   // toolkit rejected empty URLs; do not silently migrate a different database.
   if (databaseUrl.trim().length === 0) throw new Error("Empty migration database URL.");
   const client = postgres(databaseUrl, {
+    infer: true,
     max: 1,
-    onnotice: () => undefined,
+    onnotice: false,
   });
   try {
     await migrate(drizzle(client), {
