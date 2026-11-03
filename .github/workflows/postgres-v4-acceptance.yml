@@ -1,0 +1,65 @@
+name: PostgreSQL v4 acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/postgres-v4-acceptance.yml"
+      - "Dockerfile.api"
+      - "Dockerfile.web"
+      - "package.json"
+      - "package-lock.json"
+      - "apps/api/package.json"
+      - "patches/**"
+      - "scripts/apply-postgres-*.mjs"
+      - "tests/integration/postgres-*.mjs"
+      - "tests/integration/patch-install.test.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-v4-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-boundaries:
+    name: PostgreSQL Node ${{ matrix.node }} loading
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19.0", "22.12.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Real Node module loading and guarded patch installation
+        run: node --test tests/integration/postgres-module.test.mjs tests/integration/patch-install.test.mjs
+
+  docker-dependencies:
+    name: PostgreSQL ${{ matrix.component }} ${{ matrix.stage }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, web]
+        stage: [deps, prod-deps]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the actual Dockerfile dependency stage
+        run: docker build --progress plain --target ${{ matrix.stage }} -f Dockerfile.${{ matrix.component }} -t unfreq-postgres-dependencies:check .
+      - name: Verify Linux patch hashes and real ESM/CommonJS/Drizzle loading
+        run: |
+          docker image inspect unfreq-postgres-dependencies:check --format '{{.Id}} {{.Os}} {{.Architecture}}'
+          docker run --rm --entrypoint node --mount "type=bind,src=$PWD/tests/integration/postgres-docker-probe.mjs,dst=/tmp/postgres-docker-probe.mjs,readonly" unfreq-postgres-dependencies:check /tmp/postgres-docker-probe.mjs
