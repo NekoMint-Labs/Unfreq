@@ -5,10 +5,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const require = createRequire(import.meta.url);
 const folder = path.join(root, "apps/api/src/db/migrations");
 const journal = JSON.parse(await readFile(path.join(folder, "meta/_journal.json"), "utf8"));
 const inputs = ["package.json", "package-lock.json", "apps/api/package.json", "apps/api/src/db/schema.ts",
@@ -23,7 +21,7 @@ try {
   await writeFile(config, `export default ${JSON.stringify({ dialect: "postgresql", schema: path.join(root, "apps/api/src/db/schema.ts"), out: output })};\n`, { flag: "wx" });
   const allowed = new Set(["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE"]);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
-  const kit = path.join(path.dirname(require.resolve("drizzle-kit/package.json")), "bin.cjs");
+  const kit = path.join(root, "node_modules/drizzle-kit/bin.cjs");
   const result = spawnSync(process.execPath, [kit, "generate", `--config=${config}`], { cwd: root, env,
     encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1_048_576 });
   assert.equal(result.error, undefined, "Development generation failed to run.");

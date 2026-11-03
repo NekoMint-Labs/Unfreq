@@ -13,3 +13,5 @@
 本地来源冻结回归已 8/8 通过；CLI 和两份独立验证器已完成语法检查。完整四 CI、真实 PG/Redis、kit 兼容、generate 和 Linux 成品结果尚待本候选运行。所有本地及远端测试只使用临时库、合成账号和固定隔离 Provider，没有生产迁移、部署或真实模型调用。
 
 回退需成组恢复命令、manifest/lock、CLI、Docker 和验证接线，不回退已有 SQL 或数据库账本。既有无跨进程迁移锁、不重验历史已应用 SQL checksum 的边界保持。本 PR 不决定生产数据恢复或配置。
+
+首轮独立镜像工作流 [41658671633](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41658671633) 在 generate 验证器查找 toolkit 时失败：该包未导出 package.json 子路径。实际安装与原四文件补丁已通过，尚未执行镜像构建；修正为使用根工作区固定安装位置的 bin.cjs，保留此原始失败并重跑最终 Head。

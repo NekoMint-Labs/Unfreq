@@ -112,7 +112,7 @@ try {
   const api = create("api", built.Id, Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]));
   await waitFor(() => apiReady(api));
   check("production entrypoint migrated a fresh database before serving HTTP");
-  const packageProbe = probe(api, `import assert from 'node:assert/strict';import fs from 'node:fs';import{createRequire}from'node:module';const require=createRequire(import.meta.url);for(const name of ['drizzle-kit','@esbuild-kit/core-utils','@esbuild-kit/esm-loader']){assert.equal(fs.existsSync('/app/node_modules/'+name),false);}assert.equal(JSON.parse(fs.readFileSync('/app/node_modules/postgres/package.json')).version,'3.4.9');const command=fs.readFileSync('/proc/1/cmdline','utf8').split('\\0').filter(Boolean);assert.deepEqual(command,['node','dist/server.js']);console.log(JSON.stringify({driver:'3.4.9',pid1:command,developmentToolkitAbsent:true}));`);
+  const packageProbe = probe(api, `import assert from 'node:assert/strict';import fs from 'node:fs';for(const name of ['drizzle-kit','@esbuild-kit/core-utils','@esbuild-kit/esm-loader']){assert.equal(fs.existsSync('/app/node_modules/'+name),false);}assert.equal(JSON.parse(fs.readFileSync('/app/node_modules/postgres/package.json')).version,'3.4.9');const command=fs.readFileSync('/proc/1/cmdline','utf8').split('\\0').filter(Boolean);assert.deepEqual(command,['node','dist/server.js']);console.log(JSON.stringify({driver:'3.4.9',pid1:command,developmentToolkitAbsent:true}));`);
   report.packages = JSON.parse(packageProbe.stdout);
   check("omit-dev runner excludes the toolkit and keeps postgres 3.4.9; Node is PID 1");
   const query = (sql) => exec(pg, ["psql", "-U", "postgres", "-d", "unfreq_migration_image", "-At", "-c", sql]).stdout.trim();
