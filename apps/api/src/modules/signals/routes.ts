@@ -1,5 +1,8 @@
-import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import type { FastifyInstance, FastifyPluginOptions, FastifyRequest } from "fastify";
 import type { SignalGenerationWorker } from "./generation-worker.js";
+import type { SignalAudioWorker } from "./audio-worker.js";
+import { consumeAbuse } from "../../shared/abuse-control.js";
+import { getCanonicalClientIp } from "../../shared/request-identity.js";
 import { AppError } from "../../shared/errors.js";
 import { sendData } from "../../shared/response.js";
 import {
@@ -40,7 +43,14 @@ import {
 
 type SignalRoutesOptions = FastifyPluginOptions & {
   generationWorker: Pick<SignalGenerationWorker, "accepting" | "wake">;
+  audioWorker: SignalAudioWorker;
 };
+
+function limitedAudioRequest(rule: "audioReadIp" | "audioRequestIp") {
+  return { bodyLimit: 2 * 1024, async onRequest(request: FastifyRequest) {
+    await consumeAbuse([{ rule, identity: getCanonicalClientIp(request) }]);
+  } };
+}
 
 export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOptions) {
   app.post("/", async (request, reply) => {
@@ -99,7 +109,7 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
     return sendData(reply, request, response);
   });
 
-  app.get("/:id/audio", async (request, reply) => {
+  app.get("/:id/audio", limitedAudioRequest("audioReadIp"), async (request, reply) => {
     const parsedParams = signalIdParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
@@ -112,14 +122,16 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
     return sendData(reply, request, response);
   });
 
-  app.post("/:id/audio", async (request, reply) => {
+  app.post("/:id/audio", limitedAudioRequest("audioRequestIp"), async (request, reply) => {
     const parsedParams = signalIdParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
-    const audio = await requestSignalAudio(parsedParams.data.id, request.log);
+    const audio = await requestSignalAudio(parsedParams.data.id, request.log, {
+      clientIp: getCanonicalClientIp(request), worker: options.audioWorker,
+    });
     const response = signalAudioResponseSchema.parse({ audio });
 
     request.log.info(
@@ -136,7 +148,7 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
     return sendData(reply, request, response);
   });
 
-  app.get("/:id/audio/:side", async (request, reply) => {
+  app.get("/:id/audio/:side", limitedAudioRequest("audioReadIp"), async (request, reply) => {
     const parsedParams = signalAudioSideParamsSchema.safeParse(request.params);
 
     if (!parsedParams.success) {

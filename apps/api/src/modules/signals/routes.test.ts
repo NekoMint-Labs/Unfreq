@@ -43,6 +43,19 @@ vi.mock("./generation-worker.js", () => ({
   }),
 }));
 
+// The route suite reads its explicit in-memory repository adapter. Real audio
+// admission, token CAS and worker shutdown are covered by owned integration.
+vi.mock("./audio-worker.js", () => ({
+  createSignalAudioWorker: () => ({
+    accepting: true,
+    async request(id: string, _ip: string, logger?: import("../ai/tts.js").TtsLogger) {
+      const { requestSignalAudio } = await import("./service-audio.js");
+      return requestSignalAudio(id, logger);
+    },
+    async stop() {},
+  }),
+}));
+
 vi.mock("../auth/service.js", () => {
   const frequency: AuthenticatedFrequency = {
     createdAt: "2026-05-10T00:00:00.000Z",

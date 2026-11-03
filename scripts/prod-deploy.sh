@@ -211,6 +211,7 @@ fi
 WEB_ORIGIN_VALUE="$(normalize_origin "$WEB_ORIGIN_VALUE")"
 write_env_value WEB_ORIGIN "$WEB_ORIGIN_VALUE"
 write_env_value AUTH_LOGIN_CODE_RESPONSE disabled
+write_env_value AUTH_LOGIN_DELIVERY_MODE disabled
 ensure_secret SESSION_SECRET
 ensure_secret PROVIDER_CONFIG_SECRET
 ensure_network

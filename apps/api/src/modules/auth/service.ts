@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { Redis } from "ioredis";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
+import { createFrequencyCodeCandidates } from "./identity.js";
 import {
   createPasswordFrequencyUser,
   createUser,
@@ -28,6 +29,53 @@ const loginChallengeKeyPrefix = "auth:login:challenge";
 const loginRequestCooldownKeyPrefix = "auth:login:request-cooldown";
 const loginCodeMax = 1_000_000;
 const scryptAsync = promisify(scrypt);
+const dummyPasswordHash = `scrypt:unfreq-dummy-login-v1:${Buffer.alloc(64).toString("base64url")}`;
+
+export class PasswordLoginForbidden extends AppError {
+  constructor() { super("FORBIDDEN", "This frequency cannot login now."); }
+}
+
+function assertEmailDeliveryAllowed(): void {
+  if (env.authLoginDeliveryMode !== "local-log" || env.isProduction) {
+    throw new AppError("FORBIDDEN", "Email login is unavailable.");
+  }
+}
+
+async function authStorage<T>(work: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch { throw new AppError("AI_UNAVAILABLE", "Authentication temporarily unavailable."); }
+}
+
+// Redis owns expiry and serialization. KEEPTTL preserves the original absolute
+// expiry, even on a wrong attempt; successful validation consumes the key in
+// this same command. Unit eval doubles test only this storage contract.
+const verifyChallengeScript = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {-1, 0, 0} end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl <= 0 then redis.call('DEL', KEYS[1]); return {-1, 0, 0} end
+local ok, record = pcall(cjson.decode, raw)
+local maximum = tonumber(ARGV[3])
+if not ok or type(record) ~= 'table' or record.email ~= ARGV[1]
+  or type(record.codeHash) ~= 'string' or type(record.attemptCount) ~= 'number'
+  or record.attemptCount < 0 or record.attemptCount ~= math.floor(record.attemptCount) then
+  redis.call('DEL', KEYS[1]); return {-2, 0, 0}
+end
+local function exhausted()
+  redis.call('DEL', KEYS[1])
+  local cooldown = redis.call('PTTL', KEYS[2])
+  return {-3, 0, math.max(1, math.ceil(cooldown / 1000))}
+end
+if record.attemptCount >= maximum then return exhausted() end
+if record.codeHash ~= ARGV[2] then
+  record.attemptCount = record.attemptCount + 1
+  if record.attemptCount >= maximum then return exhausted() end
+  redis.call('SET', KEYS[1], cjson.encode(record), 'KEEPTTL')
+  return {0, maximum - record.attemptCount, 0}
+end
+redis.call('DEL', KEYS[1])
+return {1, 0, 0}
+`;
 
 type SessionPayload = {
   exp: number;
@@ -64,12 +112,6 @@ function sign(value: string): string {
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
-}
-
-function createFrequencyCodeCandidates(frequencyCode: string): string[] {
-  const compact = frequencyCode.trim().toUpperCase().replace(/^FM[\s-]*/, "");
-
-  return [`FM ${compact}`, `FM-${compact}`];
 }
 
 function createEmailHash(email: string): string {
@@ -142,32 +184,6 @@ function decodePayload(encodedPayload: string): SessionPayload | undefined {
   return undefined;
 }
 
-function isLoginChallengeRecord(value: unknown): value is LoginChallengeRecord {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "attemptCount" in value &&
-    "codeHash" in value &&
-    "createdAt" in value &&
-    "email" in value &&
-    "expiresAt" in value &&
-    typeof value.attemptCount === "number" &&
-    typeof value.codeHash === "string" &&
-    typeof value.createdAt === "string" &&
-    typeof value.email === "string" &&
-    typeof value.expiresAt === "string"
-  );
-}
-
-function parseLoginChallengeRecord(serializedRecord: string): LoginChallengeRecord | undefined {
-  try {
-    const parsed = JSON.parse(serializedRecord) as unknown;
-    return isLoginChallengeRecord(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function generateLoginCode(): string {
   return randomInt(0, loginCodeMax).toString().padStart(6, "0");
 }
@@ -180,12 +196,8 @@ function maskEmail(email: string): string {
   return `${maskedLocalPart}@${domain ?? "unknown"}`;
 }
 
-function secondsUntil(isoDate: string): number {
-  return Math.ceil((Date.parse(isoDate) - Date.now()) / 1000);
-}
-
 async function readRetryAfterSeconds(redis: Redis, key: string): Promise<number> {
-  const ttl = await redis.ttl(key);
+  const ttl = await authStorage(() => redis.ttl(key));
   return ttl > 0 ? ttl : env.authLoginRequestCooldownSeconds;
 }
 
@@ -245,16 +257,17 @@ export async function requestLoginChallenge(
   redis: Redis,
   email: string,
 ): Promise<LoginChallengeIssueResult> {
+  assertEmailDeliveryAllowed();
   const normalizedEmail = normalizeEmail(email);
   const emailHash = createEmailHash(normalizedEmail);
   const cooldownKey = createLoginRequestCooldownKey(emailHash);
-  const cooldownCreated = await redis.set(
+  const cooldownCreated = await authStorage(() => redis.set(
     cooldownKey,
     "1",
     "EX",
     env.authLoginRequestCooldownSeconds,
     "NX",
-  );
+  ));
 
   if (cooldownCreated !== "OK") {
     throw new AppError("RATE_LIMITED", "Login challenge request rate limited.", {
@@ -276,12 +289,13 @@ export async function requestLoginChallenge(
     expiresAt,
   };
 
-  await redis.set(
+  const stored = await authStorage(() => redis.set(
     createLoginChallengeKey(emailHash),
     JSON.stringify(record),
     "EX",
     env.authLoginChallengeTtlSeconds,
-  );
+  ));
+  if (stored !== "OK") throw new AppError("AI_UNAVAILABLE", "Authentication temporarily unavailable.");
 
   return {
     challenge: {
@@ -291,10 +305,10 @@ export async function requestLoginChallenge(
     delivery: env.authLoginCodeResponseEnabled
       ? {
           code,
-          mode: env.authLoginDeliveryMode,
+          mode: "local-log",
         }
       : {
-          mode: env.authLoginDeliveryMode,
+          mode: "local-log",
         },
     localDelivery: {
       code,
@@ -349,18 +363,14 @@ export async function loginWithFrequencyCredentials(
     }
   }
 
-  if (user === undefined || user.passwordHash === null) {
-    throw new AppError("UNAUTHORIZED", "Invalid frequency or password.");
-  }
+  const isValidPassword = await verifyPassword(body.password, user?.passwordHash ?? dummyPasswordHash);
 
-  const isValidPassword = await verifyPassword(body.password, user.passwordHash);
-
-  if (!isValidPassword) {
+  if (user === undefined || user.passwordHash === null || !isValidPassword) {
     throw new AppError("UNAUTHORIZED", "Invalid frequency or password.");
   }
 
   if (user.status === "BANNED") {
-    throw new AppError("FORBIDDEN", "This frequency cannot login now.");
+    throw new PasswordLoginForbidden();
   }
 
   return {
@@ -377,62 +387,40 @@ export async function verifyLoginChallenge(
     email: string;
   },
 ): Promise<LoginResult> {
+  assertEmailDeliveryAllowed();
   const normalizedEmail = normalizeEmail(params.email);
   const normalizedCode = params.code.trim();
   const emailHash = createEmailHash(normalizedEmail);
   const challengeKey = createLoginChallengeKey(emailHash);
-  const serializedRecord = await redis.get(challengeKey);
-
-  if (serializedRecord === null) {
+  const outcome: unknown = await authStorage(() => redis.eval(verifyChallengeScript, 2, challengeKey,
+    createLoginRequestCooldownKey(emailHash), normalizedEmail, hashLoginCode(normalizedCode), env.authLoginMaxVerifyAttempts));
+  if (!Array.isArray(outcome) || outcome.length !== 3 ||
+      !outcome.every((value) => typeof value === "number" && Number.isSafeInteger(value)) ||
+      ![-3, -2, -1, 0, 1].includes(outcome[0]) || outcome[1] < 0 || outcome[1] > env.authLoginMaxVerifyAttempts ||
+      outcome[2] < 0) throw new AppError("AI_UNAVAILABLE", "Authentication temporarily unavailable.");
+  const [status, remainingAttempts, retryAfterSeconds] = outcome as number[];
+  if (status === -1) {
     throw new AppError("UNAUTHORIZED", "Verification challenge expired or missing.", {
       reason: "MISSING",
     });
   }
 
-  const record = parseLoginChallengeRecord(serializedRecord);
-
-  if (record === undefined || record.email !== normalizedEmail) {
-    await redis.del(challengeKey);
+  if (status === -2) {
     throw new AppError("UNAUTHORIZED", "Verification challenge expired or missing.", {
       reason: "INVALID_CHALLENGE",
     });
   }
 
-  const remainingSeconds = secondsUntil(record.expiresAt);
-
-  if (remainingSeconds <= 0) {
-    await redis.del(challengeKey);
-    throw new AppError("UNAUTHORIZED", "Verification challenge expired.", {
-      reason: "EXPIRED",
+  if (status === -3) {
+    throw new AppError("RATE_LIMITED", "Too many verification attempts.", {
+      limitType: "AUTH_LOGIN_VERIFY", retryAfterSeconds,
     });
   }
-
-  if (!safeEqual(hashLoginCode(normalizedCode), record.codeHash)) {
-    const attemptCount = record.attemptCount + 1;
-
-    if (attemptCount >= env.authLoginMaxVerifyAttempts) {
-      await redis.del(challengeKey);
-      throw new AppError("RATE_LIMITED", "Too many verification attempts.", {
-        limitType: "AUTH_LOGIN_VERIFY",
-      });
-    }
-
-    await redis.set(
-      challengeKey,
-      JSON.stringify({
-        ...record,
-        attemptCount,
-      }),
-      "EX",
-      remainingSeconds,
-    );
-
+  if (status === 0) {
     throw new AppError("UNAUTHORIZED", "Invalid verification code.", {
-      remainingAttempts: env.authLoginMaxVerifyAttempts - attemptCount,
+      remainingAttempts,
     });
   }
-
-  await redis.del(challengeKey);
 
   return loginWithEmail(normalizedEmail);
 }

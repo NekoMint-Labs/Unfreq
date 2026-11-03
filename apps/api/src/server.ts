@@ -1,6 +1,7 @@
 import { env } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { closeDatabaseConnection } from "./db/client.js";
+import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
 
 let shutdownPromise: Promise<void> | undefined;
 
@@ -9,8 +10,7 @@ function shutdown(reason: string, exitCode = 0): Promise<void> {
   shutdownPromise ??= (async () => {
     // Kept unref'ed after a clean close: it does not keep an idle server alive,
     // but any remaining socket/timer cannot postpone process exit forever.
-    const budget = env.signalGenerationShutdownGraceMs +
-      2 * (env.signalGenerationDbStatementTimeoutMs + env.signalGenerationDbLockTimeoutMs + 1000) + 5000;
+    const budget = apiShutdownBudgetMs(env);
     const watchdog = setTimeout(() => {
       app.log.error({ action: "api.shutdown.deadline" }, "api shutdown exceeded its resource drain budget");
       process.exit(1);
@@ -29,7 +29,10 @@ function shutdown(reason: string, exitCode = 0): Promise<void> {
   return shutdownPromise;
 }
 
-const app = await buildApp({ onGenerationFatal: () => shutdown("GENERATION_FATAL", 1) });
+const app = await buildApp({
+  onGenerationFatal: () => shutdown("GENERATION_FATAL", 1),
+  onAudioFatal: () => shutdown("AUDIO_FATAL", 1),
+});
 
 process.on("SIGINT", () => {
   void shutdown("SIGINT");

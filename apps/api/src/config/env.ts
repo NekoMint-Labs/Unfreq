@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
+import { parseAbusePolicy } from "./abuse.js";
+import { parseTrustedProxyCidrs } from "../shared/request-identity.js";
 
 const defaultSessionSecret = "local-dev-session-secret-change-before-production";
 
@@ -11,7 +13,11 @@ const envSchema = z.object({
     .max(60 * 60)
     .default(10 * 60),
   AUTH_LOGIN_CODE_RESPONSE: z.enum(["disabled", "enabled"]).optional(),
-  AUTH_LOGIN_DELIVERY_MODE: z.enum(["local-log"]).default("local-log"),
+  AUTH_LOGIN_DELIVERY_MODE: z.enum(["disabled", "local-log"]).optional(),
+  ABUSE_PROTECTION_ENABLED: z.enum(["true", "false"]).optional(),
+  ABUSE_LIMITS_JSON: z.string().max(32_768).optional(),
+  ABUSE_HMAC_SECRET: z.union([z.string().min(32), z.literal("")]).optional(),
+  TRUSTED_PROXY_CIDRS: z.string().max(2048).default(""),
   AUTH_LOGIN_MAX_VERIFY_ATTEMPTS: z.coerce
     .number()
     .int()
@@ -160,10 +166,26 @@ const authLoginCodeResponse =
   parsedEnv.data.AUTH_LOGIN_CODE_RESPONSE ??
   (parsedEnv.data.NODE_ENV === "production" ? "disabled" : "enabled");
 
+const authLoginDeliveryMode = parsedEnv.data.AUTH_LOGIN_DELIVERY_MODE ??
+  (parsedEnv.data.NODE_ENV === "production" ? "disabled" : "local-log");
+if (parsedEnv.data.NODE_ENV === "production" &&
+    (authLoginDeliveryMode === "local-log" || authLoginCodeResponse === "enabled")) {
+  throw new Error("Invalid API environment: production login challenges cannot use local-log or code responses.");
+}
+const abusePolicy = parseAbusePolicy({
+  mode: parsedEnv.data.NODE_ENV,
+  enabled: parsedEnv.data.ABUSE_PROTECTION_ENABLED === undefined ? undefined : parsedEnv.data.ABUSE_PROTECTION_ENABLED === "true",
+  json: parsedEnv.data.ABUSE_LIMITS_JSON,
+});
+const trustedProxyCidrs = parseTrustedProxyCidrs(parsedEnv.data.TRUSTED_PROXY_CIDRS);
+
 export const env = {
+  abusePolicy,
+  abuseHmacSecret: parsedEnv.data.ABUSE_HMAC_SECRET || parsedEnv.data.SESSION_SECRET,
+  trustedProxyCidrs,
   authLoginChallengeTtlSeconds: parsedEnv.data.AUTH_LOGIN_CHALLENGE_TTL_SECONDS,
   authLoginCodeResponseEnabled: authLoginCodeResponse === "enabled",
-  authLoginDeliveryMode: parsedEnv.data.AUTH_LOGIN_DELIVERY_MODE,
+  authLoginDeliveryMode,
   authLoginMaxVerifyAttempts: parsedEnv.data.AUTH_LOGIN_MAX_VERIFY_ATTEMPTS,
   authLoginRequestCooldownSeconds:
     parsedEnv.data.AUTH_LOGIN_REQUEST_COOLDOWN_SECONDS,

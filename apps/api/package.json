@@ -19,8 +19,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@unfreq/contracts": "0.1.0",
     "@fastify/cors": "^11.0.0",
+    "@unfreq/contracts": "0.1.0",
     "dotenv": "^17.0.0",
     "drizzle-kit": "^0.31.0",
     "drizzle-orm": "^0.45.0",
@@ -28,11 +28,13 @@
     "fastify-plugin": "^5.0.0",
     "ioredis": "^5.0.0",
     "postgres": "3.4.9",
+    "ws": "8.22.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
+    "@types/ws": "8.18.2",
     "eslint": "^9.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.1.0",

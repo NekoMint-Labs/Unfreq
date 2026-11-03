@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
+import { parseAbusePolicy } from "../../config/abuse.js";
 import { GenerationExecutionStopped, runWithGenerationExecution, type GenerationExecutionContext } from "../../shared/generation-execution.js";
 import { callChatProvider } from "./provider-transport.js";
 import { generateEmbedding } from "./embedding.js";
@@ -32,6 +33,8 @@ const testState = vi.hoisted(() => {
   const rows: ProviderConfigTestRow[] = [];
   let insertedValues: Record<string, unknown> | undefined;
   const defaultEnv = {
+    abusePolicy: { enabled: false, configured: true },
+    abuseHmacSecret: "provider-config-synthetic-abuse-secret",
     aiApiKey: "",
     aiBaseUrl: "",
     aiFastApiKey: "",
@@ -144,6 +147,7 @@ beforeEach(() => {
   testState.rows.length = 0;
   testState.resetInsertedValues();
   testState.resetEnv();
+  testState.env.abusePolicy = parseAbusePolicy({ mode: "test" });
   vi.clearAllMocks();
   testState.limitMock.mockImplementation(() => Promise.resolve(testState.rows));
   testState.orderByMock.mockImplementation(() => Promise.resolve(testState.rows));

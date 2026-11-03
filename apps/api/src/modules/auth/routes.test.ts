@@ -3,6 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../app.js";
 import type { AuthUserRecord } from "./types.js";
+import { AppError } from "../../shared/errors.js";
+
+const abuseMock = vi.hoisted(() => ({
+  consume: vi.fn(), reserve: vi.fn(),
+  tokens: [] as Array<{ commit: ReturnType<typeof vi.fn>; refund: ReturnType<typeof vi.fn> }>,
+}));
+vi.mock("../../shared/abuse-control.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../shared/abuse-control.js")>(), getAbuseGuard: () => abuseMock,
+}));
 
 const authStores = vi.hoisted(() => {
   return {
@@ -49,6 +58,40 @@ const redisMock = vi.hoisted(() => {
     get(key: string): Promise<string | null> {
       deleteExpired(key);
       return Promise.resolve(store.get(key)?.value ?? null);
+    }
+
+    // Storage-contract double, not a Lua interpreter or proof of Redis
+    // serialization. Real concurrent EVAL/PTTL acceptance is integration-owned.
+    eval(_script: string, keyCount: number, ...args: Array<string | number>): Promise<number[]> {
+      if (keyCount !== 2) throw new Error("Unexpected auth storage contract.");
+      const [key, cooldown, email, codeHash, maximumValue] = args;
+      const challengeKey = String(key);
+      deleteExpired(challengeKey);
+      const existing = store.get(challengeKey);
+      if (!existing || existing.expiresAtMs === undefined || existing.expiresAtMs <= Date.now()) {
+        store.delete(challengeKey);
+        return Promise.resolve([-1, 0, 0]);
+      }
+      let record: { email: string; codeHash: string; attemptCount: number };
+      try { record = JSON.parse(existing.value) as typeof record; }
+      catch { store.delete(challengeKey); return Promise.resolve([-2, 0, 0]); }
+      if (record.email !== email || typeof record.codeHash !== "string" || !Number.isSafeInteger(record.attemptCount) || record.attemptCount < 0) {
+        store.delete(challengeKey); return Promise.resolve([-2, 0, 0]);
+      }
+      const maximum = Number(maximumValue);
+      const exhausted = () => {
+        store.delete(challengeKey);
+        return [-3, 0, Math.max(1, Math.ceil(((store.get(String(cooldown))?.expiresAtMs ?? Date.now()) - Date.now()) / 1000))];
+      };
+      if (record.attemptCount >= maximum) return Promise.resolve(exhausted());
+      if (record.codeHash !== codeHash) {
+        record.attemptCount += 1;
+        if (record.attemptCount >= maximum) return Promise.resolve(exhausted());
+        store.set(challengeKey, { ...existing, value: JSON.stringify(record) });
+        return Promise.resolve([0, maximum - record.attemptCount, 0]);
+      }
+      store.delete(challengeKey);
+      return Promise.resolve([1, 0, 0]);
     }
 
     on(_event: string, _listener: (error: Error) => void): this {
@@ -289,6 +332,13 @@ async function loginWithVerification(testApp: FastifyInstance, email: string) {
 }
 
 beforeEach(() => {
+  abuseMock.consume.mockReset().mockResolvedValue(undefined);
+  abuseMock.tokens.length = 0;
+  abuseMock.reserve.mockReset().mockImplementation(async () => {
+    const token = { commit: vi.fn().mockResolvedValue(undefined), refund: vi.fn().mockResolvedValue(undefined) };
+    abuseMock.tokens.push(token);
+    return token;
+  });
   authStores.usersByEmail.clear();
   authStores.usersByFrequencyName.clear();
   authStores.usersById.clear();
@@ -752,13 +802,9 @@ describe("auth routes", () => {
 
     for (const [key, storedValue] of redisMock.store.entries()) {
       if (key.startsWith("auth:login:challenge:")) {
-        const record = JSON.parse(storedValue.value) as Record<string, unknown>;
         redisMock.store.set(key, {
           ...storedValue,
-          value: JSON.stringify({
-            ...record,
-            expiresAt: "2026-05-10T00:00:00.000Z",
-          }),
+          expiresAtMs: Date.now() - 1,
         });
       }
     }
@@ -777,7 +823,7 @@ describe("auth routes", () => {
       error: {
         code: "UNAUTHORIZED",
         details: {
-          reason: "EXPIRED",
+          reason: "MISSING",
         },
       },
       meta: {
@@ -814,5 +860,67 @@ describe("auth routes", () => {
         requestId: expect.any(String),
       },
     });
+  });
+
+  it("charges malformed authentication requests before parsing without reserving a password failure", async () => {
+    app = await buildApp();
+    const response = await app.inject({ method: "POST", url: "/api/auth/frequency/login", payload: { password: "short" } });
+    expect(response.statusCode).toBe(400);
+    expect(abuseMock.consume).toHaveBeenCalledWith([
+      { rule: "passwordRequestIp", identity: "127.0.0.1" }, { rule: "passwordRequestSite", identity: "site" },
+    ]);
+    expect(abuseMock.reserve).not.toHaveBeenCalled();
+  });
+
+  it("rejects a shared registration budget before creating a user", async () => {
+    app = await buildApp();
+    abuseMock.consume.mockRejectedValueOnce(new AppError("RATE_LIMITED", "Request limit reached.", { retryAfterSeconds: 7 }));
+    const response = await app.inject({ method: "POST", url: "/api/auth/register", payload: { password: "synthetic-password" } });
+    expect(response.statusCode).toBe(429);
+    expect(authStores.usersById.size).toBe(0);
+    expect(abuseMock.consume).toHaveBeenCalledWith([
+      { rule: "registerIp", identity: "127.0.0.1" }, { rule: "registerSite", identity: "site" },
+    ]);
+  });
+
+  it("normalizes FM aliases for shared reservations and refunds only the successful token", async () => {
+    app = await buildApp();
+    const password = "synthetic-password";
+    const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { password } });
+    const code: string = registration.json().data.frequency.freqCode;
+    const responses = await Promise.all([password, "wrong-password"].map((value) => app!.inject({ method: "POST",
+      url: "/api/auth/frequency/login", payload: { frequencyCode: ` fm--${code.slice(3)} `, password: value } })));
+    expect(responses.map((value) => value.statusCode)).toEqual([200, 401]);
+    expect(abuseMock.reserve).toHaveBeenCalledTimes(2);
+    for (const call of abuseMock.reserve.mock.calls) expect(call[0]).toEqual([
+      { rule: "passwordFailureIp", identity: "127.0.0.1" },
+      { rule: "passwordFailureIdentityIp", identity: JSON.stringify([code, "127.0.0.1"]) },
+    ]);
+    expect(abuseMock.tokens.map((token) => token.refund.mock.calls.length).sort()).toEqual([0, 1]);
+    expect(abuseMock.tokens.map((token) => token.commit.mock.calls.length).sort()).toEqual([0, 1]);
+    for (const token of abuseMock.tokens) expect(token.refund.mock.calls.length + token.commit.mock.calls.length).toBe(1);
+  });
+
+  it("refunds the correct banned password while preserving its original 403", async () => {
+    app = await buildApp();
+    const password = "synthetic-password";
+    const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { password } });
+    const code: string = registration.json().data.frequency.freqCode;
+    const user = authStores.usersByFreqCode.get(code)!;
+    user.status = "BANNED";
+    const response = await app.inject({ method: "POST", url: "/api/auth/frequency/login", payload: { frequencyCode: code, password } });
+    expect(response.statusCode).toBe(403);
+    expect(abuseMock.tokens[0].refund).toHaveBeenCalledTimes(1);
+    expect(abuseMock.tokens[0].commit).not.toHaveBeenCalled();
+  });
+
+  it("preserves legal 128-character Unicode passwords under the byte body limit", async () => {
+    app = await buildApp();
+    const password = "测试".repeat(64);
+    const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { password } });
+    expect(registration.statusCode).toBe(201);
+    const response = await app.inject({ method: "POST", url: "/api/auth/frequency/login",
+      payload: { frequencyCode: registration.json().data.frequency.freqCode, password } });
+    expect(response.statusCode).toBe(200);
   });
 });

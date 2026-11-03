@@ -402,6 +402,7 @@ export const signals = pgTable(
   "signals",
   {
     authorId: uuid("author_id").references(() => users.id),
+    audioAttemptId: uuid("audio_attempt_id"),
     audioError: text("audio_error"),
     audioStatus: signalAudioStatusEnum("audio_status").default("NOT_REQUESTED").notNull(),
     audioStorageKey: text("audio_storage_key"),

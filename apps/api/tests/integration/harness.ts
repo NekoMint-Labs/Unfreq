@@ -2,15 +2,27 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { createProviderStub, type IntegrationProvider } from "./provider-stub.js";
+import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 
 type ManagedEnvironment = { databaseUrl: string; redisUrl: string; runId: string };
 type IntegrationSql = ReturnType<typeof postgres>;
+type CoreModules = {
+  app: typeof import("../../src/app.js");
+  env: typeof import("../../src/config/env.js");
+  repository: typeof import("../../src/modules/signals/repository.js");
+  mappers: typeof import("../../src/modules/signals/service-mappers.js");
+  audioStorage: typeof import("../../src/modules/signals/audio-storage.js");
+};
+const coreModulePaths: Record<keyof CoreModules, string> = {
+  app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
+  mappers: "modules/signals/service-mappers.js", audioStorage: "modules/signals/audio-storage.js",
+};
 
 type CoreSetupPhase =
   | "harness-start" | "db-identity" | "migrate-start" | "migrate-complete"
@@ -131,6 +143,8 @@ export type IntegrationHarness = {
   app: FastifyInstance;
   sql: IntegrationSql;
   provider: IntegrationProvider;
+  loadModule: <K extends keyof CoreModules>(name: K) => Promise<CoreModules[K]>;
+  takeLocalLoginCode: () => string | undefined;
   close: () => Promise<void>;
 };
 
@@ -147,6 +161,19 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     connection: { application_name: `unfreq-integration-harness-${managed.runId}` },
   });
   let app: FastifyInstance | undefined;
+  let lastLocalLoginCode: string | undefined;
+  async function loadModule<K extends keyof CoreModules>(name: K): Promise<CoreModules[K]> {
+    if (!Object.hasOwn(coreModulePaths, name)) throw new Error("Unrecognized core integration module.");
+    const runtime = await verifyIntegrationRuntime({
+      repositoryRoot: fileURLToPath(new URL("../../../../", import.meta.url)), runId: managed.runId,
+      runtimeDirectory: process.env.UNFREQ_INTEGRATION_RUNTIME_DIR ?? "",
+      ownershipToken: process.env.UNFREQ_INTEGRATION_RUNTIME_TOKEN ?? "",
+    });
+    const namespace: unknown = await import(/* @vite-ignore */
+      pathToFileURL(join(runtime.runtimeDirectory, "apps/api/src", coreModulePaths[name])).href);
+    if (typeof namespace !== "object" || namespace === null) throw new Error("Owned core integration module is unavailable.");
+    return namespace as CoreModules[K];
+  }
   const generationIds = new Set<string>();
   try {
     const identity = await sql<{ database: string; username: string }[]>`select current_database() as database, current_user as username`;
@@ -162,10 +189,25 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     const configs = await sql`select id from provider_configs`;
     if (configs.length !== 0) throw new Error("Integration provider configuration must begin empty.");
     await recordCoreSetupPhase("app-import-start");
-    const { buildApp } = await import("../../src/app.js");
+    // Reuse this run's fresh, hashed compilation. Core flow still exercises
+    // real Fastify/SQL/Redis; cold TypeScript loader work is fixture overhead.
+    const appModule = await loadModule("app");
+    if (typeof appModule.buildApp !== "function") {
+      throw new Error("Owned integration app export is unavailable.");
+    }
+    const { buildApp } = appModule;
     await recordCoreSetupPhase("app-import-complete");
     await recordCoreSetupPhase("app-build-start");
-    app = await buildApp({ logger: false });
+    app = await buildApp({ logger: { level: "info", stream: { write(line: string) {
+      // Observe only this synthetic local delivery channel in bounded memory.
+      // Do not replace randomness/services or emit codes to stdout/files/HTTP.
+      try {
+        const entry = JSON.parse(line) as { action?: unknown; loginChallengeCode?: unknown };
+        if (entry.action === "auth.login.challenge.request" && typeof entry.loginChallengeCode === "string" && /^\d{6}$/u.test(entry.loginChallengeCode)) {
+          lastLocalLoginCode = entry.loginChallengeCode;
+        }
+      } catch { /* Non-delivery log lines are deliberately discarded. */ }
+    } } } });
     await recordCoreSetupPhase("app-build-complete");
     app.addHook("onSend", async (request, reply, payload) => {
       if (request.method === "POST" && /^\/api\/signals\/?$/u.test(request.url) && reply.statusCode >= 200 && reply.statusCode < 300 && typeof payload === "string") {
@@ -192,9 +234,12 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     app: readyApp,
     sql,
     provider,
+    loadModule,
+    takeLocalLoginCode() { const code = lastLocalLoginCode; lastLocalLoginCode = undefined; return code; },
     async close() {
       if (closed) return;
       closed = true;
+      lastLocalLoginCode = undefined;
       provider.releaseAll();
       let drainError: Error | undefined;
       try {

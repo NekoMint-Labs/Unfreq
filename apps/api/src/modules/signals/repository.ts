@@ -1,5 +1,7 @@
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
+import { env } from "../../config/env.js";
+import { GenerationAdmissionDenied } from "./admission-errors.js";
 import {
   frequencies,
   signalEchoes,
@@ -175,7 +177,7 @@ export async function createSignalDraft(input: CreateSignalInput): Promise<Signa
   if (input.managedGeneration && (input.generationStatus !== "RECEIVED" || (input.status ?? "DRAFT") !== "DRAFT")) {
     throw new Error("Managed generation must start as a private received signal.");
   }
-  const [signal] = await db
+  const insertDraft = async (target: Pick<typeof db, "insert">) => target
     .insert(signals)
     .values({
       authorId: input.authorId,
@@ -209,6 +211,24 @@ export async function createSignalDraft(input: CreateSignalInput): Promise<Signa
       ...signalSelection,
       authorFreqCode: sql<string | null>`(select ${users.freqCode} from ${users} where ${users.id} = ${signals.authorId})`,
     });
+
+  const rows = input.managedGeneration && env.abusePolicy.enabled
+    ? await db.transaction(async (tx) => {
+      if (!input.authorId) throw new GenerationAdmissionDenied();
+      // All admissions for the same author serialize across API processes. A
+      // hash collision only serializes unrelated authors; it cannot merge counts.
+      await tx.execute(sql`select pg_advisory_xact_lock(1431193170, hashtext(${input.authorId}))`);
+      const [pending] = await tx.select({ total: count() }).from(signals).where(and(
+        eq(signals.authorId, input.authorId),
+        isNotNull(signals.generationAttemptCount),
+        eq(signals.status, "DRAFT"),
+        inArray(signals.generationStatus, ["RECEIVED", "EXPANDING", "MATCHING", "WRITING"]),
+      ));
+      if ((pending?.total ?? 0) >= env.abusePolicy.pendingPerUser) throw new GenerationAdmissionDenied();
+      return insertDraft(tx);
+    }, { isolationLevel: "read committed" })
+    : await insertDraft(db);
+  const [signal] = rows;
 
   if (signal === undefined) {
     throw new Error("Signal insert returned no row.");
@@ -533,7 +553,7 @@ export async function markSignalAudioPending(id: string): Promise<SignalRecord |
       audioStatus: "PENDING",
       updatedAt: new Date(),
     })
-    .where(eq(signals.id, id))
+    .where(and(eq(signals.id, id), isNull(signals.audioAttemptId)))
     .returning({
       id: signals.id,
     });
@@ -563,7 +583,7 @@ export async function markSignalAudioReady(params: {
       audioUrlRight: params.urlRight,
       updatedAt: new Date(),
     })
-    .where(eq(signals.id, params.id))
+    .where(and(eq(signals.id, params.id), isNull(signals.audioAttemptId)))
     .returning({
       id: signals.id,
     });
@@ -582,7 +602,7 @@ export async function markSignalAudioFailed(params: {
       audioStatus: "FAILED",
       updatedAt: new Date(),
     })
-    .where(eq(signals.id, params.id))
+    .where(and(eq(signals.id, params.id), isNull(signals.audioAttemptId)))
     .returning({
       id: signals.id,
     });
@@ -759,6 +779,9 @@ export async function createSignalResonanceForPersona(params: {
 }
 
 function invalidateManagedGenerationForAdmin(status: SignalStatus) {
+  const stopAudio = and(
+    isNotNull(signals.audioAttemptId), eq(signals.audioStatus, "PENDING"), ne(signals.status, status),
+  );
   const stop = and(
     isNotNull(signals.generationAttemptCount),
     inArray(signals.generationStatus, ["RECEIVED", "EXPANDING", "MATCHING", "WRITING"]),
@@ -768,6 +791,9 @@ function invalidateManagedGenerationForAdmin(status: SignalStatus) {
   // Same-row invalidation prevents HIDDEN -> DRAFT from reviving an old token.
   // Queued retries may have count > 0 and an intentionally empty attempt tuple.
   return {
+    audioStatus: sql`case when ${stopAudio} then 'FAILED'::signal_audio_status else ${signals.audioStatus} end`,
+    audioError: sql`case when ${stopAudio} then 'AUDIO_SUPERSEDED' else ${signals.audioError} end`,
+    audioAttemptId: sql`case when ${stopAudio} then null else ${signals.audioAttemptId} end`,
     generationStatus: sql`case when ${stop} then 'FAILED'::signal_generation_status else ${signals.generationStatus} end`,
     generationError: sql`case when ${stop} then 'GENERATION_SUPERSEDED' else ${signals.generationError} end`,
     generationLeaseOwner: sql`case when ${stop} then null else ${signals.generationLeaseOwner} end`,

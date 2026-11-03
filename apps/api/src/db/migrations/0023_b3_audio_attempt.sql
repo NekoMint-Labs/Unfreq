@@ -1,0 +1,1 @@
+ALTER TABLE "signals" ADD COLUMN "audio_attempt_id" uuid;
