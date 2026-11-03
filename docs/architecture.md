@@ -134,7 +134,7 @@ npm run contracts:build
 
 ## AI 编排
 
-AI 层在 `apps/api/src/modules/ai`，信号生成链路主要在 `apps/api/src/modules/signals/service-creation.ts`。
+AI 层在 `apps/api/src/modules/ai`，生成内容主要在 `apps/api/src/modules/signals/service-creation.ts` 编排；`generation-worker.ts` 领取 PostgreSQL 中的持久任务，`generation-repository.ts` 管理租约、执行标识和条件提交。API 接收时返回稳定信号 id，不等待正文生成完成。
 
 后端不会让浏览器直接调用 provider。它会把用户 seed 转成几个受控任务：
 
@@ -151,7 +151,8 @@ matching        查找 same-frequency signals
 - provider key 必须留在服务端。
 - 提示词、schema、fallback 和审核策略需要集中控制。
 - AI 输出不能直接发布，必须先经过结构化解析和质量检查。
-- AI/embedding 不可用时，后端可以回到本地 fallback 或规则匹配。
+- 主素材和正文扩写必须有可用聊天 Provider，失败会按任务规则重试或终止；不存在无配置的完整本地正文兜底。
+- 分类、指纹和审核等辅助阶段有各自的规则降级；embedding 不可用时，匹配可使用规则或返回空结果。这些降级不能绕过保护拒绝。
 
 这层把 AI 限定为“表达整理和语义提取工具”，不是自由聊天机器人，也不是心理诊断系统。
 

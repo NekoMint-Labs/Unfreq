@@ -17,6 +17,8 @@ npm run deploy:test
 
 本地 npm 开发需要自行准备 `apps/api/.env`、`apps/web/.env`、PostgreSQL 和 Redis。项目部署不再以本地 npm 启动为主路径。
 
+通过实际API生成正文需要可用的聊天Provider。模板中的 `AI_MODEL=local-fallback` 是默认配置值，不会启用本地正文生成器；空Provider配置可能先接收任务、随后生成失败。下述单测与合成集成检查不需要真实AI密钥，它们的固定响应不能作为真实模型效果证据。
+
 迁移命令运行编译后的官方 ORM 迁移器。本地首次安装或更新迁移脚本后，先构建再应用SQL：
 
 ```bash

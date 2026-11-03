@@ -42,7 +42,7 @@ apps/web            Next.js App Router 前端
 apps/api            Fastify JSON API 后端
 packages/contracts  前后端共享 TypeScript DTO
 PostgreSQL          主数据和向量字段
-Redis               会话、缓存和队列状态
+Redis               登录挑战、共享限额和短期状态
 Docker Compose      默认服务器部署
 ```
 

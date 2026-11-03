@@ -14,9 +14,11 @@ The SQL uses fixed rows and conflict updates, but it does not record author conf
 
 ## AI Modes
 
-Local demo works without external AI credentials. Keep `AI_BASE_URL=` and `AI_MODEL=local-fallback`; the API produces deterministic rule fallbacks. Identify these as fallback results; they do not demonstrate model quality, psychological assessment, or a two-voice radio program.
+The main generation flow needs an available chat Provider. Empty Provider configuration does not produce a complete local result, and setting `AI_MODEL=local-fallback` does not enable a template generator. The API can accept a task before its worker encounters the missing configuration; the task can then finish as `FAILED/GENERATION_RETRY_EXHAUSTED`.
 
-A provider demo needs separately authorized credentials, usage limits, and validation. Configure `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` in `.env` and follow the deployment procedure for the API container. Local fallback or synthetic browser tests do not verify provider quality.
+A real Provider demo needs the configured service, credentials, usage limits, and the approved request/fee scope. Follow the [deployment guide](../docs/deployment.md). Auxiliary classification, fingerprint, review, and matching fallbacks do not replace the main generated body or bypass budget protection.
+
+Development checks can run without a real AI service: `npm run api:integration` supplies an owned HTTP fixture, while the production Web browser suite uses a synthetic API. The [local whole-stack acceptance](../docs/implementation/local-stack-20261103.md) used a separate internal HTTP Provider with fixed synthetic responses. Those results verify the tested orchestration and permission contracts, not model quality. Do not present them as an unconfigured app generating original content.
 
 ## Demo Inputs
 
@@ -29,6 +31,8 @@ Use one of these on the homepage signal composer:
 - `跑完步以后焦虑还在，但它终于没有占满整个身体。`
 
 ## 8-Minute Path
+
+Before starting, verify that the selected chat Provider can complete a synthetic task within the configured protection policy. Without that setup, demonstrate the explicit failure state and stop before the generated-preview steps below.
 
 1. Open `/login` on the configured public domain.
 2. Set a password and record the assigned `FM XX.XX`; FM and password are the only login credentials.

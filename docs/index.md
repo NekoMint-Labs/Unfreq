@@ -48,6 +48,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 - [生产迁移器与开发工具依赖边界](./implementation/runtime-migrations-20261102.md)
 - [Web 宿主等待修复与同成品续验](./implementation/web-runtime-readiness-20261102.md)
 - [本机隔离全栈验收与首屏、HTTPS修复](./implementation/local-stack-20261103.md)
+- [播放、部署配置与剩余本地验收](./implementation/remaining-local-20261103.md)
 - [B3 pilot 预算提案与真实代理链验收](./implementation/b3-pilot-boundaries-20261101.md)
 - [参赛事实与证据待办](./competition-evidence.md)
 - [数据公开与生命周期设计（C1 本地实现已验收）](./data-lifecycle.md)
