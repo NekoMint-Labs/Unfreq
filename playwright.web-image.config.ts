@@ -5,7 +5,8 @@ if (!Array.isArray(runtime.webServer) || runtime.webServer.length !== 2) {
   throw new Error("The image regression requires the existing owned mock and Web servers.");
 }
 
-export default defineConfig(runtime, {
+export default defineConfig({
+  ...runtime,
   webServer: [
     runtime.webServer[0],
     {
