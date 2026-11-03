@@ -220,14 +220,16 @@ async function moderate(id: string, status: ModerationStatus) {
   expect(response.json()).toMatchObject({ data: { signal: { id, status } } });
 }
 
-async function expectNotPublic(id: string, reviewing = false) {
+async function expectNotPublic(id: string) {
   for (const cookie of [undefined, reader.cookie]) {
     const detail = await request("GET", `/api/signals/${id}`, cookie);
-    if (reviewing) {
-      expect(detail.statusCode).toBe(200);
-      expect(Object.keys(detail.json().data.signal).sort()).toEqual(["createdAt", "id", "status", "updatedAt", "visibility"]);
-      expect(detail.json().data.signal.visibility).toBe("REVIEW_RESTRICTED");
-    } else expectError(detail, 404, "NOT_FOUND");
+    const missing = await request("GET", "/api/signals/00000000-0000-4000-8000-000000000999", cookie);
+    expectError(detail, 404, "NOT_FOUND");
+    expectError(missing, 404, "NOT_FOUND");
+    expect(detail.json()).toEqual({
+      error: missing.json().error,
+      meta: { requestId: expect.any(String) },
+    });
   }
 
   for (const suffix of ["matches", "echoes", "audio", "audio/main", "audio/left", "audio/right"]) {
@@ -489,7 +491,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     async (status) => {
       const id = await createDraft();
       if (status !== "DRAFT") await moderate(id, status);
-      await expectNotPublic(id, status === "REVIEWING");
+      await expectNotPublic(id);
       if (status === "DRAFT" || status === "REVIEWING") {
         const own = await request("GET", `/api/signals/${id}`, author.cookie);
         expect(own.statusCode).toBe(200);
@@ -1064,7 +1066,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       expect((await request("GET", `/api/signals/${id}/echoes`)).json().data.echoes).toHaveLength(1);
       await moderate(id, "REVIEWING");
       expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
-      await expectNotPublic(id, true);
+      await expectNotPublic(id);
     });
   });
 

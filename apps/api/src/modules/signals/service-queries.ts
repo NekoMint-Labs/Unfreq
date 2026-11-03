@@ -189,10 +189,6 @@ export async function getSignalDetailForFrequency(id: string, frequency: Authent
     const detail: OwnerSignalDetail = { ...toSignalDetail(signal), visibility: "PRIVATE_OWNER", matches, publication };
     return detail;
   }
-  if (signal.status === "REVIEWING" && signal.withdrawnAt === null) return {
-    id: signal.id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED",
-    createdAt: signal.createdAt.toISOString(), updatedAt: signal.updatedAt.toISOString(),
-  };
   if (!isPublicSignal(signal)) throw notFound();
   return toPublishedSignalDetail(signal, frequency);
 }

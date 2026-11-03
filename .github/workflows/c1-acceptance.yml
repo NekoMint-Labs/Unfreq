@@ -1,0 +1,49 @@
+name: C1 acceptance
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c1-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-browser:
+    name: C1 production browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      API_INTERNAL_BASE_URL: "http://127.0.0.1:4200"
+      NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:4200"
+      PLAYWRIGHT_JSON_OUTPUT_FILE: "test-results/c1-browser.json"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build the production Web application
+        run: npm run web:build
+      - name: Verify publication and privacy in the production browser
+        run: npx --no-install playwright test --config playwright.runtime.config.ts --reporter=github,json
+      - name: Preserve browser reports and failure evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: c1-production-browser
+          if-no-files-found: warn
+          path: |
+            test-results/c1-browser.json
+            test-results/runtime/**

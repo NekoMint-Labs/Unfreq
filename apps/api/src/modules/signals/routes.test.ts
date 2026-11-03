@@ -1565,61 +1565,42 @@ describe("signal routes", () => {
           id: signal.id,
           seedText: "今晚想把这段匿名信号留在这里，等一个同频的人。",
           status: "REVIEWING",
+          visibility: "PRIVATE_OWNER",
+          publication: { state: "REVIEWING", canPublish: false },
         },
       },
     });
   });
 
-  it("returns a restricted reviewing signal result to non-authors", async () => {
+  it.each([
+    ["another user", "other-token"],
+    ["an administrator on the public route", "admin-token"],
+    ["an anonymous visitor", undefined],
+  ])("hides a reviewing signal's existence from %s", async (_viewer, token) => {
     const testApp = await buildApp();
     app = testApp;
 
     const signal = await createSignal(testApp, "REVIEWING");
-
+    const headers = token === undefined ? {} : { authorization: `Bearer ${token}` };
     const response = await testApp.inject({
-      headers: {
-        authorization: "Bearer other-token",
-      },
+      headers,
       method: "GET",
       url: `/api/signals/${signal.id}`,
     });
-    const responseBody = response.json();
-
-    expect(response.statusCode).toBe(200);
-    expect(responseBody).toMatchObject({
-      data: {
-        signal: {
-          id: signal.id,
-          status: "REVIEWING",
-          visibility: "REVIEW_RESTRICTED",
-        },
-      },
-    });
-    expect(responseBody.data.signal).not.toHaveProperty("seedText");
-    expect(responseBody.data.signal).not.toHaveProperty("expandedText");
-  });
-
-  it("returns a restricted reviewing signal result without a session", async () => {
-    const testApp = await buildApp();
-    app = testApp;
-
-    const signal = await createSignal(testApp, "REVIEWING");
-
-    const response = await testApp.inject({
+    const missingResponse = await testApp.inject({
+      headers,
       method: "GET",
-      url: `/api/signals/${signal.id}`,
+      url: "/api/signals/00000000-0000-4000-8000-000000000999",
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      data: {
-        signal: {
-          id: signal.id,
-          status: "REVIEWING",
-          visibility: "REVIEW_RESTRICTED",
-        },
-      },
+    expect(response.statusCode).toBe(404);
+    expect(missingResponse.statusCode).toBe(404);
+    expect(response.headers["cache-control"]).toBe("private, no-store, max-age=0");
+    expect(response.json()).toEqual({
+      error: missingResponse.json().error,
+      meta: { requestId: expect.any(String) },
     });
+    expect(response.json().error).toEqual({ code: "NOT_FOUND", message: "Signal not found." });
   });
 
   it("filters galaxy points by fixed band query", async () => {
