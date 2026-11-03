@@ -392,6 +392,207 @@ test_backup_target_identifiers_are_validated() {
   done
 }
 
+prod_env_setup() {
+  PROD_ROOT="$TMP_DIR/prod-$1"
+  PROD_BIN="$PROD_ROOT/bin"
+  PROD_CALLS="$PROD_ROOT/calls.log"
+  PROD_SECRET="synthetic-prod-env-secret-not-a-real-credential-$$"
+  PROD_REAL_MV="$(command -v mv)"
+  PROD_REAL_LN="$(command -v ln)"
+  mkdir -p "$PROD_ROOT/scripts" "$PROD_BIN"
+  cp "$ROOT_DIR/scripts/prod-deploy.sh" "$PROD_ROOT/scripts/prod-deploy.sh"
+  cp "$ROOT_DIR/.env.example" "$PROD_ROOT/.env.example"
+  chmod 644 "$PROD_ROOT/.env.example"
+  : > "$PROD_CALLS"
+  cat > "$PROD_BIN/docker" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -eq 3 ] && [ "$1" = network ] && [ "$2" = inspect ] || exit 71
+printf 'network inspect\n' >> "$UNFREQ_PROD_TEST_CALLS"
+EOF
+  cat > "$PROD_BIN/openssl" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -eq 3 ] && [ "$1" = rand ] && [ "$2" = -base64 ] && [ "$3" = 48 ] || exit 72
+printf '%s\n' "$UNFREQ_PROD_TEST_SECRET"
+EOF
+  cat > "$PROD_BIN/mv" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${UNFREQ_PROD_TEST_FAIL_MV:-false}" != true ] || exit 73
+exec "$UNFREQ_PROD_TEST_REAL_MV" "$@"
+EOF
+  cat > "$PROD_BIN/ln" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${UNFREQ_PROD_TEST_PUBLISH_RACE:-false}" = true ]; then
+  for destination do :; done
+  printf 'OWNED_PUBLISH_RACE_SENTINEL\n' > "$destination"
+fi
+exec "$UNFREQ_PROD_TEST_REAL_LN" "$@"
+EOF
+  cat > "$PROD_ROOT/scripts/deployment-stack.sh" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ "$1" = server ] || exit 74
+case "$2" in preflight|release) ;; *) exit 75;; esac
+printf 'stack %s\n' "$2" >> "$UNFREQ_PROD_TEST_CALLS"
+EOF
+  chmod +x "$PROD_BIN/docker" "$PROD_BIN/openssl" "$PROD_BIN/mv" "$PROD_BIN/ln" "$PROD_ROOT/scripts/deployment-stack.sh"
+}
+
+run_prod_env() {
+  (
+    cd "$PROD_ROOT"
+    umask 022
+    PATH="$PROD_BIN:$PATH" \
+      UNFREQ_API_ENV_FILE=.env \
+      UNFREQ_PROD_TEST_CALLS="$PROD_CALLS" \
+      UNFREQ_PROD_TEST_SECRET="$PROD_SECRET" \
+      UNFREQ_PROD_TEST_REAL_MV="$PROD_REAL_MV" \
+      UNFREQ_PROD_TEST_REAL_LN="$PROD_REAL_LN" \
+      sh ./scripts/prod-deploy.sh --skip-backup "$@" > prod.out 2> prod.err
+  )
+}
+
+assert_prod_private() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      printf 'Windows filesystem modes are not POSIX proof; skipping only the .env mode assertion. Linux validation is required.\n'
+      ;;
+    *)
+      if [ "$(stat -c '%a' "$PROD_ROOT/.env")" != 600 ]; then
+        printf 'Expected the production environment file to have mode 600.\n' >&2
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+assert_prod_no_secret_or_temps() {
+  if grep -F "$PROD_SECRET" "$PROD_ROOT/prod.out" "$PROD_ROOT/prod.err" >/dev/null 2>&1; then
+    printf 'A synthetic environment secret appeared in public command output.\n' >&2
+    exit 1
+  fi
+  if find "$PROD_ROOT" -maxdepth 1 -name '.env.tmp.*' -print | grep . >/dev/null 2>&1; then
+    printf 'Production environment temporary files were not cleaned.\n' >&2
+    exit 1
+  fi
+}
+
+assert_prod_key() {
+  if ! grep -Fx "$1=$2" "$PROD_ROOT/.env" >/dev/null 2>&1; then
+    printf 'Expected production environment key %s to retain its exact synthetic value.\n' "$1" >&2
+    exit 1
+  fi
+}
+
+prod_make_symlink() {
+  if ln -s "$1" "$2" 2>/dev/null && [ -L "$2" ]; then return 0; fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      printf 'Windows symbolic links are unavailable; this link case requires independent Linux validation.\n'
+      return 1
+      ;;
+    *) printf 'A Linux symbolic-link fixture could not be created.\n' >&2; exit 1 ;;
+  esac
+}
+
+test_prod_env_new_and_rewrite_are_private() {
+  prod_env_setup private
+  run_prod_env https://ops-probe.invalid
+  assert_prod_private
+  assert_prod_key SESSION_SECRET "$PROD_SECRET"
+  assert_prod_key PROVIDER_CONFIG_SECRET "$PROD_SECRET"
+  assert_contains "$PROD_CALLS" 'stack preflight'
+  assert_contains "$PROD_CALLS" 'stack release'
+  assert_prod_no_secret_or_temps
+  chmod 600 "$PROD_ROOT/.env"
+  # Also cover sed replacement metacharacters without printing the env values.
+  PROD_ORIGIN='https://ops-probe.invalid/a|b&c\d'
+  run_prod_env "$PROD_ORIGIN"
+  assert_prod_private
+  assert_prod_key WEB_ORIGIN "$PROD_ORIGIN"
+  assert_prod_key SESSION_SECRET "$PROD_SECRET"
+  assert_prod_no_secret_or_temps
+}
+
+test_prod_env_fixed_temp_collisions_are_untouched() {
+  for prod_kind in regular symlink; do
+    prod_env_setup "collision-$prod_kind"
+    cp "$PROD_ROOT/.env.example" "$PROD_ROOT/.env"
+    chmod 600 "$PROD_ROOT/.env"
+    printf 'OWNED_COLLISION_SENTINEL\n' > "$PROD_ROOT/sentinel"
+    prod_before="$(cksum "$PROD_ROOT/sentinel")"
+    if [ "$prod_kind" = regular ]; then
+      cp "$PROD_ROOT/sentinel" "$PROD_ROOT/.env.tmp"
+      prod_tmp_before="$(cksum "$PROD_ROOT/.env.tmp")"
+    elif ! prod_make_symlink "$PROD_ROOT/sentinel" "$PROD_ROOT/.env.tmp"; then
+      continue
+    fi
+    run_prod_env https://ops-probe.invalid
+    assert_prod_private
+    if [ "$(cksum "$PROD_ROOT/sentinel")" != "$prod_before" ]; then
+      printf 'A production env temporary symlink corrupted the owned sentinel.\n' >&2; exit 1
+    fi
+    if [ "$prod_kind" = regular ]; then
+      if [ ! -f "$PROD_ROOT/.env.tmp" ] || [ "$(cksum "$PROD_ROOT/.env.tmp")" != "$prod_tmp_before" ]; then
+        printf 'An existing fixed temporary file was replaced.\n' >&2; exit 1
+      fi
+    elif [ ! -L "$PROD_ROOT/.env.tmp" ]; then
+      printf 'An existing temporary symlink was replaced.\n' >&2; exit 1
+    fi
+    assert_prod_no_secret_or_temps
+  done
+}
+
+test_prod_env_rejects_links_and_nonregular_paths() {
+  prod_env_setup main-link
+  cp "$PROD_ROOT/.env.example" "$PROD_ROOT/sentinel"
+  prod_before="$(cksum "$PROD_ROOT/sentinel")"
+  if prod_make_symlink "$PROD_ROOT/sentinel" "$PROD_ROOT/.env"; then
+    if run_prod_env https://ops-probe.invalid; then printf 'Expected a main env symlink to be refused.\n' >&2; exit 1; fi
+    assert_contains "$PROD_ROOT/prod.err" 'must not be a symbolic link'
+    [ "$(cksum "$PROD_ROOT/sentinel")" = "$prod_before" ] || exit 1
+    assert_not_contains "$PROD_CALLS" 'stack release'
+    assert_prod_no_secret_or_temps
+  fi
+  prod_env_setup main-directory
+  mkdir "$PROD_ROOT/.env"
+  if run_prod_env https://ops-probe.invalid; then printf 'Expected a nonregular env path to be refused.\n' >&2; exit 1; fi
+  assert_contains "$PROD_ROOT/prod.err" 'must be a regular file'
+  assert_not_contains "$PROD_CALLS" 'stack release'
+  assert_prod_no_secret_or_temps
+}
+
+test_prod_env_failed_update_preserves_original() {
+  prod_env_setup failed-update
+  cp "$PROD_ROOT/.env.example" "$PROD_ROOT/.env"
+  chmod 600 "$PROD_ROOT/.env"
+  prod_before="$(cksum "$PROD_ROOT/.env")"
+  if (UNFREQ_PROD_TEST_FAIL_MV=true; export UNFREQ_PROD_TEST_FAIL_MV; run_prod_env https://ops-probe.invalid); then
+    printf 'Expected the mocked atomic update failure to propagate.\n' >&2; exit 1
+  fi
+  if [ "$(cksum "$PROD_ROOT/.env")" != "$prod_before" ]; then
+    printf 'A failed environment update modified the existing configuration.\n' >&2; exit 1
+  fi
+  assert_prod_private
+  assert_not_contains "$PROD_CALLS" 'stack release'
+  assert_prod_no_secret_or_temps
+}
+
+test_prod_env_first_publish_does_not_clobber_race() {
+  prod_env_setup publish-race
+  if (UNFREQ_PROD_TEST_PUBLISH_RACE=true; export UNFREQ_PROD_TEST_PUBLISH_RACE; run_prod_env https://ops-probe.invalid); then
+    printf 'Expected a competing env creation to stop first publication.\n' >&2; exit 1
+  fi
+  if [ "$(cat "$PROD_ROOT/.env")" != OWNED_PUBLISH_RACE_SENTINEL ]; then
+    printf 'First environment publication replaced a competing owned file.\n' >&2; exit 1
+  fi
+  assert_not_contains "$PROD_CALLS" 'stack release'
+  assert_prod_no_secret_or_temps
+}
+
 copy_fixture_files
 write_stub_commands
 
@@ -406,5 +607,10 @@ run_case "backup dump/compression failure cleanup" test_backup_failure_does_not_
 run_case "restore isolation and gzip validation" test_restore_requires_isolation_and_valid_archive
 run_case "restore empty-target guard, transaction and SQL failure" test_restore_guard_transaction_and_failure_propagation
 run_case "backup target identifier rejection" test_backup_target_identifiers_are_validated
+run_case "production env private create and rewrite" test_prod_env_new_and_rewrite_are_private
+run_case "production env predictable temp collisions" test_prod_env_fixed_temp_collisions_are_untouched
+run_case "production env symlink and nonregular rejection" test_prod_env_rejects_links_and_nonregular_paths
+run_case "production env atomic update failure cleanup" test_prod_env_failed_update_preserves_original
+run_case "production env first publication no-clobber" test_prod_env_first_publish_does_not_clobber_race
 
 printf 'Deployment script regression tests passed.\n'
