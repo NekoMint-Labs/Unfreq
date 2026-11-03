@@ -26,6 +26,7 @@ for (const id of ids) {
   assert.equal(owned.Image, manifest.imageId);
   assert.equal(owned.Name, "/" + manifest.name);
   await docker("stop", "--time", "10", id);
+  await docker("rm", id);
 }
 assert.equal((await docker("ps", "--all", "--quiet", "--filter", filter)).stdout.trim(), "",
   "The exact browser run must have no remaining container.");

@@ -44,6 +44,7 @@ async function stop() {
       assert.equal(owned.Image, imageId);
       assert.equal(owned.Name, "/" + name);
       await run("stop", "--time", "10", id);
+      await run("rm", id);
     }
     const remaining = (await run("ps", "--all", "--quiet", "--filter", "label=unfreq.test.run=" + runId)).stdout.trim();
     assert.equal(remaining, "", "The owned Web container must be removed.");
@@ -59,7 +60,7 @@ async function stop() {
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.once(signal, () => { stopping ??= stop(); });
 }
-const child = spawn("docker", ["run", "--rm", "--init", "--sig-proxy=false",
+const child = spawn("docker", ["run", "--init", "--sig-proxy=false",
   "--name", name, "--label", "unfreq.test.run=" + runId, "--network", "host",
   "--env", "PORT=" + webPort, "--env", "API_INTERNAL_BASE_URL=http://127.0.0.1:" + apiPort,
   "--env", "NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:" + apiPort,
