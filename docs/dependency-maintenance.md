@@ -1,5 +1,7 @@
 # 依赖分组维护与回退
 
+2026-11-03后续：[main集成候选](./implementation/main-integration-20261103.md)定点更新estree的minimatch与core-utils的esbuild，完整官方audit为15条moderate、全部dev-only，omitdev为0；新旧触发对照、新回归和固定提交Linux门禁均通过。下文20条及更早的计数保留对应当时清单，不再作为最新摘要。
+
 2026-11-02后续：[生产迁移器与开发工具依赖边界](./implementation/runtime-migrations-20261102.md)使用相同版本/SRI，将kit移出正常生产安装；最终锁88d968f…独立full audit仍20条moderate、全部dev-only，omitdev为0。已正常安装、通过完整API检查和139项真实隔离回归；最终API成品20项、同成品20+4关停/重启及Web同成品续验38项均通过，来源和清理已核对。Web首轮宿主等待失败及修复范围见[补充记录](./implementation/web-runtime-readiness-20261102.md)。下文各日期的30/28/20及旧镜像成绩保留各自原范围，不改写成新锁成绩。
 
 核查日期：2026-11-01。本页的初始清单对应 `bc9c7b1` 的 manifests、lockfile v3 与本机安装；版本查询使用官方 `https://registry.npmjs.org/`。后续升级须另记实际提交、检查和剩余告警，不能把候选版本写成已验收版本。

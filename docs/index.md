@@ -26,6 +26,7 @@ Unfreq 是一个 AI 同频匹配的可视化共振社区。
 
 - [开发指南](./development.md)
 - [总实施规范进度与下一步](./implementation/progress.md)
+- [面向main的集成候选与待他人事项](./implementation/main-integration-20261103.md)
 - [Seed 忠实性评测准备与盲评](./faithfulness-evaluation.md)
 - [E4 Demo 指标与模式复核实施记录](./implementation/e4-faithfulness-20261031.md)
 - [E4 未知来源与暂不展示心理解读](./implementation/e4-unknown-interpretation-20261101.md)
