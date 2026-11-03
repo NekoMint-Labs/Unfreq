@@ -63,3 +63,44 @@ jobs:
         run: |
           docker image inspect unfreq-postgres-dependencies:check --format '{{.Id}} {{.Os}} {{.Architecture}}'
           docker run --rm --entrypoint node --mount "type=bind,src=$PWD/tests/integration/postgres-docker-probe.mjs,dst=/tmp/postgres-docker-probe.mjs,readonly" unfreq-postgres-dependencies:check /tmp/postgres-docker-probe.mjs
+
+  rollback-main:
+    name: PostgreSQL rollback to current main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rollback
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: e5b459cf0e067fa391befb095bf3e87b9370cc41
+          path: rollback
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: rollback/package-lock.json
+      - name: Verify exact rollback revision
+        run: test "$(git rev-parse HEAD)" = "e5b459cf0e067fa391befb095bf3e87b9370cc41"
+      - name: Normal old-driver installation
+        run: npm ci
+      - name: Verify all four legacy patch hashes and idempotence
+        run: node --test tests/integration/patch-install.test.mjs
+      - name: Complete old-driver real PostgreSQL and Redis regression
+        run: npm run api:integration
+      - name: Read back old-driver result and cleanup
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile, readdir } from "node:fs/promises";
+          const runs = (await readdir("test-results/integration")).filter((name) => /^run-[A-Za-z0-9]{6}$/.test(name));
+          assert.equal(runs.length, 1);
+          const manifest = JSON.parse(await readFile(`test-results/integration/${runs[0]}/manifest.json`, "utf8"));
+          console.log(JSON.stringify({ run: runs[0], ...manifest }));
+          assert.equal(manifest.cleaned, true);
+          assert.equal(manifest.exitCode, 0);
+          assert.deepEqual(manifest.tests, { total: 66, passed: 66, failed: 0, pending: 0, todo: 0 });
+          NODE
