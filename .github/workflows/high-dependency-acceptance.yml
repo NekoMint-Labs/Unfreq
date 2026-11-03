@@ -57,7 +57,7 @@ jobs:
       - name: Verify the malicious inputs and legitimate dependency controls
         run: |
           set -euo pipefail
-          node --test tests/dependencies/production-security.test.mjs tests/dependencies/development-security.test.mjs | tee test-results/high-dependencies/focused.tap
+          node --test tests/dependencies/production-security.test.mjs tests/dependencies/development-security.test.mjs tests/dependencies/zip-security.test.mjs | tee test-results/high-dependencies/focused.tap
       - name: Exercise the real API and Web test toolchains on this platform
         run: |
           set -euo pipefail
