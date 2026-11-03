@@ -997,6 +997,8 @@ async function openE4InterpretationWithKeyboard(page: Page) {
   // Denied-page checks in other contexts can leave this page in the background.
   // Keyboard focus assertions also require its document to be active.
   await page.bringToFront();
+  // focus() has no visibility auto-wait: streamed SSR content can still be hidden.
+  await expect(disclosure).toBeVisible();
   await disclosure.focus();
   await expect(disclosure).toBeFocused();
   await page.keyboard.press("Enter");

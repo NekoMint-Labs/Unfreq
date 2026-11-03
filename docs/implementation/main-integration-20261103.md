@@ -6,7 +6,7 @@
 
 - 在原 `c69898a` 候选中整合 main `e5b459c`。main 的 A/B 历史采用压缩合并；对照原 B3 `34c2ae3`，实际新增差异为16文件。保留较新的 C1/E4 隐私契约，合入请求 INSERT 等待期间关停、重启后恢复同一 signalId 的回归、夹具和来源清单。合并提交为 `e9b8e83`。
 - 仅在 typescript-estree 链使用 minimatch 11.0.3，在 core-utils 链使用已有 esbuild 0.25.12。根 minimatch 3.1.5 的 callable、Minimatch、makeRe 和路径行为保留；Postgres4版本、两文件补丁、迁移SQL和生产迁移器不改。依赖提交为 `71e3ed6`。
-- 新增4项永久依赖回归，并接入真实 Dockerfile.api/web 的容器 CI。锁定受 Playwright1.60 支持的 Ubuntu24.04；跨浏览上下文的键盘检查先激活操作页，原焦点、Enter、42项范围和预算保留。工作流只使用隔离服务及合成数据。
+- 新增4项永久依赖回归，并接入真实 Dockerfile.api/web 的容器 CI。锁定受 Playwright1.60 支持的 Ubuntu24.04；键盘检查先激活操作页，并明确等待原生summary可见，原焦点、Enter、42项范围和预算保留。工作流只使用隔离服务及合成数据。
 - #5 已合入 main；旧进度表中的 Draft 说明已更新。#8～#12 保留分阶段审查和历史证据，当前直接对 main 的汇总入口为 #13；空评审不表示批准。
 
 ## 验证结果与来源
@@ -38,7 +38,7 @@
 ## 失败和环境限制
 
 - 本机Docker启动失败于不可访问的旧 `sailor-ingest.sock`；确认backend退出后，删除、改名和reparse查询也失败。没有删除镜像/卷、重置Docker或改系统配置。容器成绩来自上述独立Linux CI。
-- 首轮容器CI在Ubuntu26.04安装浏览器前失败；第二轮Web41/42，跨上下文焦点检查失败。固定Ubuntu24.04并恢复活动页前置条件后，第三轮完整42项单次通过；没有把原失败改写成成功。
+- 首轮容器CI在Ubuntu26.04安装浏览器前失败；第二轮Web41/42，跨上下文焦点检查失败。固定Ubuntu24.04并恢复活动页前置条件后，第三轮完整42项单次通过；没有把原失败改写成成功。随后文档提交8bac复验又41/42；该轮trace的after-goto及after-focus快照均显示summary仍位于 `div[hidden]#S:1`，在焦点断言结束后的快照才移入main。仅激活页面不能解决隐藏流式节点；本次在focus前补回toBeVisible前置断言，不增加重试或放宽预算，最新精确Head结果以PR检查为准。[Playwright官方表](https://playwright.dev/docs/actionability)确认focus不执行可见性自动等待。
 - 本机全量检查保留API首个用例5秒超时、plain CJS探针10秒超时。后一次运行期间，主目录被另一项C1工作切换分支，Web类型检查读到缺失文件；该运行不能作为固定候选的完整Windows验收。原目录及其未提交变更未被恢复或覆盖，本任务改用独立工作区；上述Linux CI是固定提交的完整门禁。
 - 辅助审计首轮超时、generate夹具缺少vector、命名管道误分类和独立准备超时分别保留；不把辅助脚本exit0当成生成成功。最终generate结果另附于本轮安全验证记录。
 
