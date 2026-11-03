@@ -18,7 +18,9 @@ const directory = await mkdtemp(path.join(tmpdir(), "unfreq-migration-generate-"
 try {
   const config = path.join(directory, "drizzle.config.ts");
   const output = path.join(directory, "output");
-  await writeFile(config, `export default ${JSON.stringify({ dialect: "postgresql", schema: path.join(root, "apps/api/src/db/schema.ts"), out: output })};\n`, { flag: "wx" });
+  // Drizzle treats schema as a glob, so Windows separators must be normalized.
+  const schema = path.join(root, "apps/api/src/db/schema.ts").split(path.sep).join("/");
+  await writeFile(config, `export default ${JSON.stringify({ dialect: "postgresql", schema, out: output })};\n`, { flag: "wx" });
   const allowed = new Set(["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE"]);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
   const kit = path.join(root, "node_modules/drizzle-kit/bin.cjs");

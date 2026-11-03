@@ -8,6 +8,7 @@ on:
       - "apps/api/src/app.ts"
       - "Dockerfile.*"
       - "tests/dependencies/**"
+      - "scripts/verify-migration-generate.mjs"
       - ".github/workflows/high-dependency-acceptance.yml"
   workflow_dispatch:
 
@@ -62,6 +63,8 @@ jobs:
           set -euo pipefail
           npm run api:test | tee test-results/high-dependencies/api-unit.log
           npm run web:test | tee test-results/high-dependencies/web-unit.log
+      - name: Verify real development migration generation on this platform
+        run: node scripts/verify-migration-generate.mjs | tee test-results/high-dependencies/migration-generate.json
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
