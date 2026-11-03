@@ -5,11 +5,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { applyPostgresStartupPatch } from "../../scripts/apply-postgres-startup-patch.mjs";
+import { applyPostgresLifecyclePatch } from "../../scripts/apply-postgres-lifecycle-patch.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const metadata = JSON.parse(await readFile(join(root, "patches", "postgres-3.4.9-startup.json"), "utf8"));
-const patch = (await readFile(join(root, "patches", "postgres-3.4.9-startup.patch"), "utf8")).replaceAll("\r\n", "\n");
+const metadata = JSON.parse(await readFile(join(root, "patches", "postgres-4.0.0-lifecycle.json"), "utf8"));
+const patch = (await readFile(join(root, "patches", "postgres-4.0.0-lifecycle.patch"), "utf8")).replaceAll("\r\n", "\n");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 // Reconstruct byte-identical registry inputs from a patched install. The
@@ -64,22 +64,22 @@ async function withOwnedPackage(run, pristine = false) {
   }
 }
 
-test("installed ESM and CJS patch hashes verify and reapplying is idempotent", async () => {
+test("installed lifecycle patch hashes verify and reapplying is idempotent", async () => {
   for (const file of metadata.files) {
     assert.equal(hash(await readFile(join(root, "node_modules", "postgres", file.path))), file.patchedSha256);
   }
   await withOwnedPackage(async (directory) => {
-    await applyPostgresStartupPatch(directory);
+    await applyPostgresLifecyclePatch(directory);
     for (const file of metadata.files) assert.equal(hash(await readFile(join(directory, file.path))), file.patchedSha256);
-    assert.deepEqual(await applyPostgresStartupPatch(directory), { package: "postgres", version: "3.4.9", applied: 0, verified: 4 });
+    assert.deepEqual(await applyPostgresLifecyclePatch(directory), { package: "postgres", version: "4.0.0", applied: 0, verified: metadata.files.length });
   });
 });
 
 test("pristine registry source hashes take the real original-to-patched path", async () => {
   await withOwnedPackage(async (directory) => {
-    assert.equal((await applyPostgresStartupPatch(directory)).applied, 4);
+    assert.equal((await applyPostgresLifecyclePatch(directory)).applied, metadata.files.length);
     for (const file of metadata.files) assert.equal(hash(await readFile(join(directory, file.path))), file.patchedSha256);
-    assert.equal((await applyPostgresStartupPatch(directory)).applied, 0);
+    assert.equal((await applyPostgresLifecyclePatch(directory)).applied, 0);
   }, true);
 });
 
@@ -87,7 +87,7 @@ test("a known partially patched install can finish without guessing source versi
   await withOwnedPackage(async (directory) => {
     const file = metadata.files[0];
     await writeFile(join(directory, file.path), await readFile(join(root, "node_modules", "postgres", file.path)));
-    assert.equal((await applyPostgresStartupPatch(directory)).applied, 3);
+    assert.equal((await applyPostgresLifecyclePatch(directory)).applied, metadata.files.length - 1);
     for (const target of metadata.files) assert.equal(hash(await readFile(join(directory, target.path))), target.patchedSha256);
   }, true);
 });
@@ -97,7 +97,7 @@ test("source drift refuses the whole patch before changing any other target", as
     const target = join(directory, metadata.files.at(-1).path);
     await writeFile(target, `${await readFile(target, "utf8")}\n// unknown source\n`);
     const before = await Promise.all(metadata.files.map((file) => readFile(join(directory, file.path))));
-    await assert.rejects(applyPostgresStartupPatch(directory), /unknown PostgreSQL source/);
+    await assert.rejects(applyPostgresLifecyclePatch(directory), /unknown PostgreSQL source/);
     const after = await Promise.all(metadata.files.map((file) => readFile(join(directory, file.path))));
     assert.deepEqual(after, before);
   }, true);
@@ -106,6 +106,6 @@ test("source drift refuses the whole patch before changing any other target", as
 test("an upstream version change requires explicit patch review", async () => {
   await withOwnedPackage(async (directory) => {
     await writeFile(join(directory, "package.json"), JSON.stringify({ name: "postgres", version: "0.0.0-unknown" }));
-    await assert.rejects(applyPostgresStartupPatch(directory), /exact pinned package and lock integrity/);
+    await assert.rejects(applyPostgresLifecyclePatch(directory), /exact pinned package and lock integrity/);
   });
 });

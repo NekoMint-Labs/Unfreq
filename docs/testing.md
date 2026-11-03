@@ -66,7 +66,7 @@ manifest 保存随机项目、合成端点、实际镜像 digest、测试计数�
 
 ## EOF 故障的独立复现
 
-TCP 正常关闭（FIN）与 reset（RST）是两个不同的故障模型。当前调查发现 `postgres@3.4.9` 在首次握手阶段遇到持续 FIN 时，可能无限重连；增大 HTTP timeout 或仅用 `Promise.race` 返回失败都不能保证底层请求停止，也可能产生迟到写入。
+TCP 正常关闭（FIN）与 reset（RST）是两个不同的故障模型。旧版调查发现 `postgres@3.4.9` 在首次握手阶段遇到持续 FIN 时，可能无限重连；增大 HTTP timeout 或仅用 `Promise.race` 返回失败都不能保证底层请求停止，也可能产生迟到写入。
 
 ```bash
 node tests/integration/reproduce-postgres-eof.mjs
@@ -74,9 +74,9 @@ node tests/integration/reproduce-postgres-eof.mjs
 
 这个诊断只创建并连接自有 loopback FIN 端点，不接触任何既有服务。在观察窗口内仍 pending 时退出码为 1，并明确输出 `not-fixed`；它不把预期挂起当作成功。它只是驱动诊断，不代替 API 恢复验收；完整 EOF 回归在默认集成套件中，不被跳过。
 
-本轮固定 `postgres@3.4.9`，通过 root `postinstall` 应用可核对源码及结果 SHA256 的 Node ESM/CJS 小补丁。未知版本、lock integrity 或源码漂移会拒绝安装；重复运行只验证，不重复修改。Docker 的普通 / 生产依赖安装阶段使用同一个安装器。`--ignore-scripts` 会绕过补丁，不属于已验证的安装方式；若使用该选项，必须先运行 `npm run postinstall` 并通过质量检查。
+当前候选固定 `postgres@4.0.0`，通过 root `postinstall` 应用可核对源码及结果 SHA256 的两文件连接生命周期补丁；原生 ESM 和 CommonJS 默认导出使用同一份源码。未知版本、lock integrity 或源码漂移会拒绝安装；重复运行只验证，不重复修改。Docker 的普通 / 生产依赖安装阶段使用同一个安装器。`--ignore-scripts` 会绕过补丁，不属于已验证的安装方式；若使用该选项，必须先运行 `npm run postinstall` 并通过质量检查。
 
-补丁使当前启动请求真正失败并释放连接，新请求可重新连接；它不是 HTTP 层的超时返回，也不重放旧注册。它不保证已执行事务或未知 COMMIT 结果可以安全重放。固定版本补丁应在上游发布修复后重新评估，不能自动跳过哈希保护升级。来源和边界见[驱动补丁说明](./postgres-startup-patch.md)。
+补丁使当前启动请求真正失败并释放连接，新请求可重新连接；它不是 HTTP 层的超时返回，也不重放旧注册。它不保证已执行事务或未知 COMMIT 结果可以安全重放。固定版本补丁应在上游发布修复后重新评估，不能自动跳过哈希保护升级。来源和边界见[当前驱动与回退说明](./postgres-driver.md)。
 
 ## 浏览器与部署脚本
 

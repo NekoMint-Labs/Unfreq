@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "postinstall": "node scripts/apply-postgres-startup-patch.mjs",
+    "postinstall": "node scripts/apply-postgres-lifecycle-patch.mjs",
     "contracts:build": "npm --workspace @unfreq/contracts run build",
     "contracts:typecheck": "npm --workspace @unfreq/contracts run typecheck",
     "api:build": "npm run contracts:build && npm --workspace @unfreq/api run build",
@@ -23,7 +23,7 @@
     "check": "npm run contracts:typecheck && npm run api:check && npm run web:check",
     "deploy:test": "sh scripts/test-deployment-scripts.sh",
     "e2e": "npm run contracts:build && playwright test",
-    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/runtime-guard.test.mjs",
+    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/postgres-module.test.mjs tests/integration/runtime-guard.test.mjs",
     "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
     "web:build": "npm run contracts:build && npm --workspace @unfreq/web run build",
     "web:check": "npm run web:lint && npm run web:typecheck && npm run web:test && npm run web:build",
@@ -32,7 +32,7 @@
     "web:typecheck": "npm run contracts:typecheck && npm --workspace @unfreq/web run typecheck"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "devDependencies": {
     "playwright": "^1.60.0"
