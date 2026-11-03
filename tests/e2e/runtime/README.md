@@ -47,3 +47,9 @@ commits. Login credentials and the home seed stay disabled until handlers are re
 after release, they verify the submitted values and the existing session cookie.
 The tests/deployment/caddy-web-proto.test.mjs regression separately runs the repository
 Caddy configuration against synthetic Web/API upstreams on a disposable Linux runner.
+
+The Web readiness workflow builds the actual Dockerfile.web runner with the
+loopback synthetic API URL embedded at build time. The image-only Playwright
+configuration reuses these same cases and starts the default image command from
+its immutable iidfile. Its helper records image identity, checkout and owned
+container cleanup; it does not use the maintenance stack's image verifier.

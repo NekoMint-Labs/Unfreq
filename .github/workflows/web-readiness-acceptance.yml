@@ -15,12 +15,13 @@ jobs:
   production-browser:
     name: Web readiness production browser
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       API_INTERNAL_BASE_URL: "http://127.0.0.1:4200"
       NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:4200"
       PLAYWRIGHT_JSON_OUTPUT_FILE: "test-results/web-readiness-browser.json"
+      EXPECTED_WEB_REVISION: "${{ github.event.pull_request.head.sha || github.sha }}"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,10 +37,12 @@ jobs:
         run: node --test tests/deployment/caddy-web-proto.test.mjs
       - name: Install Chromium
         run: npx --no-install playwright install --with-deps chromium
-      - name: Build the production Web application
-        run: npm run web:build
+      - name: Build the actual Linux Web image
+        run: |
+          mkdir -p test-results
+          docker build --file Dockerfile.web --build-arg NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:4200 --label org.opencontainers.image.revision="$EXPECTED_WEB_REVISION" --iidfile test-results/web-readiness-image.id .
       - name: Verify the production browser
-        run: npx --no-install playwright test --config playwright.runtime.config.ts --reporter=github,json
+        run: npx --no-install playwright test --config playwright.web-image.config.ts --reporter=github,json
       - name: Preserve browser reports and failure evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -47,6 +50,8 @@ jobs:
           name: web-readiness-production-browser
           if-no-files-found: warn
           path: |
+            test-results/web-readiness-image.id
+            test-results/web-readiness-image.json
             test-results/web-readiness-caddy.json
             test-results/web-readiness-browser.json
             test-results/runtime/**
