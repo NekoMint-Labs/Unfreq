@@ -1,3 +1,4 @@
+import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../shared/errors.js";
 import {
@@ -34,15 +35,19 @@ import {
 } from "./service.js";
 import type { AuthenticatedFrequency } from "../auth/types.js";
 import { generateReviewedSignalExpansion } from "./service-creation.js";
+import { scoreSignalMatch } from "./service-matching.js";
+import { getFingerprintFrequencyProfile, getSignalFrequencyProfile } from "./service-mappers.js";
 
 const signalStore = vi.hoisted(() => {
   return {
+    allCandidates: new Map<string, SignalRecord>(),
     createdInputs: [] as CreateSignalInput[],
     matchCandidates: [] as SignalRecord[],
   };
 });
 
 const defaultFingerprint: SignalFingerprint = {
+  interpretation: { version: 1, state: "unverified", source: "provider" },
   coreNeed: "希望被理解",
   displayText: "关系星云 · 被理解需求",
   energy: 0.62,
@@ -205,6 +210,7 @@ vi.mock("./repository.js", () => {
 
       const now = new Date("2026-05-10T12:00:00.000Z");
       const record: SignalRecord = {
+        publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
         authorFreqCode: input.authorId === undefined ? null : "FM-27.51",
         authorId: input.authorId ?? null,
         audioError: null,
@@ -265,10 +271,15 @@ vi.mock("./repository.js", () => {
     listPublishedSemanticSignalMatchCandidates: vi.fn(() => {
       return Promise.resolve([]);
     }),
+    recheckPublicSignals: vi.fn(async (expected: SignalRecord[]) => {
+      if (expected.every((row) => row.expandedText !== undefined)) return expected;
+      return [...signalStore.allCandidates.values()].filter((row) => expected.some((item) => item.id === row.id && item.publicationVersion === row.publicationVersion));
+    }),
     listPublishedSignals: vi.fn(),
     listPublishedGalaxySignals: vi.fn(),
-    listPublishedGalaxyThemes: vi.fn(() => Promise.resolve(["孤独", "希望"])),
+    listPublishedGalaxyThemes: vi.fn(() => Promise.resolve(["关系星云"])),
     listSignalsForAuthor: vi.fn(() => Promise.resolve([])),
+    readMySignalHistory: vi.fn(() => Promise.resolve({ signals: [], totalSignalCount: 0, totalResonanceCount: 0, page: { limit: 80, hasMore: false } })),
     markSignalAudioFailed: vi.fn(),
     markSignalAudioPending: vi.fn(),
     markSignalAudioReady: vi.fn(),
@@ -302,7 +313,8 @@ function buildCandidate(params: {
       ? "nostalgia"
       : "need_to_be_understood";
 
-  return {
+  const candidate = confirmUnitPublication({
+    publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
     authorFreqCode: "FM-10.01",
     authorId: "00000000-0000-4000-8000-000000000101",
     audioError: null,
@@ -353,10 +365,13 @@ function buildCandidate(params: {
     subFeeling,
     isKept: false,
     updatedAt: now,
-  };
+  } satisfies SignalRecord);
+  signalStore.allCandidates.set(candidate.id, candidate);
+  return candidate;
 }
 
 beforeEach(() => {
+  signalStore.allCandidates.clear();
   signalStore.createdInputs = [];
   signalStore.matchCandidates = [];
   vi.mocked(analyzeSignalIntentWithFallback).mockReset();
@@ -432,11 +447,7 @@ describe("signal service AI generation", () => {
         frequency: "SIG-TEST",
         riskLevel: "LOW",
       },
-      matches: expect.arrayContaining([
-        expect.objectContaining({
-          source: "SEEDED",
-        }),
-      ]),
+      matches: [],
       program: {
         hostIntro: "来自 SIG-TEST 的一条生活信号。",
         programTitle: "今晚想把这段匿名信号留在这里，等一个同频的人。",
@@ -817,6 +828,7 @@ describe("signal service AI generation", () => {
     await vi.waitFor(() => {
       expect(writeSignalEmbeddingIfMissing).toHaveBeenCalledWith({
         dimensions: 1024,
+        expectedExpandedText: defaultExpansion.expandedText,
         embedding,
         id: "00000000-0000-4000-8000-000000000001",
         model: "text-embedding-v3",
@@ -858,6 +870,7 @@ describe("signal service AI generation", () => {
       id: "00000000-0000-4000-8000-000000000401",
       source: "PUBLISHED",
     });
+    expect(generateEmbedding).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to keyword matches when embedding generation fails", async () => {
@@ -925,16 +938,12 @@ describe("signal service AI generation", () => {
     );
   });
 
-  it("uses seeded matches when no published match exists", async () => {
+  it("does not invent public seeded matches when no confirmed match exists", async () => {
     const signal = await createPublishedSignal(testFrequency, {
       seedText: "今晚有点孤独，也有点想等一个回声。",
     });
 
-    expect(signal.matches[0]).toMatchObject({
-      id: "seed-life-fragment-001",
-      source: "SEEDED",
-    });
-    expect(signalStore.createdInputs[0]?.matchSignalId).toBeUndefined();
+    expect(signal.matches).toEqual([]);
   });
 
   it("builds minimal program metadata when no match exists", async () => {
@@ -1182,7 +1191,7 @@ describe("signal service AI generation", () => {
     });
   });
 
-  it("accepts contradictory high-score expansion review instead of rewriting", async () => {
+  it("rewrites and rejects a failed high-score review instead of forcing it to pass", async () => {
     const logger = {
       error: vi.fn(),
       info: vi.fn(),
@@ -1207,23 +1216,24 @@ describe("signal service AI generation", () => {
       reviewId: "00000000-0000-4000-8000-000000000910",
     });
 
-    const signal = await createPublishedSignal(
+    await expect(createPublishedSignal(
       testFrequency,
       {
         seedText: "你是什么人呢",
       },
       logger,
-    );
+    )).rejects.toMatchObject({ code: "AI_UNAVAILABLE" });
 
-    expect(signal.expandedText).toBe(defaultExpansion.expandedText);
-    expect(generateSignalExpansionWithFallback).toHaveBeenCalledTimes(1);
+    expect(generateSignalExpansionWithFallback).toHaveBeenCalledTimes(2);
+    expect(signalStore.createdInputs).toHaveLength(0);
     expect(logger.warn).toHaveBeenCalledWith(
       {
-        action: "signal.expansion.review_contradictory",
-        reason: "INVALID_AI_REVIEW",
+        action: "signal.expansion.review_failed",
+        problemCount: 0,
+        reason: "AI_UNAVAILABLE",
         targetType: "SIGNAL",
       },
-      "signal expansion review contradicted itself",
+      "signal expansion review failed",
     );
   });
 
@@ -1535,6 +1545,9 @@ describe("signal service AI generation", () => {
   });
 
   it("returns stable finite galaxy points and marks current frequency signals", async () => {
+    vi.mocked(writeSignalGalaxyPositionIfMissing).mockClear();
+    vi.mocked(writeSignalEmbeddingIfMissing).mockClear();
+    vi.mocked(generateEmbedding).mockClear();
     const mySignal = buildCandidate({
       id: "00000000-0000-4000-8000-000000000701",
       primaryEmotion: "孤独",
@@ -1543,6 +1556,7 @@ describe("signal service AI generation", () => {
       title: "我的星点",
     });
     mySignal.frequencyId = "00000000-0000-4000-8000-000000000111";
+    mySignal.authorId = null;
     mySignal.authorFreqCode = "FM 27.51";
     mySignal.galaxyPosition = null;
     const matchedSignal = buildCandidate({
@@ -1552,7 +1566,7 @@ describe("signal service AI generation", () => {
       tags: ["夜晚"],
       title: "同频星点",
     });
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([mySignal, matchedSignal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [mySignal, matchedSignal], totalEligibleCount: 2, latestOwnSignalId: mySignal.id });
 
     const galaxy = await getSignalGalaxy({
       createdAt: "2026-05-10T00:00:00.000Z",
@@ -1564,18 +1578,17 @@ describe("signal service AI generation", () => {
 
     expect(galaxy.points).toHaveLength(2);
     expect(galaxy.points[0]).toMatchObject({
-      frequencyCode: "FM 27.51",
+      authorFreqCode: "FM-10.01",
       id: "00000000-0000-4000-8000-000000000701",
       isMine: true,
       matchIds: ["00000000-0000-4000-8000-000000000702"],
     });
-    expect(galaxy.themeOptions).toEqual(["孤独", "希望"]);
+    expect(galaxy.themeOptions).toEqual(["关系星云"]);
     expect(listPublishedGalaxyThemes).toHaveBeenCalledWith(12);
     expect(Number.isFinite(galaxy.points[0]?.position.x)).toBe(true);
-    expect(writeSignalGalaxyPositionIfMissing).toHaveBeenCalledWith({
-      id: "00000000-0000-4000-8000-000000000701",
-      position: galaxy.points[0]?.position,
-    });
+    expect(writeSignalGalaxyPositionIfMissing).not.toHaveBeenCalled();
+    expect(writeSignalEmbeddingIfMissing).not.toHaveBeenCalled();
+    expect(generateEmbedding).not.toHaveBeenCalled();
   });
 
   it("keeps galaxy match ids inside the returned point set", async () => {
@@ -1587,12 +1600,22 @@ describe("signal service AI generation", () => {
       title: "带历史匹配的星点",
     });
     signal.matchSignalId = "00000000-0000-4000-8000-000000000999";
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([signal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [signal], totalEligibleCount: 1 });
 
     const galaxy = await getSignalGalaxy(undefined);
 
     expect(galaxy.points).toHaveLength(1);
     expect(galaxy.points[0]?.matchIds).toEqual([]);
+  });
+
+  it("keeps prepared graph pair scores identical to the existing scorer", () => {
+    const left = buildCandidate({ id: "00000000-0000-4000-8000-000000000751", title: "合成左信号", primaryEmotion: "平静", signalType: "life-fragment", tags: ["窗边"] });
+    const right = buildCandidate({ id: "00000000-0000-4000-8000-000000000752", title: "合成右信号", primaryEmotion: "孤独", signalType: "life-fragment", tags: ["夜晚"] });
+    for (const band of ["self_mirror", "relationship_nebula", "meaning_deep_space"] as const) {
+      right.primaryBand = band;
+      expect(scoreSignalMatch(left.fingerprintJson, right, { current: getFingerprintFrequencyProfile(left.fingerprintJson), candidate: getSignalFrequencyProfile(right) }))
+        .toBe(scoreSignalMatch(left.fingerprintJson, right));
+    }
   });
 
   it("marks current frequency galaxy signals by author id during auth migration", async () => {
@@ -1605,7 +1628,7 @@ describe("signal service AI generation", () => {
     });
     mySignal.authorId = "00000000-0000-4000-8000-000000000111";
     mySignal.frequencyId = null;
-    vi.mocked(listPublishedGalaxySignals).mockResolvedValue([mySignal]);
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [mySignal], totalEligibleCount: 1, latestOwnSignalId: mySignal.id });
 
     const galaxy = await getSignalGalaxy({
       createdAt: "2026-05-10T00:00:00.000Z",
@@ -1619,5 +1642,15 @@ describe("signal service AI generation", () => {
       id: "00000000-0000-4000-8000-000000000711",
       isMine: true,
     });
+  });
+
+  it("does not label a different author's signal as mine through a stale frequency mirror", async () => {
+    const row = buildCandidate({ id: "00000000-0000-4000-8000-000000000741", title: "公开合成信号", primaryEmotion: "平静", signalType: "life-fragment", tags: [] });
+    row.authorId = "00000000-0000-4000-8000-000000000222";
+    row.frequencyId = "00000000-0000-4000-8000-000000000111";
+    vi.mocked(listPublishedGalaxySignals).mockResolvedValue({ signals: [row], totalEligibleCount: 1, latestOwnSignalId: row.id });
+    const result = await getSignalGalaxy({ createdAt: "2026-05-10T00:00:00Z", id: row.frequencyId, freqCode: "FM 27.51", status: "ACTIVE", role: "USER" });
+    expect(result.points[0].isMine).toBe(false);
+    expect(result.coverage.latestOwnSignalId).toBeUndefined();
   });
 });

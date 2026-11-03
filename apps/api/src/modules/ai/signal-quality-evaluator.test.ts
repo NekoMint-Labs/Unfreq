@@ -73,7 +73,9 @@ describe("signal quality evaluator", () => {
     ]);
     const report = buildSignalQualityMarkdownReport(evaluation);
 
-    expect(report).toContain("# AI Signal Quality Evaluation");
+    expect(report).toContain("# Signal Text Heuristic Check (Demo)");
+    expect(report).toContain("Seed is displayed for reference only");
+    expect(report).toContain("does not evaluate Seed fidelity or author approval");
     expect(report).toContain("## 固定样本");
     expect(report).toContain("Score:");
     expect(report).toContain("Checks:");

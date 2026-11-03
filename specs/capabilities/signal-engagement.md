@@ -32,11 +32,17 @@ tags:
 
 ## ENG-003 Galaxy
 
-- `GET /api/signals/galaxy?band=<signal_primary_band>` returns `{ points, bandOptions, generatedAt, themeOptions }` and filters to public points by the fixed primary band. `bandOptions` always contains the fixed seven primary bands.
+- `GET /api/signals/galaxy?band=<signal_primary_band>&focus=<signal_uuid>` returns `{ points, bandOptions, generatedAt, themeOptions, coverage }` and filters to confirmed, completed, non-withdrawn public points by the fixed primary band. `bandOptions` always contains the fixed seven primary bands. `focus` is optional, canonicalized and subject to the same visibility/filter conditions.
+- The API samples at most 80 points using versioned `recent-band-v1`: eligible focus and latest own first, then recent expressions plus deterministic band diversity. `coverage` distinguishes validated total count from returned samples, echoes the effective filter, and includes only visible focus/latest-own IDs. Mobile renders at most 72 points and preserves selected/latest-own points; the optional list contains the same returned sample, never a larger private dataset.
 - Coordinates must be finite numbers; the frontend may normalize them for camera framing but must not compute embedding or semantic layout. The galaxy route must not call AI/embedding/reranker providers just to draw links.
 - `matchIds` reference published ids already present in the same response; clients ignore missing ids rather than fetching or computing matches locally.
-- The API may return an empty `points` array; the frontend must render a truthful empty state. **Baseline observation:** `theme` is a compatibility display field equal to `frequencyProfile.displayText`, and baseline clients read `frequencyProfile`; `themeOptions` is for older clients only. **Approved A3 target, pending implementation:** Galaxy classification stays server-side and points expose only explicitly approved display fields and necessary functional metadata under a per-shape allowlist, not the complete fingerprint/profile or sensitive inferred attributes. Existing compatibility fields do not override the [A3 public-response requirements](../../docs/data-lifecycle.md#决定-2作者点击发布时究竟同意公开哪些内容). This docs-only PR does not change the route or client.
+- Positions are artistic, and distance does not measure semantic similarity. The visible legend distinguishes selectable public expressions from decorative background stars. Links represent rule candidates within the current sample, subject to rendering budgets and visual selection; they do not represent personal relationships. Band/own colors and mixed resonance/depth/decorative brightness or size must not imply a similarity score or ranking.
+- The reading panel explains rule candidates using only IDs already in the returned sample. It deduplicates incoming and outgoing records and distinguishes candidate count from drawn link count; zero records remain an explicit zero, without invented reasons or percentages.
+- The API may return an empty `points` array; the frontend must render a truthful empty state. Legacy `theme` queries map known display labels to confirmed primary bands; new clients use the public `primaryBand` and confirmed tags, never private `frequencyProfile`. `themeOptions` is for older clients only and must not drive new UI.
+- Galaxy classifies on the server and applies the public response allowlist to points and derived links: only approved display fields and necessary functional metadata may leave the service, with no complete fingerprint/profile, sensitive inferred attributes or internal identity fields. Legacy compatibility fields do not override [A3's privacy contract](../../docs/data-lifecycle.md#决定-2作者点击发布时究竟同意公开哪些内容), and new E4 previews retain their empty-label/omitted-band behavior.
 - `/galaxy` is a full-bleed 3D view.
+- The same bounded public sample has an optional DOM list supporting keyboard selection and reading actions. Closing the native reading dialog restores its trigger (canvas/focus-link selections use the list toggle). The dialog has a labelled heading, contained Tab navigation and Escape handling; nested report dismissal preserves the reader.
+- Disabling graphics, failed WebGL2 support checks and context loss keep the sample readable through the list. Reduced-motion preferences update live, disabling automatic rotation, twinkle, camera easing and reader translation while keeping direct controls. This does not change authorization, sampling or matching.
 
 ## ENG-004 Random tuning
 
@@ -45,6 +51,7 @@ tags:
 ## ENG-005 Echo summary (return-visit)
 
 - `GET /api/me/echo-summary` returns `{ frequencyId, newResonanceCount, totalResonanceCount, since?, topSignal? }`.
+- The total and fallback top record cover all completed, non-deleted expressions owned by the author, including withdrawn private history. They must not derive from the latest 80 rows. Recent resonance inputs also require completed, non-deleted ownership.
 - If there is no persisted `lastSeenAt`, `since` is omitted and `newResonanceCount` must be `0` — never reuse `totalResonanceCount` as a fake new count.
 - `POST /api/me/echo-summary/seen` advances the watermark after the summary is seen or dismissed. It must not create fake counts; a later `GET` counts only resonances after the new watermark.
 - Frontend may compare `totalResonanceCount` with a browser-local previously-seen total for the same `frequencyId`, but that derived prompt is UI-local and must never be sent back as API truth.
@@ -52,7 +59,7 @@ tags:
 ## ENG-006 Monthly recap
 
 - `GET /api/me/recaps/latest` returns `{ recap? }` (empty object when none); `GET /api/me/recaps/:yearMonth` returns 404 when missing; `POST /api/me/recaps` accepts optional `{ yearMonth }` and defaults to the previous UTC month.
-- Generation requires at least 3 `PUBLISHED` signals owned by the frequency in that month and upserts by `(frequency_id, year_month)`.
+- Generation requires at least 3 `PUBLISHED` and `COMPLETED` signals owned by the frequency in that month and upserts by `(frequency_id, year_month)`.
 - The AI recap returns 1–3 theme words and a summary under 100 chars; provider failure uses a deterministic fallback with no medical, psychological, personality, or exaggerated claims.
 - `/me` treats a missing recap as a real empty state and never fabricates a report from local data.
 
@@ -65,3 +72,9 @@ tags:
 
 - Share-card preview data derives from public signal detail: `{ signalId, imageUrl, frequencyCode, expandedText }`.
 - The Web-owned endpoint `/api/og/:signalId` reuses the public detail contract, returns PNG for `PUBLISHED` signals, and returns 404 when the public detail is 404 or a preview/generation variant. Card images must not expose raw database ids beyond public signal ids already in routes.
+
+## ENG-009 Private history
+
+- `GET /api/me/signals?limit=80&cursor=<opaque_cursor>` requires the frequency session and returns at most 80 completed, non-deleted expressions owned by that author. Default limit is 80; accepted limits are integers 1–80. Invalid or unknown query arguments return 400.
+- The response keeps `signals` and `totalResonanceCount`, adding `totalSignalCount`, `topSignal?` and `page: { limit, hasMore, nextCursor? }`. Metadata is optional in shared client types for older-server compatibility; the current API supplies it. Totals and top records cover all eligible private history, regardless of page, using one read-only repeatable-read snapshot.
+- Pages sort by `createdAt DESC, id DESC`. The versioned cursor preserves PostgreSQL microseconds and remains usable after its boundary record is deleted. It is a position, not an authorization capability; every query reapplies ownership. Withdrawn expressions remain author-private history; logical deletion removes them from current totals. Stored monthly recaps retain their separate snapshot semantics.

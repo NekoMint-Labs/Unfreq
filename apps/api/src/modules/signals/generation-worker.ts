@@ -228,6 +228,7 @@ export function createSignalGenerationWorker(options: GenerationWorkerOptions = 
     };
     const context: GenerationExecutionContext = {
       attemptId: claim.attemptId,
+      auditContext: { schemaVersion: 1, kind: "signal-generation", signalId: claim.signalId, attemptId: claim.attemptId },
       signal: controller.signal,
       async assertActive() {
         assertNotStopped();

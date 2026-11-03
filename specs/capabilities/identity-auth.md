@@ -51,9 +51,11 @@ FrequencyIdentity:
 - Session continuity is carried by the cookie; clients must not require `sessionToken` in the JSON body.
 - Do not require email in new first-use flows; the FM code is the public identity.
 
-## ID-005 Canonical vs legacy tables
+## ID-005 Authoritative identity and frequency mirror
 
-`frequencies` is the canonical identity table; the legacy `users` mirror still backs parts of auth and admin. Admin frequency status changes must update **both** `frequencies.status` and `users.status` until the auth migration completes. Signal ownership is keyed by `signals.author_id` during that migration.
+`users` is authoritative for authentication and permissions. `frequencies` mirrors the same UUID, FM code, credentials, guest flag, role, status, and account timestamps. Registration, credential updates, admin status changes, and admin promotion write or lock `users` and synchronize the mirror within one transaction; a failed mirror write rolls the operation back. Session validation reads `users`.
+
+`frequencies.lastSeenAt` and `deviceHash` are frequency-only activity fields, not identity differences. Historical missing, orphaned, or divergent mirrors are reported by the read-only `identity:audit` command; this does not authorize automatic repair or deletion. Signal ownership uses `signals.author_id`, with legacy frequency ownership handled explicitly by the current services. See [F1 implementation and audit boundaries](../../docs/implementation/f1-identity-scheduler-20261031.md).
 
 ## Non-goals
 

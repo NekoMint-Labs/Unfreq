@@ -14,6 +14,7 @@ type MonthlyRecapFingerprint = Pick<SignalFingerprint, "tags" | "theme"> &
       | "emotionTone"
       | "hiddenNeed"
       | "innerConflict"
+      | "interpretation"
       | "narrativeConflict"
       | "primaryBand"
       | "primaryEmotion"

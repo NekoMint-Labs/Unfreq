@@ -712,8 +712,8 @@ export function AdminDashboard({ data }: AdminDashboardProps) {
         },
         {
           id: "ai-evaluation",
-          label: "AI 实验评估",
-          meta: `${data.evaluation.sampleSize.matching} 匹配样本`,
+          label: "Demo / 规则夹具",
+          meta: `${data.evaluation.sampleSize.matching} 个合成匹配样本`,
         },
       ],
     },

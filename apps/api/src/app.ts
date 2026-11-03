@@ -1,9 +1,9 @@
 import cors from "@fastify/cors";
-import Fastify, { type FastifyServerOptions, type RawServerDefault } from "fastify";
+import Fastify, { LogController, type FastifyServerOptions, type RawServerDefault } from "fastify";
 import { env } from "./config/env.js";
 import { closeDatabaseConnection } from "./db/client.js";
 import { adminRoutes } from "./modules/admin/routes.js";
-import { authRoutes, frequencyRoutes, meRoutes } from "./modules/auth/routes.js";
+import { authRoutes, frequencyRoutes, meRoutes, type AuthRoutesOptions } from "./modules/auth/routes.js";
 import { frontendDiagnosticRoutes } from "./modules/frontend-diagnostics/routes.js";
 import { healthRoutes } from "./modules/health/routes.js";
 import { imageRoutes } from "./modules/images/routes.js";
@@ -18,15 +18,17 @@ import { apiShutdownBudgetMs } from "./shared/shutdown-budget.js";
 import { apiLogRedactionPaths } from "./shared/log-redaction.js";
 import { reportRoutes } from "./modules/reports/routes.js";
 import { signalRoutes } from "./modules/signals/routes.js";
-import { startAiSignalScheduler } from "./modules/signals/scheduler.js";
+import { createAiSignalScheduler, type AiSignalSchedulerOptions, type AiSignalScheduler } from "./modules/signals/scheduler.js";
 import { createSignalGenerationWorker, type GenerationWorkerOptions, type SignalGenerationWorker } from "./modules/signals/generation-worker.js";
 import { createSignalAudioWorker, type SignalAudioWorkerOptions, type SignalAudioWorker } from "./modules/signals/audio-worker.js";
 import { adminThemeRadioRoutes, themeRadioRoutes } from "./modules/theme-radio/routes.js";
 
 type BuildAppOptions = {
   logger?: FastifyServerOptions<RawServerDefault>["logger"];
+  testLoginChallengeDelivery?: AuthRoutesOptions["testLoginChallengeDelivery"];
   generationWorkerFactory?: (options: GenerationWorkerOptions) => SignalGenerationWorker;
   audioWorkerFactory?: (options: SignalAudioWorkerOptions) => SignalAudioWorker;
+  aiSignalSchedulerFactory?: (options: AiSignalSchedulerOptions) => AiSignalScheduler;
   onGenerationFatal?: () => void | Promise<void>;
   onAudioFatal?: () => void | Promise<void>;
 };
@@ -51,7 +53,7 @@ const resolveLoggerOptions = (options: BuildAppOptions) => {
 
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify<RawServerDefault>({
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: env.trustedProxyCidrs.length === 0 ? false : env.trustedProxyCidrs,
     genReqId: (request) => safeRequestId(request.headers["x-request-id"]),
     logger: resolveLoggerOptions(options),
@@ -73,14 +75,17 @@ export async function buildApp(options: BuildAppOptions = {}) {
       return fatal === undefined ? app.close() : fatal();
     },
   });
-  let stopAiSignalScheduler: (() => void) | undefined;
+  const aiSignalScheduler = (options.aiSignalSchedulerFactory ?? createAiSignalScheduler)({
+    logger: app.log,
+    forceCloseApplicationDatabase: () => closeDatabaseConnection({ timeoutSeconds: 0 }),
+    onFatal: () => options.onGenerationFatal === undefined ? app.close() : options.onGenerationFatal(),
+  });
 
-  app.addHook("onReady", async () => { generationWorker.start(); });
+  app.addHook("onReady", async () => { generationWorker.start(); aiSignalScheduler.start(); });
   // Stop consumers while PostgreSQL is still open. The preClose stage precedes
   // the existing plugin onClose hooks, including Redis and the primary pool.
   app.addHook("preClose", async () => {
-    stopAiSignalScheduler?.();
-    const stopped = await Promise.allSettled([generationWorker.stop(), audioWorker.stop()]);
+    const stopped = await Promise.allSettled([aiSignalScheduler.stop(), generationWorker.stop(), audioWorker.stop()]);
     const failed = stopped.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   });
@@ -89,10 +94,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
     await closeAbuseControl();
     await closeDatabaseConnection();
   });
-
-  if (!env.isTest) {
-    stopAiSignalScheduler = startAiSignalScheduler(app.log);
-  }
 
   await app.register(cors, {
     credentials: true,
@@ -104,7 +105,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(authPlugin);
 
   await app.register(healthRoutes);
-  await app.register(authRoutes, { prefix: "/api/auth" });
+  await app.register(authRoutes, { prefix: "/api/auth", testLoginChallengeDelivery: options.testLoginChallengeDelivery });
   await app.register(frequencyRoutes, { prefix: "/api/frequencies" });
   await app.register(meRoutes, { prefix: "/api" });
   await app.register(frontendDiagnosticRoutes, { prefix: "/api/frontend-diagnostics" });

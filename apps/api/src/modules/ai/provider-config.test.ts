@@ -54,6 +54,7 @@ const testState = vi.hoisted(() => {
     rerankerBaseUrl: "",
     rerankerModel: "local-disabled",
     rerankerProvider: "disabled",
+    rerankerScoreScale: "zero_to_one",
     ttsApiKey: "",
     ttsBaseUrl: "",
     ttsModel: "cosyvoice-v3-flash",

@@ -14,7 +14,7 @@ import { generateOwnedSignalOutput } from "../signals/service-creation.js";
 const state = vi.hoisted(() => ({
   chat: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/chat-${index}`, profile: "default", model: "synthetic-chat", provider: "synthetic" })),
   embedding: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/embed-${index}`, dimensions: 3, model: "synthetic-embedding", provider: "synthetic", version: "unit-v1" })),
-  reranker: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/rank-${index}`, model: "synthetic-reranker", provider: "synthetic" })),
+  reranker: [1, 2].map((index) => ({ apiKey: "synthetic-unit-key", baseUrl: `http://127.0.0.1:9/rank-${index}`, model: "synthetic-reranker", provider: "synthetic", scoreScale: "zero_to_one" })),
   auditConfig: vi.fn(), review: vi.fn(),
 }));
 vi.mock("./provider-config.js", () => ({
@@ -117,7 +117,7 @@ describe("generation cancellation across real provider adapters", () => {
     await started.promise;
     await vi.advanceTimersByTimeAsync(kind === "chat" ? 10_000 : 5_000);
     const result = await work;
-    if (kind === "chat") expect(result).toMatchObject({ channel: "MIDNIGHT" });
+    if (kind === "chat") expect(result).toMatchObject({ output: { channel: "MIDNIGHT" } });
     else if (kind === "embedding") expect(result).toMatchObject({ embedding: [0.1, 0.2, 0.3] });
     else expect(result).toMatchObject({ results: [{ id: "synthetic-candidate" }] });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -230,12 +230,13 @@ describe("generation result and audit fences", () => {
     });
   });
 
-  it("stops before inserting an audit when cancellation arrives during audit configuration lookup", async () => {
+  it("stops before inserting an audit when cancellation arrives during provider response decoding", async () => {
     const { ctx, controller } = execution();
     const lookupStarted = deferred();
     const release = deferred();
-    state.auditConfig.mockImplementationOnce(async () => { lookupStarted.resolve(); await release.promise; return state.chat[0]; });
-    vi.stubGlobal("fetch", vi.fn(async () => chatResponse()));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => {
+      lookupStarted.resolve(); await release.promise; return chatResponse().json();
+    } })));
     const work = runWithGenerationExecution(ctx, () => classifyContentWithFallback({ content: "synthetic input" }));
     const rejected = expect(work).rejects.toMatchObject({ reason: "obsolete" });
     await lookupStarted.promise;
@@ -243,6 +244,7 @@ describe("generation result and audit fences", () => {
     release.resolve();
     await rejected;
     expect(state.review).not.toHaveBeenCalled();
+    expect(state.auditConfig).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

@@ -6,6 +6,7 @@ import { sanitizeAuthReturnPath } from "@/lib/auth-return-path";
 import { getFrequencyCode } from "@/lib/frequency-data";
 import { getCurrentFrequency } from "@/lib/current-frequency";
 import type { FrequencyIdentity } from "@unfreq/contracts";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   }
 
   if (frequency !== undefined) {
+    if (returnPath !== undefined) redirect(returnPath);
     return (
       <section className="login-page">
         <LoggedInFrequencyPanel frequency={frequency} />

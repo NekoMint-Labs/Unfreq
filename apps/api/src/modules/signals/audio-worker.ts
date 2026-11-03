@@ -172,22 +172,22 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
       const signal = await repository.readPublished(id);
       check(task);
       if (signal === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
-      if (signal.audioStatus === "READY" || signal.audioStatus === "PENDING") {
+      if (signal.audioPublicationVersion === signal.publicationVersion && (signal.audioStatus === "READY" || signal.audioStatus === "PENDING")) {
         task.resolve(toSignalAudioDetail(signal));
         return;
       }
       const configured = await providerConfigured();
       check(task);
       if (!configured) {
-        const fallback = await repository.markUnavailable(id);
+        const fallback = await repository.markUnavailable(id, signal.publicationVersion);
         check(task);
-        if (fallback === undefined) throw new AppError("NOT_FOUND", "Signal not found.");
+        if (fallback === undefined || fallback.publicationVersion !== signal.publicationVersion) throw new AppError("NOT_FOUND", "Signal not found.");
         task.resolve(fallback.audioStatus === "READY" || fallback.audioStatus === "PENDING"
           ? toSignalAudioDetail(fallback) : toUnavailableTtsAudioDetail(fallback));
         return;
       }
       if (!guard.policy.configured) throw new AbuseControlStopped("unavailable", "configuration");
-      const claimed = await repository.claim(id);
+      const claimed = await repository.claim(id, signal.publicationVersion);
       if (claimed.outcome === "CLAIMED") task.attempt = claimed.attempt;
       check(task);
       if (claimed.outcome === "UNAVAILABLE") throw new AppError("NOT_FOUND", "Signal not found.");
@@ -202,7 +202,7 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
       await assertOwnership(task);
       task.commitStarted = true;
       if (await task.reservation.commit() !== "COMMITTED") throw unavailable();
-      check(task);
+      await assertOwnership(task);
       task.resolve(toSignalAudioDetail(claimed.attempt.signal));
       const audio = await synthesizeAudio(claimed.attempt.signal.expandedText, undefined, 0.96, {
         logger, signal: task.controller.signal,
@@ -217,7 +217,7 @@ export function createSignalAudioWorker(options: SignalAudioWorkerOptions = {}):
       task.fileCreated = true;
       await assertOwnership(task);
       task.readyUncertain = true;
-      const written = await repository.ready(claimed.attempt, task.storageKey, `/api/signals/${id}/audio/main`);
+      const written = await repository.ready(claimed.attempt, task.storageKey, `/api/signals/${id}/audio/main?v=${claimed.attempt.signal.publicationVersion}`);
       task.readyUncertain = false;
       if (!written) throw new AudioTaskStopped("obsolete");
       task.ready = true;

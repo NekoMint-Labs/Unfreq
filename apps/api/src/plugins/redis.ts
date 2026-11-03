@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
 import { Redis } from "ioredis";
 import { env } from "../config/env.js";
+import { safeErrorType } from "../shared/log-redaction.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -21,7 +22,7 @@ export const redisPlugin = fp(async function redisPlugin(app: FastifyInstance) {
   app.decorate("redis", redis);
 
   redis.on("error", (error) => {
-    app.log.warn({ err: error }, "redis connection error");
+    app.log.warn({ action: "redis.connection.failed", errorType: safeErrorType(error) }, "redis connection error");
   });
 
   app.addHook("onClose", async () => {

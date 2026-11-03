@@ -1,3 +1,4 @@
+import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationExecutionStopped, runWithGenerationExecution, type GenerationExecutionContext } from "../../shared/generation-execution.js";
 import { fixtureFingerprint } from "../../../tests/integration/fixtures.js";
@@ -6,15 +7,16 @@ import type { SignalSemanticMatchRecord } from "./types.js";
 
 const calls = vi.hoisted(() => ({
   embeddingConfigured: vi.fn(), embedding: vi.fn(), rerankerConfigured: vi.fn(), rerank: vi.fn(),
-  semantic: vi.fn(), keyword: vi.fn(),
+  semantic: vi.fn(), keyword: vi.fn(), recheck: vi.fn(),
 }));
 vi.mock("../ai/embedding.js", () => ({ isEmbeddingProviderConfigured: calls.embeddingConfigured, generateEmbedding: calls.embedding }));
 vi.mock("../ai/reranker.js", () => ({ isRerankerProviderConfigured: calls.rerankerConfigured, rerankCandidates: calls.rerank }));
-vi.mock("./repository.js", () => ({ listPublishedSemanticSignalMatchCandidates: calls.semantic, listPublishedSignalMatchCandidates: calls.keyword }));
-vi.mock("./service-embedding.js", () => ({ buildSignalEmbeddingText: () => "synthetic embedding input" }));
+vi.mock("./repository.js", () => ({ listPublishedSemanticSignalMatchCandidates: calls.semantic, recheckPublicSignals: calls.recheck, listPublishedSignalMatchCandidates: calls.keyword }));
+vi.mock("./service-embedding.js", () => ({ buildSignalEmbeddingText: (input: { expandedText: string }) => `正文：${input.expandedText}` }));
 
-const candidate: SignalSemanticMatchRecord = {
-  id: "synthetic-candidate", authorId: null, authorFreqCode: "FM-UNIT", frequencyId: null,
+const candidate: SignalSemanticMatchRecord = confirmUnitPublication({
+  publicationVersion: 0, publicationSnapshot: null, withdrawnAt: null, audioPublicationVersion: null,
+  id: "synthetic-candidate", authorId: "00000000-0000-4000-8000-000000000101", authorFreqCode: "FM-10.01", frequencyId: null,
   audioError: null, audioStatus: "NOT_REQUESTED", audioStorageKey: null, audioStorageKeyLeft: null, audioStorageKeyRight: null,
   audioUrl: null, audioUrlLeft: null, audioUrlRight: null,
   createdAt: new Date("2026-01-01T00:00:00Z"), updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -25,7 +27,7 @@ const candidate: SignalSemanticMatchRecord = {
   coreNeed: null, emotionTone: null, innerConflict: null, matchSignalId: null, parentSignalId: null,
   primaryBand: "self_mirror", programJson: { bridgeNarration: "synthetic", closingQuestion: "synthetic?", hostIntro: "synthetic", leftSignalSummary: "synthetic", programTitle: "synthetic", shareQuote: "synthetic" },
   qualityReason: null, qualityScore: null, source: "human", status: "PUBLISHED", subFeeling: "self_acceptance", isKept: false,
-};
+});
 const input = { expandedText: "synthetic expansion", fingerprint: fixtureFingerprint, rawInput: "synthetic input" };
 
 function execution() {
@@ -46,12 +48,57 @@ beforeEach(() => {
   calls.embeddingConfigured.mockReset().mockResolvedValue(true);
   calls.embedding.mockReset().mockResolvedValue({ embedding: [0.1, 0.2, 0.3], dimensions: 3, model: "synthetic", provider: "synthetic", version: "unit-v1" });
   calls.rerankerConfigured.mockReset().mockResolvedValue(true);
-  calls.rerank.mockReset().mockResolvedValue({ model: "synthetic", provider: "synthetic", results: [{ id: candidate.id, reason: "synthetic", score: 0.9 }] });
+  calls.rerank.mockReset().mockResolvedValue({ model: "synthetic", provider: "synthetic", scoreScale: "zero_to_one", results: [{ id: candidate.id, reason: "synthetic", score: 0.9, rawScore: 0.9, rawScale: "zero_to_one" }] });
   calls.semantic.mockReset().mockResolvedValue([candidate]);
   calls.keyword.mockReset().mockResolvedValue([]);
+  calls.recheck.mockReset().mockImplementation(async (rows: SignalSemanticMatchRecord[]) => rows.map((row) => row.expandedText === undefined ? candidate : row));
 });
 
 describe("matching cancellation does not become an ordinary degradation", () => {
+  it("serves a read-only query with rules without checking or dispatching providers", async () => {
+    const { distance: _distance, ...ruleCandidate } = candidate;
+    calls.keyword.mockResolvedValue([ruleCandidate]);
+    const info = vi.fn();
+    const result = await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true,
+      logger: { info, warn: vi.fn(), error: vi.fn() } });
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].scoreProvenance).toMatchObject({ method: "rules", reason: "read_only" });
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.semantic).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith({ action: "signal.match.read_only", providerDispatches: 0,
+      persisted: false, storedVectorUsed: false }, expect.any(String));
+    expect(JSON.stringify(info.mock.calls)).not.toContain(input.rawInput);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(input.expandedText);
+  });
+
+  it("reuses an existing same-space vector for a read-only query without reranking", async () => {
+    const storedEmbedding = { embedding: [0.1, 0.2, 0.3], dimensions: 3, model: "synthetic", provider: "synthetic", version: `es1:${"a".repeat(64)}` };
+    const result = await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true, storedEmbedding });
+    expect(calls.semantic).toHaveBeenCalledWith(storedEmbedding.embedding, 12, undefined, storedEmbedding, expect.any(Object));
+    expect(result.matches[0].scoreProvenance).toMatchObject({ method: "cosine", reason: "read_only" });
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { version: "legacy-v1", dimensions: 3, embedding: [0.1, 0.2, 0.3] },
+    { version: `es1:${"a".repeat(64)}`, dimensions: 2, embedding: [0.1, 0.2, 0.3] },
+    { version: `es1:${"a".repeat(64)}`, dimensions: 3, embedding: [0.1, Number.POSITIVE_INFINITY, 0.3] },
+  ])("does not query or regenerate an unusable stored vector $version/$dimensions", async (vector) => {
+    await findSameFrequencyMatches({ ...input, publicQuery: true, readOnly: true,
+      storedEmbedding: { ...vector, model: "synthetic", provider: "synthetic" } });
+    expect(calls.semantic).not.toHaveBeenCalled();
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+
   it("does not replace an embedding control error with keyword matching", async () => {
     const { ctx } = execution();
     const stopped = new GenerationExecutionStopped("obsolete");
@@ -69,7 +116,8 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     calls.rerank.mockRejectedValueOnce(stopped);
     const warn = vi.fn();
     await expect(runWithGenerationExecution(ctx, () => findSameFrequencyMatches({ ...input, logger: { info: vi.fn(), error: vi.fn(), warn } }))).rejects.toBe(stopped);
-    expect(calls.keyword).not.toHaveBeenCalled();
+    expect(calls.keyword).toHaveBeenCalledTimes(1);
+    expect(calls.keyword.mock.invocationCallOrder[0]).toBeLessThan(calls.rerank.mock.invocationCallOrder[0]!);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -105,4 +153,24 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     expect(calls.rerank).not.toHaveBeenCalled();
     expect(calls.keyword).not.toHaveBeenCalled();
   });
+  it("sends only confirmed candidate text and the approved public query to providers", async () => {
+    const original = candidate.expandedText;
+    candidate.expandedText = "PRIVATE-unconfirmed-candidate-edit";
+    try {
+      await findSameFrequencyMatches({ ...input, publicQuery: true });
+      expect(calls.embedding.mock.calls[0]?.[0]).toBe(`正文：${input.expandedText}`);
+      expect(calls.rerank.mock.calls[0]?.[0].candidates[0].expandedText).toBe("synthetic public candidate");
+    } finally { candidate.expandedText = original; }
+  });
+  it("does not dispatch a candidate withdrawn while provider configuration is loading", async () => {
+    calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValue([]);
+    expect((await findSameFrequencyMatches(input)).matches).toEqual([]);
+    expect(calls.rerank).not.toHaveBeenCalled();
+  });
+  it("drops a candidate whose publication epoch changed while reranking was in flight", async () => {
+    calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValueOnce([candidate]).mockResolvedValue([]);
+    expect((await findSameFrequencyMatches(input)).matches).toEqual([]);
+    expect(calls.rerank).toHaveBeenCalledTimes(1);
+  });
+
 });

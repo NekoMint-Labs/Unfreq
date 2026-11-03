@@ -29,6 +29,6 @@ Repo-wide rules already established by the code, contracts, and explicit decisio
 
 ## Verification
 
-- Layer checks: `npm run contracts:typecheck`, `npm run api:check` (lint + typecheck + test + build), `npm run web:check` (lint + typecheck + build), and the aggregate `npm run check`.
+- Layer checks: `npm run contracts:typecheck`, `npm run api:check` (integration-tool tests + lint + typecheck + test + build), `npm run web:check` (lint + typecheck + test + build), and the aggregate `npm run check`.
 - `npm run e2e` is intentionally opt-in (slow Next dev cold start); run it only on request or when a change cannot be verified below the browser layer. `npm run deploy:test` covers deployment scripts.
 - Never commit secrets; provider API keys stay server-side and are write-only from the admin UI.

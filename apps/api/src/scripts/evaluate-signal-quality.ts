@@ -22,7 +22,8 @@ type SignalQualityCliArgs =
       type: "help";
     };
 
-const usage = `Usage:
+const usage = `Demo: deterministic text-only rules, not Seed fidelity, human ratings or model-quality evidence.
+Usage:
   npm --workspace @unfreq/api run ai:signals:evaluate
   npm --workspace @unfreq/api run ai:signals:evaluate -- --text <signal-text>
   npm --workspace @unfreq/api run ai:signals:evaluate -- --file <path>

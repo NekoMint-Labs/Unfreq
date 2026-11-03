@@ -305,7 +305,10 @@ export function buildSignalQualityMarkdownReport(
   evaluation: SignalQualityBatchEvaluation,
 ): string {
   const lines = [
-    "# AI Signal Quality Evaluation",
+    "# Signal Text Heuristic Check (Demo)",
+    "",
+    "Deterministic text-only rules; no model calls or human ratings. Seed is displayed for reference only.",
+    "This does not evaluate Seed fidelity or author approval and is not competition/model-quality evidence.",
     "",
     `Samples: ${evaluation.sampleSize}`,
     `Passed: ${evaluation.passCount}/${evaluation.sampleSize}`,

@@ -9,6 +9,7 @@ import { normalizeFrequencyCode } from "./identity.js";
 import {
   echoSummaryResponseSchema,
   mySignalsResponseSchema,
+  mySignalsQuerySchema,
   savedSignalsResponseSchema,
 } from "../signals/schemas.js";
 import {
@@ -98,7 +99,11 @@ export async function frequencyRoutes(app: FastifyInstance) {
   });
 }
 
-export async function authRoutes(app: FastifyInstance) {
+export type AuthRoutesOptions = {
+  testLoginChallengeDelivery?: (delivery: { code: string; emailHash: string }) => void;
+};
+
+export async function authRoutes(app: FastifyInstance, options: AuthRoutesOptions = {}) {
   app.post("/guest", async () => {
     throw new AppError("FORBIDDEN", "Guest frequency creation is disabled.");
   });
@@ -138,14 +143,13 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const result = await requestLoginChallenge(app.redis, parsedBody.data.email);
+    // Synthetic tests may observe this in memory without turning logs into a
+    // credential delivery channel. Never invoke it in development/production.
+    if (env.isTest) options.testLoginChallengeDelivery?.({ code: result.localDelivery.code, emailHash: result.localDelivery.emailHash });
 
     request.log.info(
       {
         action: "auth.login.challenge.request",
-        ...(!env.isProduction && env.authLoginDeliveryMode === "local-log" ? {
-          email: result.localDelivery.maskedEmail,
-          loginChallengeCode: result.localDelivery.code,
-        } : {}),
         loginChallengeMode: result.delivery.mode,
         loginChallengeRequestId: request.id,
         requestId: request.id,
@@ -260,6 +264,7 @@ export async function authRoutes(app: FastifyInstance) {
 }
 
 export async function meRoutes(app: FastifyInstance) {
+  app.addHook("onRequest", async (_request, reply) => { reply.header("cache-control", "private, no-store, max-age=0"); });
   app.get("/me", async (request, reply) => {
     const frequency = request.requireFrequency();
 
@@ -270,7 +275,9 @@ export async function meRoutes(app: FastifyInstance) {
 
   app.get("/me/signals", async (request, reply) => {
     const frequency = request.requireFrequency();
-    const result = await getMySignals(frequency);
+    const query = mySignalsQuerySchema.safeParse(request.query);
+    if (!query.success) throw new AppError("VALIDATION_ERROR", "Invalid history page.");
+    const result = await getMySignals(frequency, query.data);
     const response = mySignalsResponseSchema.parse(result);
 
     return sendData(reply, request, response);

@@ -1,11 +1,8 @@
 import { signalExpansionBlockedPhrases } from "./provider-prompts.js";
+import { allowsNonSceneExpansion } from "./expansion-review-rules.js";
 import { callChatProvider } from "./provider-transport.js";
 import { evaluateSignalQuality } from "./signal-quality-evaluator.js";
-import {
-  getSignalFrequencyDisplayText,
-  normalizeSignalFrequencyProfile,
-  signalBandLabels,
-} from "../signals/frequency-taxonomy.js";
+import { normalizeSignalFrequencyProfile } from "../signals/frequency-taxonomy.js";
 import type {
   AiClassification,
   AiContentAnalysis,
@@ -98,13 +95,10 @@ export function contentAnalysisFallback(content: string): AiContentAnalysis {
   };
 }
 
-export function monthlyRecapFallback(content: string): AiMonthlyRecap {
-  const tags = tagsFallback(content).tags.slice(0, 3);
-  const themeWords = tags.length === 0 ? ["日常"] : tags;
-
+export function monthlyRecapFallback(_content: string): AiMonthlyRecap {
   return {
-    summary: `这个月的信号反复靠近${themeWords.join("、")}。它们没有急着给答案，只把一些难说的话留了下来。`.slice(0, 100),
-    themeWords,
+    summary: "本月的表达已整理在这里，可以沿着自己的文字回看这些片段。",
+    themeWords: ["本月表达"],
   };
 }
 
@@ -146,32 +140,32 @@ export function signalFingerprintFallback(content: string): AiSignalFingerprint 
   const tags = extractSignalTags(compactContent);
   const primaryEmotion = analysis.emotions[0] ?? "未命名情绪";
   const profile = normalizeSignalFrequencyProfile({
-    coreNeed: "确认自己的感受能被理解",
+    interpretation: { version: 1, state: "unknown", source: "rules" },
     emotionTone: primaryEmotion,
     fallbackText: compactContent,
-    innerConflict: "想继续往前，又怀疑自己是否真的被看见",
     resonanceKeywords: tags,
   });
 
   return {
+    interpretation: profile.interpretation,
     coreNeed: profile.coreNeed,
-    displayText: getSignalFrequencyDisplayText(profile.primaryBand, profile.subFeeling),
+    displayText: profile.displayText,
     energy: analysis.intensity,
     emotionTone: profile.emotionTone,
     frequency: `SIG-${toSignalHash(compactContent)}`,
     hiddenNeed: profile.coreNeed,
     innerConflict: profile.innerConflict,
-    narrativeConflict: "想靠近别人，又担心自己的情绪打扰别人",
+    narrativeConflict: profile.innerConflict,
     openness: Math.min(1, Math.max(0.35, compactContent.length / 600)),
-    primaryEmotion,
+    primaryEmotion: profile.emotionTone,
     primaryBand: profile.primaryBand,
     resonanceKeywords: profile.resonanceKeywords,
     riskLevel: analysis.riskLevel,
-    secondaryEmotions: analysis.emotions.filter((emotion) => emotion !== primaryEmotion).slice(0, 4),
+    secondaryEmotions: [],
     signalType: profile.primaryBand,
     subFeeling: profile.subFeeling,
     tags: profile.resonanceKeywords,
-    theme: signalBandLabels[profile.primaryBand],
+    theme: profile.displayText,
     title: toShortText(compactContent, 24),
   };
 }
@@ -1176,9 +1170,7 @@ export function signalExpansionReviewFallback(
   ];
   const hasConcreteObjects = includesAny(input.expandedText, concreteObjectWords);
   const hasSensoryDetails = includesAny(input.expandedText, sensoryWords);
-  const allowsNonSceneMode =
-    input.classification.expansionMode === "aftertaste" ||
-    input.classification.expansionMode === "clarify_thought";
+  const allowsNonSceneMode = allowsNonSceneExpansion(input.classification.expansionMode);
   const isGenericLiteraryTemplate = includesAny(input.expandedText, genericTemplateWords);
   const repeatsCompleteSeed = hasCompleteSeedReuse(input.seedText, input.expandedText);
   const joinsSeedAsTemplatePrefix = hasSeedHardJoin(input.seedText, input.expandedText);

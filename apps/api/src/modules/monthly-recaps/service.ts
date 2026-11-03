@@ -52,6 +52,7 @@ function getMonthRange(yearMonth: string): { endAt: Date; startAt: Date } {
 
 function toMySignalSummary(signal: MonthlyRecapSignal): MySignalSummary {
   const frequencyProfile = normalizeSignalFrequencyProfile({
+    interpretation: signal.fingerprintJson.interpretation,
     coreNeed: signal.fingerprintJson.coreNeed ?? signal.fingerprintJson.hiddenNeed,
     emotionTone: signal.fingerprintJson.emotionTone ?? signal.fingerprintJson.primaryEmotion,
     fallbackText: [signal.seedText, signal.expandedText, signal.fingerprintJson.theme].join("\n"),
@@ -92,22 +93,10 @@ function pickTopSignal(signals: MonthlyRecapSignal[]): MonthlyRecapSignal | unde
 function buildRecapInput(signals: MonthlyRecapSignal[]): string {
   return signals
     .map((signal, index) => {
-      const frequencyProfile = normalizeSignalFrequencyProfile({
-        coreNeed: signal.fingerprintJson.coreNeed ?? signal.fingerprintJson.hiddenNeed,
-        emotionTone: signal.fingerprintJson.emotionTone ?? signal.fingerprintJson.primaryEmotion,
-        fallbackText: [signal.seedText, signal.expandedText, signal.fingerprintJson.theme].join("\n"),
-        innerConflict:
-          signal.fingerprintJson.innerConflict ?? signal.fingerprintJson.narrativeConflict,
-        primaryBand: signal.fingerprintJson.primaryBand,
-        resonanceKeywords:
-          signal.fingerprintJson.resonanceKeywords ?? signal.fingerprintJson.tags,
-        subFeeling: signal.fingerprintJson.subFeeling,
-      });
-
       return [
         `#${index + 1}`,
-        `主频段：${frequencyProfile.displayText}`,
-        `共振关键词：${frequencyProfile.resonanceKeywords.join("、")}`,
+        // Only the author's words and observed counts enter a new recap.
+        // Neither unknown defaults nor unverified psychological labels are evidence.
         `共鸣：${signal.resonanceCount}`,
         `种子：${signal.seedText}`,
         `扩写：${signal.expandedText}`,
@@ -128,14 +117,9 @@ function normalizeThemeWords(themeWords: string[], signals: MonthlyRecapSignal[]
     return normalized;
   }
 
-  const words = new Set<string>();
-
-  signals.forEach((signal) => {
-    words.add(signal.fingerprintJson.theme);
-    signal.fingerprintJson.tags.forEach((tag) => words.add(tag));
-  });
-
-  return Array.from(words).filter((word) => word.length > 0).slice(0, 3);
+  // No fallback to stored psychological labels. A literal text excerpt remains
+  // attributable to the expression and does not invent a need or conflict.
+  return [...new Set(signals.map((signal) => signal.seedText.trim().slice(0, 12)).filter(Boolean))].slice(0, 3);
 }
 
 function normalizeSummary(summary: string): string {

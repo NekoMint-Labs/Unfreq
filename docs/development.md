@@ -3,7 +3,7 @@
 ## 本地命令
 
 ```bash
-npm install
+npm ci
 npm run api:dev
 npm run web:dev
 npm run check
@@ -16,6 +16,17 @@ npm run deploy:test
 ```
 
 本地 npm 开发需要自行准备 `apps/api/.env`、`apps/web/.env`、PostgreSQL 和 Redis。项目部署不再以本地 npm 启动为主路径。
+
+通过实际API生成正文需要可用的聊天Provider。模板中的 `AI_MODEL=local-fallback` 是默认配置值，不会启用本地正文生成器；空Provider配置可能先接收任务、随后生成失败。下述单测与合成集成检查不需要真实AI密钥，它们的固定响应不能作为真实模型效果证据。
+
+迁移命令运行编译后的官方 ORM 迁移器。本地首次安装或更新迁移脚本后，先构建再应用SQL：
+
+```bash
+npm run api:build
+npm run api:migrate
+```
+
+它通过 `DATABASE_URL` 使用原有SQL目录及`drizzle.__drizzle_migrations`账本；`npm run api:migrate -- --help`只显示命令帮助。生成迁移仍使用开发依赖中的`npm run api:migrate:generate`。生产镜像已经包含编译产物，启动时直接迁移，不安装开发工具或执行TypeScript构建。
 
 `npm run e2e` 会启动 Next.js Web 和本地 mock API，只覆盖浏览器主流程，不依赖真实 AI Key、PostgreSQL 或 Redis。它当前不并入默认 `npm run check`，避免把浏览器安装和本地端口占用变成所有代码检查的前置条件。
 

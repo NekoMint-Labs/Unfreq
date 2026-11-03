@@ -11,6 +11,7 @@
 - 确认旧服务器有足够空间写 PostgreSQL 备份和 volume 归档。
 - 确认新服务器已安装 Docker 和 Docker Compose。
 - 确认新服务器已创建反代 Docker 网络。默认网络名是 `npm_default`。
+- 备份前冻结写入和 worker/scheduler，记录 SQL、媒体和配置的同一检查点；pg_dump 不提供跨卷原子快照。恢复时关闭应用及外部入口，准备可追溯的较新撤回/审核/删除状态依据。
 
 ## 必须带走的数据
 
@@ -18,41 +19,102 @@
 - `postgres-data`：业务主数据。使用 `server backup` 导出 SQL 备份。
 - `api-image-storage`：图片上传文件，挂载在 API 容器 `/app/storage/images`。
 - `api-audio-storage`：生成的音频文件，挂载在 API 容器 `/app/storage/audio/programs`。
-- `redis-data`：会话、缓存和队列状态。Redis 丢失不会破坏 PostgreSQL 主数据，但会导致登录态、缓存和未完成队列丢失。
+- `redis-data`：登录挑战、一次性状态及共享请求/Provider 预算；账号和持久生成任务在 PostgreSQL。旧 AOF 的恢复、过期挑战和额度衔接须单独验收。
 
 ## 旧服务器备份
 
+先停止应用、worker/scheduler及其他写入者；Redis应干净停止后再归档其持久卷。以下工具容器不启动Caddy服务，也不接网络；镜像引用为本轮本机 `image inspect` 读回的官方固定RepoDigest，本机实际为linux/amd64，不据此宣称其他架构已验收。源卷必须已存在且名称、Compose项目与用途已确认，避免拼错名字时创建空卷。
+
 ```bash
-mkdir -p /srv/unfreq/backups
-UNFREQ_BACKUP_FILE=/srv/unfreq/backups/unfreq-postgres-pre-migration.sql.gz ./scripts/deployment-stack.sh server backup
-docker run --rm -v unfreq_api-image-storage:/data -v /srv/unfreq/backups:/backup alpine tar -czf /backup/unfreq-images-pre-migration.tar.gz -C /data .
-docker run --rm -v unfreq_api-audio-storage:/data -v /srv/unfreq/backups:/backup alpine tar -czf /backup/unfreq-audio-pre-migration.tar.gz -C /data .
-docker run --rm -v unfreq_redis-data:/data -v /srv/unfreq/backups:/backup alpine tar -czf /backup/unfreq-redis-pre-migration.tar.gz -C /data .
-cp .env /srv/unfreq/backups/unfreq.env
+set -eu
+BACKUP_DIR=/srv/unfreq/backups
+MEDIA_TOOL_IMAGE=caddy@sha256:04913b1da43339a40ad1ea87827d70a576ac5aa6cf674c6e24fdca675887533a
+IMAGES_VOLUME=unfreq_api-image-storage
+AUDIO_VOLUME=unfreq_api-audio-storage
+REDIS_VOLUME=unfreq_redis-data
+docker volume inspect "$IMAGES_VOLUME" "$AUDIO_VOLUME" "$REDIS_VOLUME" >/dev/null
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+umask 077
+UNFREQ_BACKUP_FILE="$BACKUP_DIR/unfreq-postgres-pre-migration.sql.gz" ./scripts/deployment-stack.sh server backup
+
+archive_volume() {
+  docker run --rm --network none --entrypoint /bin/sh \
+    --mount "type=volume,source=$1,target=/data,readonly" \
+    --mount "type=bind,source=$BACKUP_DIR,target=/backup" \
+    -e "ARCHIVE_NAME=$2" "$MEDIA_TOOL_IMAGE" -c '
+      set -eu; set -C; umask 077
+      test "$(stat -c %a /backup)" = 700
+      test ! -e "/backup/$ARCHIVE_NAME"
+      test ! -L "/backup/$ARCHIVE_NAME"
+      tar -czf - -C /data . > "/backup/$ARCHIVE_NAME"
+      test "$(stat -c %a "/backup/$ARCHIVE_NAME")" = 600
+    '
+}
+archive_volume "$IMAGES_VOLUME" unfreq-images-pre-migration.tar.gz
+archive_volume "$AUDIO_VOLUME" unfreq-audio-pre-migration.tar.gz
+archive_volume "$REDIS_VOLUME" unfreq-redis-pre-migration.tar.gz
+cp .env "$BACKUP_DIR/unfreq.env"
+chmod 600 "$BACKUP_DIR/unfreq.env"
+(cd "$BACKUP_DIR" && sha256sum *.tar.gz unfreq-postgres-pre-migration.sql.gz > SHA256SUMS)
 ```
 
-如果 Compose project name 不是目录名 `unfreq`，先用 `docker volume ls | grep unfreq` 查真实 volume 名，再替换上面的 `unfreq_*`。
+以上按Linux备份目录验证700/600权限；宿主的 `umask` 不会自动传给容器，必须在容器内设置。`set -C` 让shell以不覆盖模式创建归档，另行拒绝已有文件或悬空链接；失败留下的归档仍需保留并核查，不能拿部分文件恢复或直接覆盖重试。核对实际卷时使用 `docker volume inspect` 的完整名字、Compose项目和卷角色，不仅凭名称前缀。这些归档不是加密文件，也不授权恢复旧Redis状态。
 
 ## 新服务器恢复
 
 ```bash
+set -eu
 git clone https://github.com/your-org/Unfreq.git Unfreq
 cd Unfreq
-cp /srv/unfreq/backups/unfreq.env .env
+BACKUP_DIR=/srv/unfreq/backups
+MEDIA_TOOL_IMAGE=caddy@sha256:04913b1da43339a40ad1ea87827d70a576ac5aa6cf674c6e24fdca675887533a
+TARGET_IMAGES_VOLUME=unfreq_api-image-storage
+TARGET_AUDIO_VOLUME=unfreq_api-audio-storage
+(cd "$BACKUP_DIR" && sha256sum -c SHA256SUMS)
+cp "$BACKUP_DIR/unfreq.env" .env
 docker network inspect npm_default >/dev/null 2>&1 || docker network create npm_default
 docker compose up -d postgres
-./scripts/deployment-stack.sh server restore /srv/unfreq/backups/unfreq-postgres-pre-migration.sql.gz
-docker run --rm -v unfreq_api-image-storage:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-images-pre-migration.tar.gz'
-docker run --rm -v unfreq_api-audio-storage:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-audio-pre-migration.tar.gz'
-docker run --rm -v unfreq_redis-data:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-redis-pre-migration.tar.gz'
-docker compose up --build -d
+UNFREQ_RESTORE_ISOLATED=true ./scripts/deployment-stack.sh server restore "$BACKUP_DIR/unfreq-postgres-pre-migration.sql.gz"
+
+for target in "$TARGET_IMAGES_VOLUME" "$TARGET_AUDIO_VOLUME"; do
+  if docker volume inspect "$target" >/dev/null 2>&1; then
+    printf 'Refusing existing target volume: %s\n' "$target" >&2
+    exit 1
+  fi
+done
+docker volume create "$TARGET_IMAGES_VOLUME" >/dev/null
+docker volume create "$TARGET_AUDIO_VOLUME" >/dev/null
+restore_volume() {
+  docker run --rm --network none --entrypoint /bin/sh \
+    --mount "type=volume,source=$1,target=/data" \
+    --mount "type=bind,source=$BACKUP_DIR,target=/backup,readonly" \
+    -e "ARCHIVE_NAME=$2" "$MEDIA_TOOL_IMAGE" -c '
+      set -eu
+      cd /data
+      test -z "$(find . -mindepth 1 -print -quit)"
+      tar -xzf "/backup/$ARCHIVE_NAME"
+    '
+}
+restore_volume "$TARGET_IMAGES_VOLUME" unfreq-images-pre-migration.tar.gz
+restore_volume "$TARGET_AUDIO_VOLUME" unfreq-audio-pre-migration.tar.gz
+# 仅有本地合成Redis AOF演练；生产旧挑战/额度与较新状态衔接仍未验收，不自动重放旧AOF。
+# 保持 API / Web / proxy 停止，先完成下述恢复核对。
 ```
 
-把 `git clone` 的仓库地址替换成真实地址。如果 `.env` 里的 `UNFREQ_PROXY_NETWORK` 不是 `npm_default`，按 `.env` 的值创建网络。
+把 `git clone` 的仓库地址替换成真实地址。如果 `.env` 里的 `UNFREQ_PROXY_NETWORK` 不是 `npm_default`，按 `.env` 的值创建网络。目标媒体卷必须属于全新恢复项目；若已存在就停止并人工核对，不要为继续示例删除既有卷。部分恢复失败后也保持入口关闭、保留原目标和日志，另选新目标重试。这里只接受已核验的可信归档，不能把任意tar文件当作安全输入。
 
 ## 新服务器验收
 
+PostgreSQL 目标必须为空，不要为绕过保护删除线上表。先验证产物 SHA256、媒体字节、原密钥解密及 pgvector 扩展/查询，再依据较新状态清单复核撤回、审核、删除和公开版本。缺少最新依据时保持入口关闭。核对通过后，在仍隔离外部入口的环境启动服务，再做 smoke；对外开放和 DNS/反代切换由目标环境验收决定。F1 前旧版本还需关闭其默认自动调度入口。
+
+隔离检查期间在目标配置中关闭 SIGNAL_GENERATION_WORKER_ENABLED 和 AI_SIGNAL_SCHEDULER_ENABLED，并阻断真实 Provider 外发。先核对恢复任务的派发记录、租约和额度，再按批准流程决定是否开启消费者；不要仅因为旧快照有 pending 就主动重发。
+
+合成演练与手工步骤见 [F2 实施记录](./implementation/f2-recovery-replicas-20261031.md)。
+
 ```bash
+# 仅在以上隔离、状态和配置核对通过后启动，仍不切换外部入口。
+docker compose up --build -d
 ./scripts/deployment-stack.sh server preflight
 UNFREQ_BASE_URL=https://你的域名 ./scripts/deployment-stack.sh server smoke
 docker compose ps

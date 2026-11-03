@@ -227,18 +227,55 @@ export function AdminAiEvaluationSection({
 }: {
   evaluation: AdminDashboardData["evaluation"];
 }) {
+  // An older API can still return the former fixed "FINAL" percentages.
+  // Keep them hidden until the response declares its traceable Demo source.
+  const hasTraceableDemo =
+    evaluation.evaluationKind === "DEMO_RULE_FIXTURES" &&
+    evaluation.modelQualityValidated === false &&
+    evaluation.competitionEvidenceEligible === false &&
+    evaluation.dataset?.judgmentSource === "synthetic-presets-not-human" &&
+    typeof evaluation.dataset.version === "string" &&
+    /^[a-f0-9]{64}$/u.test(evaluation.dataset.sha256);
+
   return (
     <CollapsibleSection
       copy={`样本：分类 ${evaluation.sampleSize.classification}，标签 ${evaluation.sampleSize.tags}，审核 ${evaluation.sampleSize.moderation}，匹配 ${evaluation.sampleSize.matching}。`}
       marker="EV"
       sectionId="ai-evaluation"
-      title="AI 实验评估"
+      title="Demo / 规则夹具"
     >
-      <div className="grid gap-3 lg:grid-cols-3">
-        {evaluation.groups.map((group) => (
-          <EvaluationGroupCard group={group} key={group.method} />
-        ))}
+      <div className="grid gap-2 text-sm leading-7 text-[color:var(--radio-muted)]">
+        <p>这里只检查固定合成样本的规则命中，不能作为参赛实测指标。</p>
+        <p>未运行真实模型、双人盲评或真实消融，也不代表生产匹配效果。</p>
       </div>
+      {hasTraceableDemo ? (
+        <>
+          <div className="grid min-w-0 gap-2 text-xs leading-6 text-[color:var(--radio-dim)]">
+            <p>数据版本：{evaluation.dataset.version} · 合成预设标签</p>
+            <p className="break-all">数据 SHA-256：{evaluation.dataset.sha256}</p>
+            {evaluation.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}
+          </div>
+          <div className="grid min-w-0 gap-3">
+            {evaluation.groups.filter((group) => group.method === "RULE_BASELINE").map((group) => (
+              <EvaluationGroupCard group={group} key={group.method} />
+            ))}
+          </div>
+          <details className="radio-surface min-w-0 p-4">
+            <summary className="cursor-pointer text-sm">查看夹具逐项输出</summary>
+            <ul className="mt-4 grid gap-3 text-xs leading-6 text-[color:var(--radio-muted)]">
+              {evaluation.fixtureOutputs.map((output) => (
+                <li className="break-words" key={`${output.task}:${output.id}`}>
+                  <p>{output.id} · {output.hit ? "命中预设" : "未命中预设"}</p>
+                  <p>预设：{output.expected.join("、") || "（空）"}</p>
+                  <p>实际：{output.actual.join("、") || "（空）"}</p>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </>
+      ) : (
+        <p className="radio-alert" role="status">旧版演示数据缺少可追溯信息，暂不展示百分比。</p>
+      )}
     </CollapsibleSection>
   );
 }

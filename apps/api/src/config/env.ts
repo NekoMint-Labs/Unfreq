@@ -2,6 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 import { parseAbusePolicy } from "./abuse.js";
 import { parseTrustedProxyCidrs } from "../shared/request-identity.js";
+import { isSupportedSchedulerTimeZone } from "../modules/signals/scheduler-time.js";
 
 const defaultSessionSecret = "local-dev-session-secret-change-before-production";
 
@@ -40,6 +41,15 @@ const envSchema = z.object({
   AI_FAST_PROVIDER: z.string().default(""),
   AI_MODEL: z.string().min(1).default("local-fallback"),
   AI_PROVIDER: z.string().min(1).default("openai-compatible"),
+  AI_SIGNAL_SCHEDULER_ENABLED: z.enum(["true", "false"]).default("false"),
+  AI_SIGNAL_SCHEDULER_TIME_ZONE: z.string().trim().min(1).max(80).refine(isSupportedSchedulerTimeZone, "Unsupported business time zone.").default("Asia/Shanghai"),
+  AI_SIGNAL_SCHEDULER_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u).default("03:00"),
+  AI_SIGNAL_SCHEDULER_COUNT: z.coerce.number().int().min(1).max(10).default(1),
+  AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: z.coerce.number().int().min(1).max(10).default(1),
+  AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: z.coerce.number().int().min(1).max(500).default(30),
+  AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(60_000),
+  AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(180_000),
+  AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
   EMBEDDING_API_KEY: z.string().default(""),
   EMBEDDING_BASE_URL: z.union([z.string().url(), z.literal("")]).default(""),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().min(1).max(4096).default(1024),
@@ -93,6 +103,11 @@ const envSchema = z.object({
   RERANKER_BASE_URL: z.union([z.string().url(), z.literal("")]).default(""),
   RERANKER_MODEL: z.string().min(1).default("local-disabled"),
   RERANKER_PROVIDER: z.string().min(1).default("disabled"),
+  RERANKER_SCORE_SCALE: z.enum(["", "zero_to_one", "zero_to_hundred"]).default(""),
+  SIGNAL_MATCH_SEMANTIC_CANDIDATES: z.coerce.number().int().min(1).max(50).default(12),
+  SIGNAL_MATCH_RULE_CANDIDATES: z.coerce.number().int().min(1).max(50).default(24),
+  SIGNAL_MATCH_MIN_SCORE: z.coerce.number().min(0).max(100).default(80),
+  SIGNAL_MATCH_MAX_RERANK_CHARACTERS: z.coerce.number().int().min(1).max(100000).default(12000),
   SESSION_SECRET: z
     .string()
     .min(32)
@@ -117,6 +132,10 @@ if (
   parsedEnv.data.SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS >= parsedEnv.data.SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS
 ) {
   throw new Error("Invalid API environment: signal generation requires heartbeat < lease/2, lease <= attempt timeout, retry base <= maximum, and DB lock timeout < statement timeout.");
+}
+
+if (parsedEnv.data.AI_SIGNAL_SCHEDULER_COUNT > parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET) {
+  throw new Error("Invalid API environment: scheduler count cannot exceed its daily signal budget.");
 }
 
 if (
@@ -197,6 +216,15 @@ export const env = {
   aiFastProvider: parsedEnv.data.AI_FAST_PROVIDER,
   aiModel: parsedEnv.data.AI_MODEL,
   aiProvider: parsedEnv.data.AI_PROVIDER,
+  aiSignalSchedulerEnabled: parsedEnv.data.AI_SIGNAL_SCHEDULER_ENABLED === "true",
+  aiSignalSchedulerTimeZone: parsedEnv.data.AI_SIGNAL_SCHEDULER_TIME_ZONE,
+  aiSignalSchedulerTime: parsedEnv.data.AI_SIGNAL_SCHEDULER_TIME,
+  aiSignalSchedulerCount: parsedEnv.data.AI_SIGNAL_SCHEDULER_COUNT,
+  aiSignalSchedulerDailySignalBudget: parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET,
+  aiSignalSchedulerDailyDispatchBudget: parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET,
+  aiSignalSchedulerPollIntervalMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS,
+  aiSignalSchedulerBatchTimeoutMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS,
+  aiSignalSchedulerShutdownGraceMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS,
   embeddingApiKey: parsedEnv.data.EMBEDDING_API_KEY,
   embeddingBaseUrl: parsedEnv.data.EMBEDDING_BASE_URL,
   embeddingDimensions: parsedEnv.data.EMBEDDING_DIMENSIONS,
@@ -239,6 +267,11 @@ export const env = {
   rerankerBaseUrl: parsedEnv.data.RERANKER_BASE_URL,
   rerankerModel: parsedEnv.data.RERANKER_MODEL,
   rerankerProvider: parsedEnv.data.RERANKER_PROVIDER,
+  rerankerScoreScale: parsedEnv.data.RERANKER_SCORE_SCALE,
+  signalMatchSemanticCandidates: parsedEnv.data.SIGNAL_MATCH_SEMANTIC_CANDIDATES,
+  signalMatchRuleCandidates: parsedEnv.data.SIGNAL_MATCH_RULE_CANDIDATES,
+  signalMatchMinScore: parsedEnv.data.SIGNAL_MATCH_MIN_SCORE,
+  signalMatchMaxRerankCharacters: parsedEnv.data.SIGNAL_MATCH_MAX_RERANK_CHARACTERS,
   sessionSecret: parsedEnv.data.SESSION_SECRET,
   webOrigin: parsedEnv.data.WEB_ORIGIN,
 } as const;

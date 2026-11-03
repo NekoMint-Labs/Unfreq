@@ -89,6 +89,9 @@ export const adminReportResolutionBodySchema = z.object({
 
 const adminProviderExtraJsonSchema = z
   .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+  .refine((value) => value.scoreScale === undefined || ["", "zero_to_one", "zero_to_hundred"].includes(String(value.scoreScale)), {
+    message: "scoreScale must declare zero_to_one or zero_to_hundred, or be empty to disable reranking.", path: ["scoreScale"],
+  })
   .default({});
 
 export const adminProviderConfigBodySchema = z

@@ -3,9 +3,11 @@ import type {
   AdminProviderConfigKind,
   AdminProviderConfigRecord,
   AdminProviderConfigUpdate,
+  RerankerScoreScale,
 } from "@unfreq/contracts/admin";
 
 export type ProviderConfigDraft = {
+  scoreScale: RerankerScoreScale | "";
   apiKey: string;
   baseUrl: string;
   chatProfile: AdminChatProviderProfile;
@@ -83,6 +85,7 @@ export function getProviderDraftKey(config: AdminProviderConfigRecord): string {
 
 export function createEmptyProviderDraft(kind: AdminProviderConfigKind): ProviderConfigDraft {
   return {
+    scoreScale: "",
     apiKey: "",
     baseUrl: "",
     chatProfile: "default",
@@ -105,6 +108,7 @@ export function toProviderDrafts(
     (drafts, config) => {
       const draftKey = getProviderDraftKey(config);
       drafts[draftKey] = {
+        scoreScale: config.extraJson.scoreScale === "zero_to_one" || config.extraJson.scoreScale === "zero_to_hundred" ? config.extraJson.scoreScale : "",
         apiKey: "",
         baseUrl: config.baseUrl,
         chatProfile: readChatProviderProfile(config.extraJson),
@@ -150,6 +154,8 @@ export function buildProviderPayload(
   if (kind === "chat") {
     extraJson.chatProfile = draft.chatProfile;
   }
+
+  if (kind === "reranker") extraJson.scoreScale = draft.scoreScale;
 
   if (kind === "tts") {
     if (draft.voiceLeft.trim().length > 0) {

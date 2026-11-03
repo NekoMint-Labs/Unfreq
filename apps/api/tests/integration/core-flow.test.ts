@@ -1,8 +1,14 @@
+import { matchingCases, matchingCaptures, frozenMatchingReport, runFrozenMatchingCase } from "./matching-evaluation.js";
+import { embeddingSpaceKey } from "../../src/modules/ai/embedding-space.js";
 import { createHmac, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { buildPublicationPreview, confirmPublicationSnapshot, digestPublicationContent } from "../../src/modules/signals/publication.js";
+import { signalPrimaryBands, signalBandLabels } from "../../src/modules/signals/frequency-taxonomy.js";
 import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
+import type { ReadOwnedPublicationPreviewResult } from "../../src/modules/signals/publication-repository.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -84,6 +90,45 @@ async function register(): Promise<Session> {
   };
 }
 
+async function rejectIdentityMirrorWrites() {
+  await h.sql.unsafe(`create function f1_reject_identity_mirror() returns trigger language plpgsql as $$
+    begin raise exception 'F1_SYNTHETIC_MIRROR_FAILURE'; end; $$`);
+  await h.sql.unsafe(`create trigger f1_reject_identity_mirror before insert or update on frequencies
+    for each row execute function f1_reject_identity_mirror()`);
+}
+
+async function restoreIdentityMirrorWrites() {
+  await h.sql.unsafe("drop trigger if exists f1_reject_identity_mirror on frequencies");
+  await h.sql.unsafe("drop function if exists f1_reject_identity_mirror()");
+}
+
+async function unusedIdentityCodes(count: number): Promise<string[]> {
+  const rows = await h.sql<{ code: string }[]>`with candidates as (
+    select n, 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as code
+    from generate_series(0, 9999) as series(n)
+  ) select c.code from candidates c
+    where not exists (select 1 from users u where u.freq_code = c.code)
+      and not exists (select 1 from frequencies f where f.code = c.code)
+    order by c.n limit ${count}`;
+  expect(rows).toHaveLength(count);
+  return rows.map((row) => row.code);
+}
+
+async function expectIdentityMirrorFailure(work: Promise<unknown>): Promise<void> {
+  try { await work; }
+  catch (error) {
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const record = current as { message?: unknown; cause?: unknown };
+      if (record.message === "F1_SYNTHETIC_MIRROR_FAILURE") return;
+      current = record.cause;
+    }
+  }
+  throw new Error("Expected the synthetic second mirror-write failure.");
+}
+
 async function createPending(): Promise<string> {
   const response = await request("POST", "/api/signals", author.cookie, { seedText: fixtureSeed });
   expect(response.statusCode).toBe(201);
@@ -118,7 +163,7 @@ async function waitForPreview(id: string): Promise<Signal> {
   const response = await request("GET", `/api/signals/${id}`, author.cookie);
   expect(response.statusCode).toBe(200);
   const signal = response.json<Envelope<{ signal: Signal }>>().data.signal;
-  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PREVIEW_OWNER" });
+  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PRIVATE_OWNER" });
   expect(signal.expandedText?.length).toBeGreaterThanOrEqual(80);
   return signal;
 }
@@ -129,8 +174,86 @@ async function createDraft(): Promise<string> {
   return id;
 }
 
+async function withCleanup(work: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
+  const errors: unknown[] = [];
+  try { await work(); } catch (error) { errors.push(error); }
+  try { await cleanup(); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "C1 fixture assertion and cleanup both failed.");
+}
+
+async function withSyntheticWithdrawalRows(
+  work: (track: (id: string) => void) => Promise<void>,
+): Promise<void> {
+  const ids = new Set<string>();
+  await withCleanup(() => work((id) => { ids.add(id); }), async () => {
+    // These are only this case's synthetic rows. Retain their content and
+    // withdrawal markers, but keep the existing random-public control isolated.
+    if (ids.size !== 0) await h.sql`update signals set status = 'DRAFT' where id in ${h.sql([...ids])}`;
+  });
+}
+
+async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT") {
+  const [{ createSignalDraft }, { buildMinimalSignalProgram }] = await Promise.all([
+    h.loadModule("repository"), h.loadModule("mappers"),
+  ]);
+  // Explicit synthetic unmanaged shape: no authorship confirmation is created
+  // or inferred, and no public-read policy is exercised by these SQL cases.
+  const signal = await createSignalDraft({
+    authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+    expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
+    galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "COMPLETED", status,
+    program: buildMinimalSignalProgram({
+      expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed,
+    }),
+  });
+  track(signal.id);
+  return signal;
+}
+
+async function waitForActualGenerationIdle(): Promise<void> {
+  // Observation only: a failed budget does not cancel work or free any slot.
+  // The enclosing finally releases the provider first; h.close still stops and
+  // joins the actual worker if this bounded fixture observation fails.
+  const deadline = Date.now() + 5_000;
+  while (h.generationActiveCount !== 0 || h.provider.inFlight !== 0) {
+    if (Date.now() >= deadline) throw new Error("C1 fixture generation did not actually settle within 5s after release.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function readyPublicationPreview(result: ReadOwnedPublicationPreviewResult) {
+  expect(result.outcome).toBe("READY");
+  if (result.outcome !== "READY") throw new Error("Synthetic publication preview was unavailable.");
+  return result.preview;
+}
+
+async function publicationRowHash(id: string): Promise<string> {
+  const [row] = await h.sql<{ row_hash: string }[]>`
+    select md5(row_to_json(s)::text) as row_hash from signals s where id = ${id}
+  `;
+  if (row === undefined) throw new Error("Synthetic publication row was unavailable.");
+  return row.row_hash;
+}
+
+async function expectPublicationRejection(
+  id: string,
+  outcome: "NOT_FOUND" | "CONFLICT" | "FORBIDDEN",
+  work: () => Promise<unknown>,
+): Promise<void> {
+  const before = await publicationRowHash(id);
+  expect(await work()).toEqual({ outcome });
+  expect(await publicationRowHash(id)).toBe(before);
+}
+
+async function publicationPayload(id: string) {
+  const response = await request("GET", `/api/signals/${id}/publication-preview`, author.cookie);
+  if (response.statusCode !== 200) return { expectedVersion: 0, digest: "0".repeat(64) };
+  const preview = response.json().data.preview as { version: number; digest: string };
+  return { expectedVersion: preview.version, digest: preview.digest };
+}
 async function publish(id: string) {
-  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie);
+  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id));
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED" } } });
 }
@@ -141,20 +264,23 @@ async function moderate(id: string, status: ModerationStatus) {
   expect(response.json()).toMatchObject({ data: { signal: { id, status } } });
 }
 
-async function expectNotPublic(id: string, reviewing = false) {
-  for (const cookie of [undefined, reader.cookie]) {
+async function expectPrivateDetail(id: string) {
+  // An administrator must use the authorized internal interface too; the
+  // ordinary detail route never reveals another author's review metadata.
+  for (const cookie of [undefined, reader.cookie, admin.cookie]) {
     const detail = await request("GET", `/api/signals/${id}`, cookie);
-    if (reviewing) {
-      expect(detail.statusCode).toBe(200);
-      const signal = detail.json<Envelope<{ signal: Signal }>>().data.signal;
-      expect(signal).toMatchObject({ id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED" });
-      expect(Object.keys(signal).sort()).toEqual([
-        "createdAt", "id", "status", "updatedAt", "visibility",
-      ]);
-    } else {
-      expectError(detail, 404, "NOT_FOUND");
-    }
+    expectError(detail, 404, "NOT_FOUND");
+    expect(detail.json()).toEqual({
+      error: { code: "NOT_FOUND", message: "Signal not found." },
+      meta: { requestId: expect.any(String) },
+    });
+    expect(detail.body).not.toContain(id);
+    expect(detail.headers["cache-control"]).toContain("no-store");
   }
+}
+
+async function expectNotPublic(id: string) {
+  await expectPrivateDetail(id);
 
   for (const suffix of ["matches", "echoes", "audio", "audio/main", "audio/left", "audio/right"]) {
     expectError(await request("GET", `/api/signals/${id}/${suffix}`), 404, "NOT_FOUND");
@@ -263,6 +389,202 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const loggedInMe = await request("GET", "/api/me", sessionCookie(login));
     expect(loggedInMe.statusCode).toBe(200);
     expect(loggedInMe.json()).toMatchObject({ data: { frequency: { id: author.id } } });
+  });
+
+  it("F1 marking echoes seen advances only the activity watermark and preserves identity timestamps", async () => {
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const baseline = await auditIdentityMirrors(200);
+    expect(baseline.truncated).toBe(false);
+    expect(baseline.differences.filter((item) => item.id === author.id)).toEqual([]);
+    const [before] = await h.sql<{ user_time: string; mirror_time: string; last_seen: string | null }[]>`
+      select u.updated_at::text as user_time, f.updated_at::text as mirror_time, f.last_seen_at::text as last_seen
+      from users u join frequencies f on u.id = f.id where u.id = ${author.id}`;
+    try {
+      expect((await request("POST", "/api/me/echo-summary/seen", author.cookie, {})).statusCode).toBe(200);
+      const [after] = await h.sql<{ user_preserved: boolean; mirror_preserved: boolean; same_time: boolean; advanced: boolean; seen_ms: string }[]>`
+        select u.updated_at = ${before.user_time}::timestamptz as user_preserved,
+          f.updated_at = ${before.mirror_time}::timestamptz as mirror_preserved,
+          u.updated_at = f.updated_at as same_time,
+          f.last_seen_at > coalesce(${before.last_seen}::timestamptz, '-infinity'::timestamptz) as advanced,
+          (extract(epoch from f.last_seen_at) * 1000)::text as seen_ms
+        from users u join frequencies f on u.id = f.id where u.id = ${author.id}`;
+      expect(after).toMatchObject({ user_preserved: true, mirror_preserved: true, same_time: true, advanced: true });
+      const summary = await request("GET", "/api/me/echo-summary", author.cookie);
+      expect(summary.statusCode).toBe(200);
+      const seenMs = Number(after.seen_ms);
+      expect(Number.isFinite(seenMs)).toBe(true);
+      expect(Date.parse(summary.json().data.summary.since)).toBe(seenMs);
+      expect((await auditIdentityMirrors(200)).counts).toEqual(baseline.counts);
+    } finally {
+      await h.sql`update frequencies set last_seen_at = ${before.last_seen}::timestamptz,
+        updated_at = ${before.mirror_time}::timestamptz where id = ${author.id}`;
+    }
+  });
+
+  it("F1 rolls back every registration when the real second identity write fails", async () => {
+    const repository = await h.loadModule("authRepository");
+    const suffix = randomUUID().slice(0, 8);
+    const codes = await unusedIdentityCodes(3);
+    const emailCode = codes[0]!;
+    const guestCode = codes[1]!;
+    const passwordCode = codes[2]!;
+    const [before] = await h.sql`select (select count(*)::int from users) as users,
+      (select count(*)::int from frequencies) as frequencies`;
+    await rejectIdentityMirrorWrites();
+    try {
+      await expectIdentityMirrorFailure(repository.createUser({ email: `f1-${suffix}@integration.invalid`, freqCode: emailCode }));
+      await expectIdentityMirrorFailure(repository.createGuestUser({ freqCode: guestCode }));
+      await expectIdentityMirrorFailure(repository.createPasswordFrequencyUser({ freqCode: passwordCode, passwordHash: "F1_SYNTHETIC_HASH" }));
+      const response = await request("POST", "/api/auth/register", undefined, { password: `f1-password-${randomUUID()}` });
+      expect(response.statusCode).toBeGreaterThanOrEqual(500);
+      expect(response.statusCode).toBeLessThan(600);
+      expect(response.body).not.toMatch(/F1_SYNTHETIC_MIRROR_FAILURE|passwordHash|password_hash|stack/iu);
+      const [after] = await h.sql`select (select count(*)::int from users) as users,
+        (select count(*)::int from frequencies) as frequencies`;
+      expect(after).toEqual(before);
+    } finally {
+      await restoreIdentityMirrorWrites();
+    }
+    const [late] = await h.sql`select count(*)::int as n from users where freq_code in (${emailCode}, ${guestCode}, ${passwordCode})`;
+    expect(late.n).toBe(0);
+  });
+
+  it("F1 preserves credentials and the existing-email branch on a mirror failure, including microseconds", async () => {
+    const repository = await h.loadModule("authRepository");
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const suffix = randomUUID().slice(0, 8);
+    const email = `f1-existing-${suffix}@integration.invalid`;
+    const codes = await unusedIdentityCodes(3);
+    const createdIds: string[] = [];
+    try {
+      const existing = await repository.createUser({ email, freqCode: codes[0]! });
+      createdIds.push(existing.id);
+      const guest = await repository.createGuestUser({ freqCode: codes[1]! });
+      createdIds.push(guest.id);
+      await h.sql`update frequencies set last_seen_at = timestamptz '2026-01-02 03:04:05.123+00',
+        device_hash = 'F1_DEVICE_KEEP_CANARY' where id = ${guest.id}`;
+      await h.sql`update users set created_at = timestamp '2026-01-02 03:04:05.123456',
+        updated_at = timestamp '2026-01-03 04:05:06.654321' where id = ${existing.id}`;
+      await repository.createUser({ email, freqCode: codes[2]! });
+      const [precision] = await h.sql`select u.created_at = f.created_at and u.updated_at = f.updated_at as exact,
+        to_char(u.created_at, 'US') = '123456' and to_char(u.updated_at, 'US') = '654321' as microseconds
+        from users u join frequencies f on u.id = f.id where u.id = ${existing.id}`;
+      expect(precision).toEqual({ exact: true, microseconds: true });
+      await h.sql`update frequencies set frequency_name = 'F1_SYNTHETIC_DRIFT' where id = ${existing.id}`;
+      await rejectIdentityMirrorWrites();
+      try {
+        await expectIdentityMirrorFailure(repository.updateUserFrequencyCredentials({ userId: guest.id,
+          frequencyName: `f1-name-${suffix}`, passwordHash: "F1_NEW_HASH_CANARY" }));
+        await expectIdentityMirrorFailure(repository.createUser({ email, freqCode: codes[2]! }));
+        const [unchanged] = await h.sql`select u.frequency_name is null and f.frequency_name is null
+          and u.password_hash is null and f.password_hash is null and u.is_guest and f.is_guest as unchanged
+          from users u join frequencies f on u.id = f.id where u.id = ${guest.id}`;
+        expect(unchanged.unchanged).toBe(true);
+        const [drift] = await h.sql`select f.frequency_name = 'F1_SYNTHETIC_DRIFT' as preserved,
+          u.freq_code = ${existing.freqCode} as authoritative from users u join frequencies f on u.id = f.id
+          where u.id = ${existing.id}`;
+        expect(drift).toEqual({ preserved: true, authoritative: true });
+      } finally {
+        await restoreIdentityMirrorWrites();
+      }
+      const repaired = await repository.createUser({ email, freqCode: codes[2]! });
+      expect(repaired.id).toBe(existing.id);
+      await repository.updateUserFrequencyCredentials({ userId: guest.id,
+        frequencyName: `f1-name-${suffix}`, passwordHash: "F1_NEW_HASH_CANARY" });
+      const [observations] = await h.sql`select last_seen_at = timestamptz '2026-01-02 03:04:05.123+00'
+        and device_hash = 'F1_DEVICE_KEEP_CANARY' as preserved from frequencies where id = ${guest.id}`;
+      expect(observations.preserved).toBe(true);
+      const audit = await auditIdentityMirrors(200);
+      expect(audit.truncated).toBe(false);
+      expect(audit.differences.filter((item) => [existing.id, guest.id].includes(item.id))).toEqual([]);
+    } finally {
+      await restoreIdentityMirrorWrites();
+      for (const id of createdIds) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
+  });
+
+  it("F1 keeps both administrator status paths atomic and refuses to activate an orphan mirror", async () => {
+    const { createGuestUser } = await h.loadModule("authRepository");
+    const adminRepository = await h.loadModule("adminRepository");
+    const codes = await unusedIdentityCodes(2);
+    const createdIds: string[] = [];
+    const orphanId = randomUUID();
+    try {
+      const target = await createGuestUser({ freqCode: codes[0]! });
+      createdIds.push(target.id);
+      await rejectIdentityMirrorWrites();
+      try {
+        await expectIdentityMirrorFailure(adminRepository.updateAdminUserStatus({ id: target.id, status: "BANNED" }));
+        await expectIdentityMirrorFailure(adminRepository.updateAdminFrequencyStatus({ id: target.id, status: "MUTED" }));
+        const [unchanged] = await h.sql`select u.status = 'ACTIVE' and f.status = 'ACTIVE' as active,
+          u.updated_at = f.updated_at as same_time from users u join frequencies f on u.id = f.id where u.id = ${target.id}`;
+        expect(unchanged).toEqual({ active: true, same_time: true });
+      } finally {
+        await restoreIdentityMirrorWrites();
+      }
+      await adminRepository.updateAdminUserStatus({ id: target.id, status: "MUTED" });
+      const [muted] = await h.sql`select u.status = 'MUTED' and f.status = 'MUTED' as muted,
+        u.updated_at = f.updated_at as same_time, u.role = f.role as same_role
+        from users u join frequencies f on u.id = f.id where u.id = ${target.id}`;
+      expect(muted).toEqual({ muted: true, same_time: true, same_role: true });
+      await adminRepository.updateAdminFrequencyStatus({ id: target.id, status: "ACTIVE" });
+      await h.sql`insert into frequencies (id, code, status) values (${orphanId}, ${codes[1]!}, 'BANNED')`;
+      expect(await adminRepository.updateAdminFrequencyStatus({ id: orphanId, status: "ACTIVE" })).toBeUndefined();
+      expect(await adminRepository.updateAdminUserStatus({ id: orphanId, status: "ACTIVE" })).toBeUndefined();
+      const [orphan] = await h.sql`select status = 'BANNED' as unchanged,
+        not exists (select 1 from users where id = ${orphanId}) as no_user from frequencies where id = ${orphanId}`;
+      expect(orphan).toEqual({ unchanged: true, no_user: true });
+    } finally {
+      await restoreIdentityMirrorWrites();
+      for (const id of [...createdIds, orphanId]) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
+  });
+
+  it("F1 read-only auditing distinguishes missing, orphaned and different mirrors without returning their values", async () => {
+    const repository = await h.loadModule("authRepository");
+    const { auditIdentityMirrors } = await h.loadModule("identityAudit");
+    const baseline = await auditIdentityMirrors();
+    const codes = await unusedIdentityCodes(3);
+    const createdIds: string[] = [];
+    const orphanId = randomUUID();
+    try {
+      const missing = await repository.createGuestUser({ freqCode: codes[0]! });
+      createdIds.push(missing.id);
+      const different = await repository.createGuestUser({ freqCode: codes[1]! });
+      createdIds.push(different.id);
+      await h.sql`delete from frequencies where id = ${missing.id}`;
+      await h.sql`insert into frequencies (id, code) values (${orphanId}, ${codes[2]!})`;
+      await h.sql`update frequencies set role = 'ADMIN', password_hash = 'F1_HASH_AUDIT_CANARY',
+        frequency_name = 'F1_NAME_AUDIT_CANARY', updated_at = updated_at + interval '1 microsecond'
+        where id = ${different.id}`;
+      const result = await auditIdentityMirrors(200);
+      expect(result).toMatchObject({ authority: "users", readOnly: true, counts: {
+        users: baseline.counts.users + 2, frequencies: baseline.counts.frequencies + 2,
+        matching: baseline.counts.matching, missingMirror: baseline.counts.missingMirror + 1,
+        orphanMirror: baseline.counts.orphanMirror + 1, fieldMismatch: baseline.counts.fieldMismatch + 1,
+      } });
+      expect(result.differences).toEqual(expect.arrayContaining([
+        { id: missing.id, kind: "MISSING_FREQUENCY", fields: [] },
+        { id: orphanId, kind: "ORPHAN_FREQUENCY", fields: [] },
+        { id: different.id, kind: "FIELD_MISMATCH", fields: expect.arrayContaining(["role", "passwordHash", "frequencyName", "updatedAt"]) },
+      ]));
+      expect(JSON.stringify(result)).not.toMatch(/F1_HASH_AUDIT_CANARY|F1_NAME_AUDIT_CANARY/u);
+      const limited = await auditIdentityMirrors(1);
+      expect(limited.differences).toHaveLength(1);
+      expect(limited.truncated).toBe(true);
+      expect((await auditIdentityMirrors()).counts).toEqual(result.counts);
+    } finally {
+      for (const id of [...createdIds, orphanId]) {
+        await h.sql`delete from frequencies where id = ${id}`;
+        await h.sql`delete from users where id = ${id}`;
+      }
+    }
   });
 
   it("stores expiring Redis challenges without response code disclosure and enforces cooldown, attempt limits, and one-time verification", async () => {
@@ -386,7 +708,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const pending = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(pending.statusCode).toBe(200);
       expect(pending.json()).toMatchObject({ data: { signal: { id, visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       await expectNotPublic(id);
     } finally {
       hold.release();
@@ -395,12 +717,12 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const id = pendingId;
     await waitForPreview(id);
     await expectNotPublic(id);
-    expectError(await request("POST", `/api/signals/${id}/publish`), 401, "UNAUTHORIZED");
-    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie), 404, "NOT_FOUND");
+    expectError(await request("POST", `/api/signals/${id}/publish`, undefined, await publicationPayload(id)), 401, "UNAUTHORIZED");
+    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie, await publicationPayload(id)), 404, "NOT_FOUND");
     await publish(id);
     const publicDetail = await request("GET", `/api/signals/${id}`);
     expect(publicDetail.statusCode).toBe(200);
-    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", seedText: fixtureSeed } } });
+    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", visibility: "PUBLIC" } } });
     const [stored] = await h.sql<{ generation_status: string; status: string }[]>`
       select generation_status, status from signals where id = ${id}
     `;
@@ -415,7 +737,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     async (status) => {
       const id = await createDraft();
       if (status !== "DRAFT") await moderate(id, status);
-      await expectNotPublic(id, status === "REVIEWING");
+      await expectNotPublic(id);
       if (status === "DRAFT" || status === "REVIEWING") {
         const own = await request("GET", `/api/signals/${id}`, author.cookie);
         expect(own.statusCode).toBe(200);
@@ -424,7 +746,24 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expectError(await request("GET", `/api/signals/${id}`, author.cookie), 404, "NOT_FOUND");
       }
       if (status === "REVIEWING") {
-        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+        const own = await request("GET", `/api/signals/${id}`, author.cookie);
+        expect(own.json().data.signal).toMatchObject({ visibility: "PRIVATE_OWNER",
+          publication: { state: "REVIEWING", canPublish: false } });
+        const internalUrl = "/api/admin/signals?status=REVIEWING&limit=100";
+        for (const [cookie, expectedStatus, code] of [
+          [undefined, 401, "UNAUTHORIZED"], [reader.cookie, 403, "FORBIDDEN"],
+        ] as const) {
+          const denied = await request("GET", internalUrl, cookie);
+          expectError(denied, expectedStatus, code);
+          expect(denied.json()).not.toHaveProperty("data");
+          expect(denied.body).not.toContain(id);
+        }
+        const internal = await request("GET", internalUrl, admin.cookie);
+        expect(internal.statusCode).toBe(200);
+        expect(internal.json().data.signals.items).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id, status: "REVIEWING", seedText: fixtureSeed }),
+        ]));
+        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       }
     },
   );
@@ -462,7 +801,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const own = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(own.statusCode).toBe(200);
       expect(own.json()).toMatchObject({ data: { signal: { id, generationStatus: "EXPANDING", visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
     } finally {
       await h.sql`update signals set generation_status = 'COMPLETED', status = 'DRAFT' where id = ${id}`;
     }
@@ -511,9 +850,9 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const storageKey = `${id}.mp3`;
     const syntheticAudio = Buffer.from("ID3 synthetic integration audio fixture");
     await writeSignalAudio(storageKey, syntheticAudio);
-    const audioUrl = `/api/signals/${id}/audio/main`;
+    const audioUrl = `/api/signals/${id}/audio/main?v=1`;
     await h.sql`
-      update signals set audio_status = 'READY', audio_storage_key = ${storageKey},
+      update signals set audio_status = 'READY', audio_publication_version = publication_version, audio_storage_key = ${storageKey},
         audio_storage_key_left = ${storageKey}, audio_storage_key_right = ${storageKey},
         audio_url = ${audioUrl}, audio_url_left = ${audioUrl}, audio_url_right = ${audioUrl}
       where id = ${id}
@@ -522,6 +861,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(audio.statusCode).toBe(200);
     expect(audio.headers["content-type"]).toBe("audio/mpeg");
     expect(audio.rawPayload).toEqual(syntheticAudio);
+    expect(audio.headers["cache-control"]).toContain("no-store");
+    expectError(await request("GET", `/api/signals/${id}/audio/main?v=2`), 404, "NOT_FOUND");
     await moderate(id, "HIDDEN");
     await expectNotPublic(id);
     const [retainedSave] = await h.sql<{ count: number }[]>`
@@ -530,6 +871,1068 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(retainedSave.count).toBe(1);
   });
 
-  // C1 will add a real author-withdrawal endpoint. Administrative hiding above
-  // verifies today's visibility contract and is not reported as author withdrawal.
+  it("serializes ten same-author withdrawals into one epoch and enforces nonnegative publication versions", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const attempts = await Promise.allSettled(Array.from({ length: 10 }, () =>
+        withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 })));
+      for (const result of attempts) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status === "fulfilled") {
+          expect(result.value).toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        }
+      }
+      const [once] = await h.sql`
+        select withdrawn_at, publication_version, publication_snapshot,
+          withdrawn_at <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(once).toMatchObject({ publication_version: 1, publication_snapshot: null, database_clock_bounded: true });
+      expect(once.withdrawn_at).not.toBeNull();
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      const [repeated] = await h.sql`select withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(repeated).toEqual({ withdrawn_at: once.withdrawn_at, publication_version: 1 });
+      await expect(h.sql`update signals set publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_publication_version_check" });
+      await expect(h.sql`update signals set audio_publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_audio_publication_version_check" });
+      const [retained] = await h.sql`select publication_version, audio_publication_version from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_version: 1, audio_publication_version: null });
+    });
+  });
+
+  it("uses authoritative author ownership, uniform not-found results, and a stale-epoch fence", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const wrongOwner = await createWithdrawalFixture(track);
+      const conflictingIds = await createWithdrawalFixture(track);
+      const fallbackOwner = await createWithdrawalFixture(track);
+      const deleted = await createWithdrawalFixture(track, "DELETED");
+      const epoch = await createWithdrawalFixture(track);
+      await h.sql`update signals set frequency_id = ${reader.id} where id = ${conflictingIds.id}`;
+      await h.sql`update signals set author_id = null where id = ${fallbackOwner.id}`;
+      for (const input of [
+        { id: wrongOwner.id, actorId: reader.id, expectedVersion: 0 },
+        { id: conflictingIds.id, actorId: reader.id, expectedVersion: 0 },
+        { id: deleted.id, actorId: author.id, expectedVersion: 0 },
+        { id: randomUUID(), actorId: author.id, expectedVersion: 0 },
+      ]) expect(await withdrawOwnedSignal(input)).toEqual({ outcome: "NOT_FOUND" });
+      const unchanged = await h.sql`
+        select withdrawn_at, publication_version from signals
+        where id in ${h.sql([wrongOwner.id, conflictingIds.id, deleted.id])}
+      `;
+      expect(unchanged).toHaveLength(3);
+      for (const row of unchanged) expect(row).toEqual({ withdrawn_at: null, publication_version: 0 });
+      for (const id of [conflictingIds.id, fallbackOwner.id]) {
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      }
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 1 });
+      // Model only a higher epoch as an explicit fixture mutation. This does
+      // not execute or claim verification of any future re-publication flow.
+      await h.sql`update signals set publication_version = 2, withdrawn_at = null where id = ${epoch.id}`;
+      for (const expectedVersion of [0, 1]) {
+        expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion }))
+          .toEqual({ outcome: "CONFLICT" });
+      }
+      const [newEpoch] = await h.sql`select publication_version, withdrawn_at, publication_snapshot from signals where id = ${epoch.id}`;
+      expect(newEpoch).toEqual({ publication_version: 2, withdrawn_at: null, publication_snapshot: null });
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 2 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 3 });
+
+      // Exercise the real PostgreSQL integer boundary without overflow/wrap.
+      const exhausted = await createWithdrawalFixture(track);
+      await h.sql`update signals set publication_version = 2147483647 where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "CONFLICT" });
+      const [unchangedMax] = await h.sql`
+        select publication_version, withdrawn_at from signals where id = ${exhausted.id}
+      `;
+      expect(unchangedMax).toEqual({ publication_version: 2147483647, withdrawn_at: null });
+      await h.sql`update signals set withdrawn_at = clock_timestamp() where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "WITHDRAWN", id: exhausted.id, publicationVersion: 2147483647 });
+    });
+  });
+
+  it("records withdrawal on hidden and reviewing rows without changing moderation, content, counts or consent", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["HIDDEN", "REVIEWING"] as const) {
+        const { id } = await createWithdrawalFixture(track, status);
+        await h.sql`update signals set echo_count = 7, resonance_count = 11, is_kept = true where id = ${id}`;
+        const readRetained = async () => (await h.sql`
+          select status, raw_input, seed_text, expanded_text, fingerprint_json, program_json,
+            echo_count, resonance_count, is_kept, publication_snapshot, generation_status,
+            generation_attempt_count, audio_status, updated_at from signals where id = ${id}
+        `)[0];
+        const before = await readRetained();
+        expect(before).toMatchObject({ status, publication_snapshot: null, echo_count: 7, resonance_count: 11 });
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        expect(await readRetained()).toEqual(before);
+        const [withdrawal] = await h.sql`select withdrawn_at is not null as withdrawn, publication_version from signals where id = ${id}`;
+        expect(withdrawal).toEqual({ withdrawn: true, publication_version: 1 });
+      }
+    });
+  });
+
+  it("supersedes a real held managed generation and waits for its obsolete work to exit", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const hold = h.provider.holdNextRequest();
+      let id: string | undefined;
+      let withdrawnRow: Record<string, unknown> | undefined;
+      const readAttempt = async (signalId: string) => (await h.sql`
+        select status, generation_status, generation_error, generation_attempt_id,
+          generation_attempt_count, generation_lease_owner, generation_lease_until,
+          generation_next_attempt_at, expanded_text, raw_input, seed_text, program_json,
+          fingerprint_json, publication_snapshot, publication_version, withdrawn_at
+        from signals where id = ${signalId}
+      `)[0];
+      await withCleanup(async () => {
+        id = await createPending();
+        track(id);
+        await hold.received;
+        expect(h.generationActiveCount).toBeGreaterThan(0);
+        const running = await readAttempt(id);
+        expect(running).toMatchObject({ status: "DRAFT", generation_status: "EXPANDING", publication_version: 0,
+          generation_attempt_count: 1, publication_snapshot: null, withdrawn_at: null });
+        expect(running.generation_attempt_id).not.toBeNull();
+        expect(running.generation_lease_owner).not.toBeNull();
+        expect(running.generation_lease_until).not.toBeNull();
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        withdrawnRow = await readAttempt(id);
+        expect(withdrawnRow).toMatchObject({ status: "DRAFT", generation_status: "FAILED",
+          generation_error: "GENERATION_SUPERSEDED", generation_lease_owner: null,
+          generation_lease_until: null, generation_next_attempt_at: null,
+          generation_attempt_id: running.generation_attempt_id, generation_attempt_count: 1,
+          expanded_text: running.expanded_text, raw_input: running.raw_input, seed_text: running.seed_text,
+          program_json: running.program_json, fingerprint_json: running.fingerprint_json,
+          publication_snapshot: null, publication_version: 1 });
+        expect(withdrawnRow.withdrawn_at).not.toBeNull();
+      }, async () => { hold.release(); await waitForActualGenerationIdle(); });
+      if (id === undefined || withdrawnRow === undefined) throw new Error("C1 managed generation fixture was not initialized.");
+      expect(await readAttempt(id)).toEqual(withdrawnRow);
+      expect(h.generationActiveCount).toBe(0);
+      expect(h.provider.inFlight).toBe(0);
+    });
+  });
+
+  it("invalidates only the withdrawn pending audio token and retains a real normal ready control", async () => {
+    const [{ withdrawOwnedSignal }, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      // Explicit author confirmation is required before these synthetic audio CAS fixtures are public.
+      const withdrawn = await createWithdrawalFixture(track, "PUBLISHED");
+      const control = await createWithdrawalFixture(track, "PUBLISHED");
+      await publish(withdrawn.id); await publish(control.id);
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${oldToken} where id = ${withdrawn.id}`;
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${controlToken} where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(withdrawn.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("C1 audio fixtures were not readable by their existing CAS precondition.");
+        expect(await withdrawOwnedSignal({ id: withdrawn.id, actorId: author.id, expectedVersion: 1 }))
+          .toEqual({ outcome: "WITHDRAWN", id: withdrawn.id, publicationVersion: 2 });
+        const oldKey = `${withdrawn.id}-${oldToken}.mp3`;
+        const oldUrl = `/api/signals/${withdrawn.id}/audio/main`;
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const [obsolete] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, publication_snapshot from signals where id = ${withdrawn.id}
+        `;
+        expect(obsolete).toEqual({ audio_status: "FAILED", audio_error: "AUDIO_SUPERSEDED", audio_attempt_id: null,
+          audio_storage_key: null, audio_url: null, publication_version: 2, publication_snapshot: oldSignal.publicationSnapshot });
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        const controlUrl = `/api/signals/${control.id}/audio/main`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey, controlUrl)).toBe(true);
+        const [ready] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, withdrawn_at, publication_snapshot from signals where id = ${control.id}
+        `;
+        expect(ready).toEqual({ audio_status: "READY", audio_error: null, audio_attempt_id: controlToken,
+          audio_storage_key: controlKey, audio_url: controlUrl, publication_version: 1,
+          withdrawn_at: null, publication_snapshot: controlSignal.publicationSnapshot });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  it("reads a whitelisted publication preview without writes and rejects invalid confirmation states unchanged", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const before = await publicationRowHash(id);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(await publicationRowHash(id)).toBe(before);
+      expect(Object.keys(preview).sort()).toEqual(["content", "digest", "version"]);
+      // E4 keeps unverified private labels outside every new public candidate.
+      expect(Object.keys(preview.content).sort()).toEqual(["authorFreqCode", "expandedText", "tags"]);
+      expect(preview).toMatchObject({ version: 0, content: {
+        expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
+        tags: [],
+      } });
+      expect(preview.digest).toMatch(/^[a-f0-9]{64}$/u);
+      const confirm = (overrides: Partial<{ actorId: string; expectedVersion: number; digest: string }> = {}) =>
+        repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: preview.digest, ...overrides });
+      const wrongDigest = `${preview.digest.slice(0, -1)}${preview.digest.endsWith("0") ? "1" : "0"}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ digest: wrongDigest }));
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 1 }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm({ actorId: reader.id }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => repo.readOwnedPublicationPreview({ id, actorId: reader.id }));
+      expect(await repo.readOwnedPublicationPreview({ id: randomUUID(), actorId: author.id })).toEqual({ outcome: "NOT_FOUND" });
+      for (const status of ["HIDDEN", "DELETED", "REVIEWING"] as const) {
+        await h.sql`update signals set status = ${status} where id = ${id}`;
+        const outcome = status === "REVIEWING" ? "CONFLICT" : "NOT_FOUND";
+        await expectPublicationRejection(id, outcome, () => confirm());
+        await expectPublicationRejection(id, outcome, () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      }
+      await h.sql`update signals set status = 'DRAFT', generation_status = 'EXPANDING' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set generation_status = 'COMPLETED', author_id = null where id = ${id}`;
+      // Matching frequency_id is not confirmation authority for a NULL author.
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm());
+      await h.sql`update signals set author_id = ${author.id}, fingerprint_json = '{"primaryBand":"self_mirror","tags":[1]}'::jsonb where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify(fixtureFingerprint)}::jsonb, expanded_text = '   ' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set expanded_text = ${fixtureExpansion.expandedText} where id = ${id}`;
+      const [account] = await h.sql<{ status: string }[]>`select status from users where id = ${author.id}`;
+      if (account === undefined) throw new Error("Synthetic publication account was unavailable.");
+      await withCleanup(async () => {
+        for (const status of ["MUTED", "BANNED"] as const) {
+          // Leave the frequency mirror/session unchanged to exercise canonical users.
+          await h.sql`update users set status = ${status} where id = ${author.id}`;
+          await expectPublicationRejection(id, "FORBIDDEN", () => confirm());
+          await expectPublicationRejection(id, "FORBIDDEN", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+        }
+      }, async () => { await h.sql`update users set status = ${account.status} where id = ${author.id}`; });
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 2147483647 }));
+      await expectPublicationRejection(id, "CONFLICT", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+    });
+  });
+
+  it("commits one concurrent confirmation epoch, preserves a current no-op, and requires explicit confirmation after withdrawal", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: preview.version, digest: preview.digest,
+      })));
+      const published = [];
+      let conflicts = 0;
+      for (const result of results) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status !== "fulfilled") continue;
+        if (result.value.outcome === "PUBLISHED") published.push(result.value);
+        else { expect(result.value).toEqual({ outcome: "CONFLICT" }); conflicts += 1; }
+      }
+      expect(published).toHaveLength(1);
+      expect(conflicts).toBe(5);
+      const first = published[0];
+      expect(first).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: preview.digest, content: preview.content } });
+      const [stored] = await h.sql`
+        select status, publication_version, withdrawn_at, publication_snapshot,
+          (publication_snapshot->>'confirmedAt')::timestamptz <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(stored).toEqual({ status: "PUBLISHED", publication_version: 1, withdrawn_at: null,
+        publication_snapshot: first.snapshot, database_clock_bounded: true });
+      const beforeNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 1, digest: preview.digest }))
+        .toEqual(first);
+      expect(await publicationRowHash(id)).toBe(beforeNoop);
+      expect(await repo.withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 2 });
+      const [retained] = await h.sql`select publication_snapshot, withdrawn_at is not null as withdrawn from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_snapshot: first.snapshot, withdrawn: true });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 1, digest: preview.digest,
+      }));
+      const refreshed = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(refreshed).toEqual({ ...preview, version: 2 });
+      const republished = await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest });
+      expect(republished).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 3,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: refreshed.digest, content: refreshed.content } });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest,
+      }));
+      const [current] = await h.sql`select publication_version, withdrawn_at from signals where id = ${id}`;
+      expect(current).toEqual({ publication_version: 3, withdrawn_at: null });
+      // Explicit synthetic MAX epoch: a genuinely unchanged confirmation may
+      // remain a no-op, while no increment or wrap is permitted.
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      const maxPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const beforeMaxNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id,
+        expectedVersion: maxPreview.version, digest: maxPreview.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 2147483647 });
+      expect(await publicationRowHash(id)).toBe(beforeMaxNoop);
+      // A version-zero snapshot is an intentionally inconsistent fixture, not
+      // inherited confirmation authority; this explicit request must write v1.
+      await h.sql`update signals set publication_version = 0 where id = ${id}`;
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: refreshed.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1 });
+    });
+  });
+
+  it("rejects stale body or canonical FM digests while private label changes leave the public candidate unchanged", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    const fixtureAuthor = await register();
+    const [account] = await h.sql<{ freq_code: string }[]>`select freq_code from users where id = ${fixtureAuthor.id}`;
+    if (account === undefined) throw new Error("Synthetic FM account was unavailable.");
+    await withCleanup(async () => {
+      await withSyntheticWithdrawalRows(async (track) => {
+        const { id } = await createWithdrawalFixture(track);
+        await h.sql`update signals set author_id = ${fixtureAuthor.id}, frequency_id = ${fixtureAuthor.id} where id = ${id}`;
+        const read = async () => readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: fixtureAuthor.id }));
+        let preview = await read();
+        const rejectOld = async () => {
+          await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+            id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest,
+          }));
+          const next = await read();
+          expect(next.digest).not.toBe(preview.digest);
+          preview = next;
+        };
+        await h.sql`update signals set expanded_text = ${`${fixtureExpansion.expandedText} 合成正文修订。`} where id = ${id}`;
+        await rejectOld();
+        await h.sql`update signals set fingerprint_json = jsonb_set(fingerprint_json, '{tags}', '["新的合成标签","窗边"]'::jsonb) where id = ${id}`;
+        // These are private, unverified labels under E4, so changing them must
+        // neither alter the public digest nor become a newly approved claim.
+        const beforePrivateLabelRead = await publicationRowHash(id);
+        expect(await read()).toEqual(preview);
+        expect(preview.content.tags).toEqual([]);
+        expect(preview.content).not.toHaveProperty("primaryBand");
+        expect(await publicationRowHash(id)).toBe(beforePrivateLabelRead);
+        const [unused] = await h.sql<{ freq_code: string }[]>`
+          select candidate.freq_code from (
+            select 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as freq_code
+            from generate_series(0, 9999) as choices(n)
+          ) candidate where not exists (select 1 from users u where u.freq_code = candidate.freq_code)
+          order by candidate.freq_code limit 1
+        `;
+        if (unused === undefined) throw new Error("No synthetic FM candidate was available.");
+        const [mirrorBefore] = await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`;
+        await h.sql`update users set freq_code = ${unused.freq_code} where id = ${fixtureAuthor.id}`;
+        await rejectOld();
+        expect(preview.content.authorFreqCode).toBe(unused.freq_code);
+        expect((await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`)[0]).toEqual(mirrorBefore);
+        expect(await repo.confirmOwnedSignalPublication({ id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+            snapshot: { content: { authorFreqCode: unused.freq_code, tags: [] } } });
+      });
+    }, async () => { await h.sql`update users set freq_code = ${account.freq_code} where id = ${fixtureAuthor.id}`; });
+    expect((await h.sql`select freq_code from users where id = ${fixtureAuthor.id}`)[0])
+      .toEqual({ freq_code: account.freq_code });
+  });
+
+  it("invalidates pending audio on a new confirmation epoch while a current no-op preserves a working token", async () => {
+    const [repo, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      const stale = await createWithdrawalFixture(track);
+      await publish(stale.id);
+      await h.sql`update signals set expanded_text = expanded_text || ' 修订后的合成正文。' where id = ${stale.id}`;
+      const control = await createWithdrawalFixture(track);
+      const stalePreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: stale.id, actorId: author.id }));
+      const controlPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: control.id, actorId: author.id }));
+      const confirmedControl = await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+        expectedVersion: 0, digest: controlPreview.digest });
+      expect(confirmedControl).toMatchObject({ outcome: "PUBLISHED", publicationVersion: 1 });
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      const oldKey = `${stale.id}-${oldToken}.mp3`;
+      const oldUrl = `/api/signals/${stale.id}/audio/main`;
+      await h.sql`
+        update signals set audio_status = 'PENDING', audio_error = 'AUDIO_UNAVAILABLE',
+          audio_attempt_id = ${oldToken}, audio_publication_version = 1,
+          audio_storage_key = ${oldKey}, audio_storage_key_left = ${oldKey}, audio_storage_key_right = ${oldKey},
+          audio_url = ${oldUrl}, audio_url_left = ${oldUrl}, audio_url_right = ${oldUrl} where id = ${stale.id}
+      `;
+      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${controlToken}, audio_publication_version = 1 where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(stale.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("Synthetic audio confirmation fixtures were unavailable.");
+        expect(await repo.confirmOwnedSignalPublication({ id: stale.id, actorId: author.id,
+          expectedVersion: stalePreview.version, digest: stalePreview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id: stale.id, publicationVersion: 2 });
+        const [reset] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_publication_version,
+            audio_storage_key, audio_storage_key_left, audio_storage_key_right,
+            audio_url, audio_url_left, audio_url_right from signals where id = ${stale.id}
+        `;
+        expect(reset).toEqual({ audio_status: "NOT_REQUESTED", audio_error: null, audio_attempt_id: null,
+          audio_publication_version: null, audio_storage_key: oldKey, audio_storage_key_left: oldKey,
+          audio_storage_key_right: oldKey, audio_url: null, audio_url_left: null, audio_url_right: null });
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const beforeNoop = await publicationRowHash(control.id);
+        expect(await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+          expectedVersion: 1, digest: controlPreview.digest })).toEqual(confirmedControl);
+        expect(await publicationRowHash(control.id)).toBe(beforeNoop);
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey,
+          `/api/signals/${control.id}/audio/main`)).toBe(true);
+        const [ready] = await h.sql`select audio_status, audio_attempt_id, audio_publication_version from signals where id = ${control.id}`;
+        expect(ready).toEqual({ audio_status: "READY", audio_attempt_id: controlToken, audio_publication_version: 1 });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  it("requires explicit confirmation and fences the full withdraw / republish HTTP lifecycle", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      const id = signal.id;
+      const privateMarker = "PRIVATE-C1-SEED-7f49";
+      await h.sql`update signals set raw_input = ${privateMarker}, seed_text = ${privateMarker} where id = ${id}`;
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 400, "VALIDATION_ERROR");
+      const firstConfirmation = await publicationPayload(id);
+      await publish(id);
+      const publicDetail = await request("GET", `/api/signals/${id}`);
+      expect(publicDetail.statusCode).toBe(200);
+      const publicSignal = publicDetail.json().data.signal;
+      expect(publicSignal).toMatchObject({ visibility: "PUBLIC", expandedText: fixtureExpansion.expandedText, publicationVersion: 1 });
+      for (const key of ["rawInput", "seedText", "fingerprint", "frequencyProfile", "program", "frequencyId", "guestKey", "parentSignalId", "matchSignalId"]) expect(publicSignal).not.toHaveProperty(key);
+      expect(publicDetail.headers["cache-control"]).toContain("no-store");
+      expect(publicDetail.body).not.toContain(privateMarker);
+      expect((await request("POST", `/api/signals/${id}/save`, reader.cookie)).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/resonance`, reader.cookie, {})).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/echoes`, reader.cookie, { content: "合成的共振回应。" })).statusCode).toBe(201);
+      for (const url of ["/api/signals/hall", "/api/signals/galaxy", "/api/me/saves", `/api/signals/${publicControlId}/matches`]) {
+        const response = await request("GET", url, reader.cookie);
+        expect(response.statusCode).toBe(200);
+        expect(response.body).not.toContain(privateMarker);
+        expect(response.headers["cache-control"]).toContain("no-store");
+      }
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, reader.cookie, { expectedVersion: 1 }), 404, "NOT_FOUND");
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 }), 409, "CONFLICT");
+      const withdrawn = await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 });
+      expect(withdrawn.json()).toMatchObject({ data: { withdrawal: { id, withdrawn: true, publicationVersion: 2 } } });
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 })).json().data).toEqual(withdrawn.json().data);
+      await expectNotPublic(id);
+      const own = await request("GET", `/api/signals/${id}`, author.cookie);
+      expect(own.json()).toMatchObject({ data: { signal: { seedText: privateMarker, visibility: "PRIVATE_OWNER", publication: { state: "WITHDRAWN", version: 2, canPublish: true } } } });
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, firstConfirmation), 409, "CONFLICT");
+      await publish(id);
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 }), 409, "CONFLICT");
+      const restored = await request("GET", `/api/signals/${id}`, reader.cookie);
+      expect(restored.json()).toMatchObject({ data: { signal: { publicationVersion: 3, hasSaved: true, resonanceCount: 1, echoCount: 1 } } });
+      expect((await request("GET", `/api/signals/${id}/echoes`)).json().data.echoes).toHaveLength(1);
+      await moderate(id, "REVIEWING");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
+      await expectNotPublic(id);
+    });
+  });
+
+  it("keeps legacy and unowned system samples non-public without author confirmation", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track, "PUBLISHED");
+      await expectNotPublic(signal.id);
+      await h.sql`update signals set author_id = null, frequency_id = null, source = 'seed' where id = ${signal.id}`;
+      await expectNotPublic(signal.id);
+      expectError(await request("GET", `/api/signals/${signal.id}/publication-preview`, author.cookie), 404, "NOT_FOUND");
+    });
+  });
+
+  it("keeps concurrent reports private, idempotent and traceable through the existing admin queue", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const body = { targetType: "SIGNAL", targetId: signal.id, reason: "涉及隐私", note: "SYNTHETIC_PRIVATE_REPORT_NOTE" };
+      expectError(await request("POST", "/api/reports", undefined, body), 401, "UNAUTHORIZED");
+      const submitted = await Promise.all(Array.from({ length: 5 }, () => request("POST", "/api/reports", reader.cookie, body)));
+      for (const response of submitted) {
+        expect(response.statusCode).toBe(201);
+        expect(response.headers["cache-control"]).toContain("no-store");
+        expect(Object.keys(response.json().data.report).sort()).toEqual(["createdAt", "id", "status", "targetId", "targetType"]);
+        expect(response.body).not.toContain(body.note);
+        expect(response.body).not.toContain(reader.frequencyCode);
+      }
+      const receipt = submitted[0].json().data.report as { id: string };
+      expect(new Set(submitted.map((response) => response.json().data.report.id)).size).toBe(1);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${signal.id} and reporter_id = ${reader.id}`;
+      expect(count.n).toBe(1);
+      const queue = await request("GET", "/api/admin/reports?status=PENDING", admin.cookie);
+      expect(queue.statusCode).toBe(200);
+      expect(queue.json().data.reports).toEqual(expect.arrayContaining([expect.objectContaining({ id: receipt.id, note: body.note, reporterFreqCode: reader.frequencyCode })]));
+      expectError(await request("GET", "/api/admin/reports", author.cookie), 403, "FORBIDDEN");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, author.cookie)).json().data).toEqual({});
+      expectError(await request("GET", `/api/reports/signal/${signal.id}`), 401, "UNAUTHORIZED");
+      const resolved = await request("PATCH", `/api/admin/reports/${receipt.id}`, admin.cookie, { status: "RESOLVED", resolution: "SYNTHETIC_INTERNAL_REVIEW_NOTE" });
+      expect(resolved.statusCode).toBe(200);
+      const ownStatus = await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie);
+      expect(ownStatus.json()).toMatchObject({ data: { report: { id: receipt.id, status: "RESOLVED", targetId: signal.id } } });
+      expect(ownStatus.body).not.toContain("SYNTHETIC_INTERNAL_REVIEW_NOTE");
+      const publicResult = await request("GET", `/api/signals/${signal.id}`);
+      expect(publicResult.statusCode).toBe(200);
+      expect(publicResult.body).not.toContain(body.note);
+      expect(publicResult.body).not.toContain(receipt.id);
+      expect((await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 })).statusCode).toBe(200);
+      expectError(await request("POST", "/api/reports", reader.cookie, body), 404, "NOT_FOUND");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie)).json().data.report.status).toBe("RESOLVED");
+      await expectNotPublic(signal.id);
+    });
+  });
+
+  it("rejects reports of private, unconfirmed, unfinished and moderated targets without creating records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"] as const) {
+        const signal = await createWithdrawalFixture(track, status);
+        expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: signal.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+        expect((await h.sql`select id from reports where target_id = ${signal.id}`).length).toBe(0);
+      }
+      const unfinished = await createWithdrawalFixture(track);
+      await publish(unfinished.id);
+      await h.sql`update signals set generation_status = 'WRITING' where id = ${unfinished.id}`;
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: unfinished.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: randomUUID(), reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "USER", targetId: author.id, reason: "垃圾信息" }), 400, "VALIDATION_ERROR");
+    });
+  });
+
+  it.each([81, 520])("finds recent/own/focused public signals with %i rows inside bounded, stable Galaxy samples", async (size) => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const controlResponse = await request("GET", `/api/signals/${publicControlId}`);
+      expect(controlResponse.statusCode).toBe(200);
+      expect(controlResponse.json().data.signal).toMatchObject({ id: publicControlId, visibility: "PUBLIC", tags: [] });
+      expect(controlResponse.json().data.signal).not.toHaveProperty("primaryBand");
+      const rows = Array.from({ length: size }, (_, index) => {
+        const owner = index % 2 === 0 ? author : reader;
+        const band = signalPrimaryBands[index % signalPrimaryBands.length];
+        const body = `D1_PUBLIC_${index} ` + fixtureExpansion.expandedText;
+        const fingerprint = { ...fixtureFingerprint, primaryBand: band, tags: [signalBandLabels[band]] };
+        // Preserve D1's historical band-filter coverage with explicit prior
+        // author confirmation; current E4 previews never manufacture a band.
+        const content = { expandedText: body, authorFreqCode: owner.frequencyCode,
+          tags: [signalBandLabels[band]], primaryBand: band };
+        const historicalSnapshot = confirmPublicationSnapshot({ content, digest: digestPublicationContent(content), version: 0 },
+          new Date("2026-10-30T00:00:00Z"));
+        const id = randomUUID(); track(id);
+        return { id, author_id: owner.id, frequency_id: owner.id, raw_input: "D1_SYNTHETIC_PRIVATE_SEED",
+          seed_text: "D1_SYNTHETIC_PRIVATE_SEED", expanded_text: body,
+          fingerprint_json: JSON.stringify(fingerprint), program_json: "{}", galaxy_position: '{"x":0,"y":0,"z":0}',
+          publication_snapshot: JSON.stringify(historicalSnapshot),
+          publication_version: 1, status: "PUBLISHED", generation_status: "COMPLETED", primary_band: band,
+          created_at: new Date(Date.UTC(2030, 0, 1, 0, 0, index)).toISOString() };
+      });
+      const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+      await h.sql`insert into signals ${h.sql(rows, ...columns)}`;
+      const excluded = rows.slice(0, 6).map((row, index) => {
+        const id = randomUUID(); track(id);
+        return { ...row, id, expanded_text: "D1_PRIVATE_ONLY", status: index === 0 ? "DRAFT" : index === 1 ? "HIDDEN" : index === 2 ? "REVIEWING" : "PUBLISHED",
+          publication_snapshot: index === 3 ? null : index === 4 ? row.publication_snapshot.replace(/"digest":"[a-f0-9]+"/u, '"digest":"' + "0".repeat(64) + '"') : row.publication_snapshot };
+      });
+      await h.sql`insert into signals ${h.sql(excluded, ...columns)}`;
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${excluded[5].id}`;
+      const timings: number[] = [];
+      const beforeHeap = process.memoryUsage().heapUsed;
+      let response: LightMyRequestResponse | undefined;
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        const start = performance.now();
+        response = await request("GET", "/api/signals/galaxy", author.cookie);
+        timings.push(performance.now() - start);
+        expect(response.statusCode).toBe(200);
+      }
+      await mkdir("../../test-results/d1", { recursive: true });
+      await writeFile(`../../test-results/d1/galaxy-${process.env.UNFREQ_INTEGRATION_RUN_ID}-${size}.json`, JSON.stringify({
+        size, timingsMs: timings, heapDeltaBytes: process.memoryUsage().heapUsed - beforeHeap,
+        responseBytes: Buffer.byteLength(response!.body), pointCount: response!.json().data.points.length,
+      }, null, 2));
+      const result = response!.json().data;
+      const latestOwn = rows.filter((row) => row.author_id === author.id).at(-1)!;
+      expect(result.points.map((point: { id: string }) => point.id)).toContain(latestOwn.id);
+      expect(result.coverage).toMatchObject({ totalEligibleCount: size + 1, returnedCount: 80, sampleLimit: 80,
+        samplingVersion: "recent-band-v1", latestOwnSignalId: latestOwn.id });
+      expect(response!.body).not.toContain("D1_PRIVATE_ONLY");
+      expect(response!.body).not.toContain("D1_SYNTHETIC_PRIVATE_SEED");
+      const repeated = (await request("GET", "/api/signals/galaxy", author.cookie)).json().data;
+      expect(repeated.points.map((point: { id: string }) => point.id)).toEqual(result.points.map((point: { id: string }) => point.id));
+      // Seven explicitly confirmed historical bands and the current unlabeled
+      // control are separate categories; missing provenance must not fill a band.
+      const confirmedBands = result.points.flatMap((point: { primaryBand?: string }) => point.primaryBand === undefined ? [] : [point.primaryBand]);
+      expect([...new Set(confirmedBands)].sort()).toEqual([...signalPrimaryBands].sort());
+      expect(result.points.filter((point: { primaryBand?: string }) => point.primaryBand === undefined)
+        .map((point: { id: string }) => point.id)).toEqual([publicControlId]);
+      const focus = (await request("GET", `/api/signals/galaxy?focus=${rows[0].id}`, author.cookie)).json().data;
+      expect(focus.points.map((point: { id: string }) => point.id)).toContain(rows[0].id);
+      expect(focus.coverage).toMatchObject({ focusSignalId: rows[0].id, focusStatus: "available" });
+      expect((await request("GET", `/api/signals/galaxy?focus=${rows[0].id.toUpperCase()}`, author.cookie)).json().data.coverage.focusSignalId).toBe(rows[0].id);
+      const band = rows[0].primary_band;
+      const filtered = (await request("GET", `/api/signals/galaxy?band=${band}&focus=${rows[1].id}`, author.cookie)).json().data;
+      expect(filtered.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
+      expect(filtered.coverage).toMatchObject({ filters: { band }, focusStatus: "unavailable" });
+      expect(filtered.coverage.totalEligibleCount).toBe(rows.filter((row) => row.primary_band === band).length);
+      expect(filtered.points.map((point: { id: string }) => point.id)).not.toContain(publicControlId);
+      const legacy = (await request("GET", `/api/signals/galaxy?theme=${encodeURIComponent(signalBandLabels[band])}`, author.cookie)).json().data;
+      expect(legacy.points.every((point: { primaryBand?: string }) => point.primaryBand === band)).toBe(true);
+      const anonymous = (await request("GET", "/api/signals/galaxy")).json().data;
+      expect(anonymous.coverage).not.toHaveProperty("latestOwnSignalId");
+      expect(anonymous.points.every((point: { isMine: boolean }) => !point.isMine)).toBe(true);
+      for (const id of [excluded[0].id, excluded[5].id, randomUUID()]) {
+        const denied = await request("GET", `/api/signals/galaxy?focus=${id}`, author.cookie);
+        expect(denied.json().data.coverage.focusStatus).toBe("unavailable");
+        expect(denied.body).not.toContain(id);
+      }
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${rows[0].id}`;
+      const withdrawn = (await request("GET", `/api/signals/galaxy?focus=${rows[0].id}`, author.cookie)).json().data;
+      expect(withdrawn.points.map((point: { id: string }) => point.id)).not.toContain(rows[0].id);
+      expect(withdrawn.coverage.totalEligibleCount).toBe(size);
+    });
+  });
+
+  it("D4 counts all completed private history and paginates equal microsecond timestamps without skips", async () => {
+    const owner = await register();
+    const rows = Array.from({ length: 85 }, (_, index) => ({
+      id: randomUUID(), author_id: owner.id, frequency_id: owner.id,
+      raw_input: "D4_PRIVATE_HISTORY", seed_text: `D4_PRIVATE_HISTORY_${index}`,
+      expanded_text: fixtureExpansion.expandedText, fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+      status: "DRAFT", generation_status: "COMPLETED", resonance_count: index === 0 ? 500 : 1,
+      created_at: index === 0 ? "2020-01-01T00:00:00.000001Z" : "2029-01-01T00:00:00.123456Z",
+    }));
+    const excluded = ["DELETED", "PUBLISHED", "DRAFT"].map((status, index) => ({
+      ...rows[1], id: randomUUID(), status, generation_status: index === 0 ? "COMPLETED" : index === 1 ? "WRITING" : "FAILED", resonance_count: 9000,
+    }));
+    const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+    await h.sql`insert into signals ${h.sql([...rows, ...excluded], ...columns)}`;
+    const firstResponse = await request("GET", "/api/me/signals", owner.cookie);
+    expect(firstResponse.statusCode).toBe(200);
+    const first = firstResponse.json().data;
+    expect(first).toMatchObject({ totalSignalCount: 85, totalResonanceCount: 584, topSignal: { id: rows[0].id, resonanceCount: 500 }, page: { hasMore: true, limit: 80 } });
+    expect(first.signals).toHaveLength(80);
+    expect(first.signals.map((row: { id: string }) => row.id)).not.toContain(rows[0].id);
+    const second = (await request("GET", `/api/me/signals?cursor=${encodeURIComponent(first.page.nextCursor)}`, owner.cookie)).json().data;
+    expect(second.signals).toHaveLength(5);
+    expect(second.page.hasMore).toBe(false);
+    expect(new Set([...first.signals, ...second.signals].map((row: { id: string }) => row.id))).toEqual(new Set(rows.map((row) => row.id)));
+    const small = (await request("GET", "/api/me/signals?limit=7", owner.cookie)).json().data;
+    expect(small.signals).toHaveLength(7);
+    expect(small.totalResonanceCount).toBe(584);
+    const echo = (await request("GET", "/api/me/echo-summary", owner.cookie)).json().data.summary;
+    expect(echo).toMatchObject({ totalResonanceCount: 584, topSignal: { id: rows[0].id } });
+    expect((await request("POST", `/api/signals/${rows[0].id}/withdraw`, owner.cookie, { expectedVersion: 0 })).statusCode).toBe(200);
+    expect((await request("GET", "/api/me/signals", owner.cookie)).json().data.totalResonanceCount).toBe(584);
+    await h.sql`update signals set status = 'DELETED' where id = ${rows[0].id}`;
+    const after = (await request("GET", "/api/me/signals", owner.cookie)).json().data;
+    expect(after).toMatchObject({ totalSignalCount: 84, totalResonanceCount: 84 });
+    expect(after.topSignal.id).not.toBe(rows[0].id);
+    const nextAfterDelete = (await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, owner.cookie)).json().data;
+    expect(nextAfterDelete.signals).toHaveLength(4);
+    const boundaryId = first.signals.at(-1).id;
+    await h.sql`update signals set status = 'DELETED' where id = ${boundaryId}`;
+    const afterBoundaryDelete = (await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, owner.cookie)).json().data;
+    expect(afterBoundaryDelete.signals).toHaveLength(4);
+    expect(afterBoundaryDelete).toMatchObject({ totalSignalCount: 83, totalResonanceCount: 83 });
+    expect((await request("GET", `/api/me/signals?cursor=${first.page.nextCursor}`, reader.cookie)).body).not.toContain("D4_PRIVATE_HISTORY");
+    expectError(await request("GET", "/api/me/signals"), 401, "UNAUTHORIZED");
+    for (const query of ["cursor=invalid", "limit=0", "limit=81", "limit=1.5", "limit=7&unknown=1"]) expectError(await request("GET", `/api/me/signals?${query}`, owner.cookie), 400, "VALIDATION_ERROR");
+  });
+
+  it("D4 excludes unfinished signals from private monthly recap inputs", async () => {
+    const owner = await register();
+    const rows = ["COMPLETED", "WRITING", "FAILED"].map((generation_status) => ({
+      id: randomUUID(), author_id: owner.id, frequency_id: owner.id, raw_input: "D4_RECAP_SYNTHETIC", seed_text: "D4_RECAP_SYNTHETIC",
+      expanded_text: fixtureExpansion.expandedText, fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+      status: "PUBLISHED", generation_status, created_at: "2029-02-01T00:00:00Z",
+    }));
+    const columns = Object.keys(rows[0]) as Array<keyof typeof rows[number]>;
+    await h.sql`insert into signals ${h.sql(rows, ...columns)}`;
+    const { listMonthlyRecapSignals } = await import("../../src/modules/monthly-recaps/repository.js");
+    const result = await listMonthlyRecapSignals({ frequencyId: owner.id, startAt: new Date("2029-02-01"), endAt: new Date("2029-03-01") });
+    expect(result.map((row) => row.id)).toEqual([rows[0].id]);
+  });
+
+  it("prevents in-flight generation from completing or publishing after owner withdrawal", async () => {
+    const hold = h.provider.holdNextRequest();
+    let id: string | undefined;
+    try {
+      id = await createPending();
+      await hold.received;
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 })).statusCode).toBe(200);
+      hold.release();
+      await waitForActualGenerationIdle();
+      const [row] = await h.sql`select generation_status, withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(row).toMatchObject({ generation_status: "FAILED", publication_version: 1 });
+      expect(row.withdrawn_at).not.toBeNull();
+      await expectNotPublic(id);
+    } finally { hold.release(); await waitForActualGenerationIdle(); }
+  });
+  it("E1 isolates semantic spaces, preserves legacy reads and fences vector writes to the unchanged body", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { listPublishedSemanticSignalMatchCandidates, writeSignalEmbeddingIfMissing, listSignalsMissingEmbedding } = await h.loadModule("repository");
+      const config = { provider: "e1-synthetic", model: "embed-a", dimensions: 3, version: "v1" };
+      const version = embeddingSpaceKey(config);
+      const body = fixtureExpansion.expandedText;
+      const preview = buildPublicationPreview({ authorId: author.id, authorFreqCode: author.frequencyCode,
+        expandedText: body, generationStatus: "COMPLETED", primaryBand: fixtureFingerprint.primaryBand,
+        fingerprintJson: fixtureFingerprint }, 0);
+      const snapshot = JSON.stringify(confirmPublicationSnapshot(preview, new Date("2026-10-30T00:00:00Z")));
+      const variants = [
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: "embed-b", embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: embeddingSpaceKey({ ...config, model: "embed-b" }), embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: "other", embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 4, embedding_version: embeddingSpaceKey({ ...config, dimensions: 4 }), embedding: "[1,2,3,4]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: "v1", embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: embeddingSpaceKey(config, "signal-body-v2"), embedding: "[1,2,3]", expanded_text: body },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3]", expanded_text: "E1_UNCONFIRMED_PRIVATE_BODY" },
+        { embedding_model: config.model, embedding_provider: config.provider, embedding_dimensions: 3, embedding_version: version, embedding: "[1,2,3,4]", expanded_text: body },
+      ];
+      const rows = variants.map((variant) => {
+        const id = randomUUID(); track(id);
+        return { ...variant, id, author_id: author.id, frequency_id: author.id,
+          raw_input: "E1_PRIVATE_SEED", seed_text: "E1_PRIVATE_SEED", fingerprint_json: JSON.stringify(fixtureFingerprint), program_json: "{}",
+          publication_snapshot: snapshot, publication_version: 1, status: "PUBLISHED", generation_status: "COMPLETED" };
+      });
+      await h.sql`insert into signals ${h.sql(rows, ...Object.keys(rows[0]) as Array<keyof typeof rows[number]>)}`;
+      const matches = await listPublishedSemanticSignalMatchCandidates([1, 2, 3], 20, undefined, { ...config, version });
+      expect(matches.map((match) => match.id)).toEqual([rows[0].id]);
+      expect(await listPublishedSemanticSignalMatchCandidates([1, 2, 3], 20, undefined, config)).toEqual([]);
+      const legacy = await request("GET", `/api/signals/${rows[4].id}`);
+      expect(legacy.statusCode).toBe(200);
+      expect(legacy.body).not.toMatch(/E1_PRIVATE_SEED|embedding_version/u);
+      const [old] = await h.sql`select embedding_version, embedding::text from signals where id = ${rows[4].id}`;
+      expect(old).toMatchObject({ embedding_version: "v1", embedding: "[1,2,3]" });
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[4].id, expectedExpandedText: body })).toBe(false);
+      await h.sql`update signals set embedding = null where id = ${rows[6].id}`;
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[6].id, expectedExpandedText: body })).toBe(false);
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[6].id, expectedExpandedText: "E1_UNCONFIRMED_PRIVATE_BODY" })).toBe(true);
+      await h.sql`update signals set embedding = null where id in ${h.sql([rows[0].id, rows[1].id, rows[6].id])}`;
+      await h.sql`update signals set status = 'DRAFT' where id = ${rows[1].id}`;
+      const backfill = await listSignalsMissingEmbedding(1000);
+      expect(backfill.map((row) => row.id)).toContain(rows[0].id);
+      expect(backfill.map((row) => row.id)).not.toContain(rows[1].id);
+      expect(backfill.map((row) => row.id)).not.toContain(rows[6].id);
+      await h.sql`update signals set withdrawn_at = clock_timestamp(), publication_version = 2 where id = ${rows[0].id}`;
+      expect(await writeSignalEmbeddingIfMissing({ ...config, version, embedding: [1, 2, 3], id: rows[0].id,
+        expectedExpandedText: body, expectedPublicationVersion: 1 })).toBe(false);
+    });
+  });
+
+  it("E1 persists actual transport lineage with nullable historical audit compatibility", async () => {
+    const id = await createDraft();
+    const reviews = await h.sql`select provider, model, execution_json from ai_reviews where target_id = ${id}`;
+    // Some generation stages are audited before the signal target exists.
+    const actual = reviews.length === 0
+      ? await h.sql`select provider, model, execution_json from ai_reviews where execution_json is not null order by created_at desc limit 1`
+      : reviews;
+    expect(actual.length).toBeGreaterThan(0);
+    for (const row of actual) {
+      expect(row).toMatchObject({ provider: "integration-loopback", model: "synthetic-signal-v1",
+        execution_json: { source: "provider", provider: "integration-loopback", model: "synthetic-signal-v1",
+          promptVersion: expect.stringMatching(/^sha256:/u), attempts: [expect.objectContaining({ outcome: "SUCCEEDED" })] } });
+      expect(JSON.stringify(row.execution_json)).not.toContain(fixtureSeed);
+    }
+    const [legacy] = await h.sql`insert into ai_reviews (input_text, model, output_json, provider, review_type, status)
+      values ('E1 synthetic historical audit', 'unknown', '{}', 'unknown', 'e1-legacy', 'SUCCEEDED') returning execution_json`;
+    expect(legacy.execution_json).toBeNull();
+  });
+
+  it("E3 leaves the old E2 rule-only pool empty below the provisional acceptance gate", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const response = await request("GET", `/api/signals/${signal.id}`);
+      expect(response.statusCode).toBe(200);
+      const matches = response.json().data.signal.matches;
+      expect(matches).toEqual([]);
+      for (const match of matches) {
+        expect(match.score).toBeGreaterThanOrEqual(0); expect(match.score).toBeLessThanOrEqual(100);
+        expect(match.scoreProvenance).toEqual({ version: "match-score-v1", scale: "zero_to_hundred", method: "rules", reason: "rules_only" });
+        for (const key of ["rawScore", "rawScale", "model", "provider", "seedText", "frequencyProfile"]) expect(match).not.toHaveProperty(key);
+      }
+    });
+  });
+
+  it("E2 preserves a declared range through admin storage and real HTTP transport, rejecting a partial batch", async () => {
+    const invalid = await request("POST", "/api/admin/provider-configs/reranker", admin.cookie, {
+      provider: "integration-loopback", model: "e2-reranker", baseUrl: h.provider.origin + "/v1", apiKey: "E2-STUB-ONLY",
+      extraJson: { scoreScale: "auto" },
+    });
+    expectError(invalid, 400, "VALIDATION_ERROR");
+    const created = await request("POST", "/api/admin/provider-configs/reranker", admin.cookie, {
+      provider: "integration-loopback", model: "e2-reranker", baseUrl: h.provider.origin + "/v1", apiKey: "E2-STUB-ONLY",
+      extraJson: { scoreScale: "zero_to_hundred" },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().data.providerConfig.id as string;
+    try {
+      const [{ rerankCandidates }, { resolveRerankerProviderConfigs }] = await Promise.all([h.loadModule("reranker"), h.loadModule("providerConfig")]);
+      const configs = await resolveRerankerProviderConfigs();
+      expect(configs[0]).toMatchObject({ provider: "integration-loopback", scoreScale: "zero_to_hundred" });
+      const calls = h.provider.rerankCalls;
+      const input = { queryText: "E2 synthetic confirmed query", candidates: [
+        { id: "a", expandedText: "E2 synthetic confirmed candidate A", distance: 0.2 },
+        { id: "b", expandedText: "E2 synthetic confirmed candidate B", distance: 0.5 },
+      ] };
+      const result = await rerankCandidates(input);
+      expect(result).toMatchObject({ model: "e2-reranker-actual", scoreScale: "zero_to_one",
+        results: [{ id: "a", rawScore: 80, rawScale: "zero_to_hundred", score: 0.8 }, { id: "b", rawScore: 20, score: 0.2 }],
+        execution: { cost: "unknown", attempts: [{ outcome: "SUCCEEDED", usage: { input_tokens: 12, output_tokens: 0 } }] } });
+      h.provider.setRerankFixture("partial");
+      await expect(rerankCandidates(input)).rejects.toMatchObject({ code: "AI_UNAVAILABLE", details: {
+        execution: { attempts: [{ outcome: "FAILED", failureKind: "invalid_score_batch", usage: { input_tokens: 12 } }] },
+      } });
+      expect(h.provider.rerankCalls - calls).toBe(2);
+      expect((await request("DELETE", `/api/admin/provider-configs/reranker/${id}`, admin.cookie)).statusCode).toBe(200);
+      const remaining = await resolveRerankerProviderConfigs();
+      expect(remaining.every((config) => config.model !== "e2-reranker")).toBe(true);
+    } finally {
+      h.provider.setRerankFixture("percent");
+      // Defensive cleanup only of this test's own synthetic provider row.
+      await h.sql`delete from provider_configs where id = ${id}`;
+    }
+  });
+
+  it("E4 exposes computed Demo fixtures only to an administrator through the real API", async () => {
+    const unauthenticated = await request("GET", "/api/admin/ai-evaluation");
+    expect(unauthenticated.statusCode).toBe(401);
+    expectError(await request("GET", "/api/admin/ai-evaluation", reader.cookie), 403, "FORBIDDEN");
+    const response = await request("GET", "/api/admin/ai-evaluation", admin.cookie);
+    expect(response.statusCode).toBe(200);
+    const evaluation = response.json().data.evaluation;
+    expect(evaluation).toMatchObject({ evaluationKind: "DEMO_RULE_FIXTURES", modelQualityValidated: false,
+      competitionEvidenceEligible: false, ablationStatus: "NOT_RUN", ablations: [],
+      dataset: { judgmentSource: "synthetic-presets-not-human" } });
+    expect(evaluation.dataset.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(evaluation.groups).toHaveLength(1);
+    expect(evaluation.groups[0].method).toBe("RULE_BASELINE");
+    expect(evaluation.fixtureOutputs).toHaveLength(11);
+    for (const metric of evaluation.groups[0].metrics) {
+      expect(metric.denominator).toBeGreaterThan(0);
+      expect(metric.value).toBe(Number((100 * metric.numerator / metric.denominator).toFixed(1)));
+    }
+  });
+
+  it("F2 traces explicit database/media replicas without returning content or mutating the inventory", async () => {
+    const [{ auditSignalReplicas }, { writeSignalAudio, removeSignalAudio }] = await Promise.all([h.loadModule("replicaAudit"), h.loadModule("audioStorage")]);
+    const id = randomUUID(); const related = randomUUID(); const review = randomUUID(); const unlinked = randomUUID();
+    const recap = randomUUID(); const save = randomUUID(); const resonance = randomUUID(); const echo = randomUUID();
+    const report = randomUUID(); const action = randomUUID(); const batch = randomUUID(); const attempt = randomUUID();
+    const marker = "F2_SYNTHETIC_PRIVATE_REPLICA_CANARY"; const key = `${id}.mp3`;
+    try {
+      await h.sql`insert into signals (id,author_id,frequency_id,raw_input,seed_text,expanded_text,fingerprint_json,program_json,audio_storage_key)
+        values (${id},${author.id},${author.id},${marker},${marker},${marker},'{}','{}',${key})`;
+      await h.sql`insert into signals (id,raw_input,seed_text,expanded_text,fingerprint_json,program_json,match_signal_id,parent_signal_id)
+        values (${related},${marker},${marker},${marker},'{}',${JSON.stringify({ rightSignalSummary: marker })}::jsonb,${id},${id})`;
+      await writeSignalAudio(key, Buffer.from(marker));
+      await h.sql`insert into ai_reviews (id,input_text,output_json,model,provider,review_type,status,target_type,target_id,execution_json)
+        values (${review},${marker},${JSON.stringify({ text: marker })}::jsonb,'synthetic','synthetic','F2','PASSED','SIGNAL',${id},
+        ${JSON.stringify({ operation: { schemaVersion: 1, kind: "signal-generation", signalId: id, attemptId: attempt } })}::jsonb)`;
+      await h.sql`insert into ai_reviews (id,input_text,output_json,model,provider,review_type,status)
+        values (${unlinked},${marker},'{}','synthetic','synthetic','F2','PASSED')`;
+      await h.sql`insert into monthly_recaps (id,frequency_id,year_month,signal_count,total_resonance_count,summary,theme_words,top_signal_id)
+        values (${recap},${author.id},'2099-12',1,0,${marker},ARRAY[${marker}],${id})`;
+      await h.sql`insert into signal_saves (id,frequency_id,signal_id) values (${save},${author.id},${id})`;
+      await h.sql`insert into signal_resonances (id,actor_key,signal_id) values (${resonance},${marker},${id})`;
+      await h.sql`insert into signal_echoes (id,signal_id,content) values (${echo},${id},${marker})`;
+      await h.sql`insert into reports (id,reporter_id,target_type,target_id,reason) values (${report},${author.id},'SIGNAL',${id},${marker})`;
+      await h.sql`insert into admin_actions (id,admin_id,target_type,target_id,action,details) values (${action},${admin.id},'SIGNAL',${id},'F2_SYNTHETIC',${JSON.stringify({ text: marker })}::jsonb)`;
+      await h.sql`insert into ai_signal_scheduler_batches (id,job_key,business_date,time_zone,scheduled_time,owner_token,requested_count,signal_budget,dispatch_budget,deadline_at,result_signal_ids)
+        values (${batch},'f2-synthetic-replica','2099-12-01','Asia/Shanghai','03:00',${attempt},1,1,1,clock_timestamp()+interval '1 hour',${JSON.stringify([id])}::jsonb)`;
+      const [before] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${id}`;
+      const inventory = await auditSignalReplicas(id, 50);
+      expect(inventory).toMatchObject({ signalId: id, readOnly: true, signal: { publicEligible: false }, truncated: false,
+        audio: [{ channel: "main", state: "PRESENT" }, { channel: "left", state: "NOT_REFERENCED" }, { channel: "right", state: "NOT_REFERENCED" }] });
+      for (const count of Object.values(inventory.counts)) expect(count).toBe(1);
+      expect(inventory.samples).toHaveLength(12);
+      expect(inventory.unattributedAiReviewCount).toBeGreaterThanOrEqual(1);
+      const truncated = await auditSignalReplicas(id, 1);
+      expect(truncated.samples).toHaveLength(1); expect(truncated.truncated).toBe(true); expect(truncated.counts).toEqual(inventory.counts);
+      const serialized = JSON.stringify(inventory);
+      expect(serialized).not.toContain(marker); expect(serialized).not.toContain(key); expect(serialized).not.toContain("storageKey");
+      const [after] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${id}`;
+      expect(after).toEqual(before);
+      expect((await auditSignalReplicas(randomUUID())).signal).toBeNull();
+    } finally {
+      await h.sql`delete from ai_signal_scheduler_batches where id=${batch}`;
+      await h.sql`delete from admin_actions where id=${action}`; await h.sql`delete from reports where id=${report}`;
+      await h.sql`delete from signal_echoes where id=${echo}`; await h.sql`delete from signal_resonances where id=${resonance}`;
+      await h.sql`delete from signal_saves where id=${save}`; await h.sql`delete from monthly_recaps where id=${recap}`;
+      await h.sql`delete from ai_reviews where id in (${review},${unlinked})`;
+      await h.sql`delete from signals where id=${related}`; await h.sql`delete from signals where id=${id}`;
+      await removeSignalAudio(key);
+    }
+  });
+
+  it("F2 public, owner, matches and galaxy GETs do not dispatch providers or persist missing vectors/positions", async () => {
+    const [original] = await h.sql`select embedding::text as vector,galaxy_position::text as position from signals where id=${publicControlId}`;
+    try {
+      await h.sql`update signals set embedding=null,galaxy_position=null where id=${publicControlId}`;
+      const [before] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${publicControlId}`;
+      const countReviews = async () => Number((await h.sql`select count(*)::text as count from ai_reviews where target_type='SIGNAL' and target_id=${publicControlId}`)[0]?.count);
+      const reviewsBefore = await countReviews(); const dispatchesBefore = h.provider.requestEvents.length;
+      for (const [url, cookie] of [[`/api/signals/${publicControlId}`, undefined], [`/api/signals/${publicControlId}`, author.cookie],
+        [`/api/signals/${publicControlId}/matches`, reader.cookie], ["/api/signals/galaxy", undefined]] as const) {
+        expect((await request("GET", url, cookie)).statusCode).toBe(200);
+      }
+      // Observe beyond the old microtask/IIFE write's normal completion window.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const [after] = await h.sql`select to_jsonb(s.*) as row from signals s where id=${publicControlId}`;
+      expect(after).toEqual(before); expect(await countReviews()).toBe(reviewsBefore);
+      expect(h.provider.requestEvents.length).toBe(dispatchesBefore);
+    } finally {
+      await h.sql`update signals set embedding=${original.vector}::vector,galaxy_position=${original.position}::jsonb where id=${publicControlId}`;
+    }
+  });
+
+  it("F2 associates newly generated AI reviews with the real signal and worker attempt", async () => {
+    const reviews = await h.sql`select target_id,execution_json->'operation' as operation from ai_reviews where target_type='SIGNAL' and target_id=${publicControlId}`;
+    expect(reviews.length).toBeGreaterThan(0);
+    for (const review of reviews) expect(review.operation).toMatchObject({ schemaVersion: 1, kind: "signal-generation", signalId: publicControlId, attemptId: expect.any(String) });
+  });
+
+  it("E4 neutralizes new rule and legacy owner interpretations without clearing moderation risk or rewriting stored fingerprints", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const current of [
+        { source: "rules", riskLevel: "LOW", status: "DRAFT" },
+        { source: "unknown", riskLevel: "HIGH", status: "REVIEWING" },
+      ] as const) {
+        const row = await createWithdrawalFixture(track, current.status);
+        const { interpretation: _syntheticProviderSource, ...legacyFingerprint } = fixtureFingerprint;
+        const privateMarker = `E4_PRIVATE_${current.source.toUpperCase()}`;
+        const storedFingerprint = { ...legacyFingerprint, riskLevel: current.riskLevel,
+          coreNeed: privateMarker, hiddenNeed: privateMarker, innerConflict: privateMarker,
+          narrativeConflict: privateMarker, emotionTone: privateMarker, primaryEmotion: privateMarker,
+          secondaryEmotions: [privateMarker], tags: [privateMarker], resonanceKeywords: [privateMarker], theme: privateMarker,
+          ...(current.source === "rules" ? { interpretation: { version: 1, state: "unknown", source: "rules" } } : {}),
+        };
+        // Explicit synthetic persisted shapes: a row with rules attribution and
+        // an older row without provenance. Neither is relabelled as a provider.
+        await h.sql`update signals set fingerprint_json = ${JSON.stringify(storedFingerprint)}::jsonb where id = ${row.id}`;
+        const before = await publicationRowHash(row.id);
+        const response = await request("GET", `/api/signals/${row.id}`, author.cookie);
+        expect(response.statusCode).toBe(200);
+        const own = response.json().data.signal;
+        expect(own).toMatchObject({ visibility: "PRIVATE_OWNER", status: current.status,
+          seedText: fixtureSeed, expandedText: fixtureExpansion.expandedText });
+        expect(own.fingerprint).toMatchObject({ interpretation: { version: 1, state: "unknown", source: current.source },
+          riskLevel: current.riskLevel, tags: [], resonanceKeywords: [], secondaryEmotions: [] });
+        expect(own.frequencyProfile).toMatchObject({ interpretation: own.fingerprint.interpretation, resonanceKeywords: [] });
+        for (const key of ["coreNeed", "displayText", "emotionTone", "innerConflict"] as const) {
+          expect(own.frequencyProfile[key]).toBe("暂不作心理解读");
+        }
+        for (const key of ["coreNeed", "displayText", "hiddenNeed", "innerConflict", "narrativeConflict", "primaryEmotion", "theme"] as const) {
+          expect(own.fingerprint[key]).toBe("暂不作心理解读");
+        }
+        expect(JSON.stringify({ fingerprint: own.fingerprint, frequencyProfile: own.frequencyProfile })).not.toContain(privateMarker);
+        expect(await publicationRowHash(row.id)).toBe(before);
+        if (current.status === "REVIEWING") {
+          expectError(await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie), 409, "CONFLICT");
+        }
+        await expectPrivateDetail(row.id);
+        const [persisted] = await h.sql`select fingerprint_json from signals where id = ${row.id}`;
+        expect(persisted.fingerprint_json).toEqual(storedFingerprint);
+        expect(await publicationRowHash(row.id)).toBe(before);
+      }
+    });
+  });
+
+  it("E4 confirms unlabeled HTTP previews with stale-digest and owner fences while preserving historical confirmed labels", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const row = await createWithdrawalFixture(track);
+      const privateMarker = "E4_PRIVATE_PUBLICATION_ANALYSIS";
+      const { interpretation: _syntheticProviderSource, ...legacyFingerprint } = fixtureFingerprint;
+      await h.sql`update signals set raw_input = ${privateMarker}, seed_text = ${privateMarker},
+        fingerprint_json = ${JSON.stringify({ ...legacyFingerprint, coreNeed: privateMarker, tags: [privateMarker] })}::jsonb where id = ${row.id}`;
+      const beforePreview = await publicationRowHash(row.id);
+      const initialResponse = await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie);
+      expect(initialResponse.statusCode).toBe(200);
+      const initial = initialResponse.json().data.preview;
+      expect(initial).toMatchObject({ version: 0, content: { expandedText: fixtureExpansion.expandedText,
+        authorFreqCode: author.frequencyCode, tags: [] } });
+      expect(Object.keys(initial.content).sort()).toEqual(["authorFreqCode", "expandedText", "tags"]);
+      expect(initial.digest).toMatch(/^[a-f0-9]{64}$/u);
+      expect(await publicationRowHash(row.id)).toBe(beforePreview);
+      const initialCommand = { expectedVersion: initial.version, digest: initial.digest };
+      expectError(await request("GET", `/api/signals/${row.id}/publication-preview`), 401, "UNAUTHORIZED");
+      expectError(await request("GET", `/api/signals/${row.id}/publication-preview`, reader.cookie), 404, "NOT_FOUND");
+      expectError(await request("POST", `/api/signals/${row.id}/publish`, reader.cookie, initialCommand), 404, "NOT_FOUND");
+      expect(await publicationRowHash(row.id)).toBe(beforePreview);
+      const revisedBody = `${fixtureExpansion.expandedText}这是本轮修订过的合成正文。`;
+      await h.sql`update signals set expanded_text = ${revisedBody} where id = ${row.id}`;
+      const beforeStaleConfirmation = await publicationRowHash(row.id);
+      expectError(await request("POST", `/api/signals/${row.id}/publish`, author.cookie, initialCommand), 409, "CONFLICT");
+      expect(await publicationRowHash(row.id)).toBe(beforeStaleConfirmation);
+      const refreshedResponse = await request("GET", `/api/signals/${row.id}/publication-preview`, author.cookie);
+      expect(refreshedResponse.statusCode).toBe(200);
+      const refreshed = refreshedResponse.json().data.preview;
+      expect(refreshed.version).toBe(0);
+      expect(refreshed.digest).not.toBe(initial.digest);
+      expect(refreshed.content).toEqual({ expandedText: revisedBody, authorFreqCode: author.frequencyCode, tags: [] });
+      const confirmation = await request("POST", `/api/signals/${row.id}/publish`, author.cookie,
+        { expectedVersion: refreshed.version, digest: refreshed.digest });
+      expect(confirmation.statusCode).toBe(200);
+      const publicResponse = await request("GET", `/api/signals/${row.id}`);
+      expect(publicResponse.statusCode).toBe(200);
+      expect(publicResponse.json().data.signal).toMatchObject({ id: row.id, visibility: "PUBLIC", publicationVersion: 1,
+        expandedText: revisedBody, authorFreqCode: author.frequencyCode, tags: [] });
+      for (const key of ["primaryBand", "seedText", "rawInput", "fingerprint", "frequencyProfile", "program", "frequencyId", "guestKey"]) {
+        expect(publicResponse.json().data.signal).not.toHaveProperty(key);
+      }
+      expect(publicResponse.body).not.toContain(privateMarker);
+      const [confirmed] = await h.sql`select publication_snapshot, publication_version from signals where id = ${row.id}`;
+      expect(confirmed).toMatchObject({ publication_version: 1, publication_snapshot: {
+        kind: "AUTHOR_CONFIRMED", digest: refreshed.digest, content: refreshed.content } });
+
+      // This is an explicit historical author confirmation, not a current
+      // preview and not evidence of a real provider or validated classification.
+      const historical = await createWithdrawalFixture(track, "PUBLISHED");
+      const historicalContent = { expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
+        tags: ["关系星云", "历史已确认标签"], primaryBand: "relationship_nebula" as const };
+      const historicalSnapshot = confirmPublicationSnapshot({ content: historicalContent,
+        digest: digestPublicationContent(historicalContent), version: 0 }, new Date("2026-10-30T00:00:00Z"));
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify(legacyFingerprint)}::jsonb,
+        publication_snapshot = ${JSON.stringify(historicalSnapshot)}::jsonb, publication_version = 1 where id = ${historical.id}`;
+      const historicalBefore = await publicationRowHash(historical.id);
+      const historicalOwn = await request("GET", `/api/signals/${historical.id}`, author.cookie);
+      expect(historicalOwn.statusCode).toBe(200);
+      expect(historicalOwn.json().data.signal.fingerprint.interpretation).toEqual({ version: 1, state: "unknown", source: "unknown" });
+      const historicalPreview = await request("GET", `/api/signals/${historical.id}/publication-preview`, author.cookie);
+      expect(historicalPreview.statusCode).toBe(200);
+      expect(historicalPreview.json().data.preview.content).toEqual({ expandedText: fixtureExpansion.expandedText,
+        authorFreqCode: author.frequencyCode, tags: [] });
+      expect(historicalPreview.json().data.preview.digest).not.toBe(historicalSnapshot.digest);
+      const historicalPublic = await request("GET", `/api/signals/${historical.id}`);
+      expect(historicalPublic.statusCode).toBe(200);
+      expect(historicalPublic.json().data.signal).toMatchObject({ ...historicalContent, publicationVersion: 1, visibility: "PUBLIC" });
+      const galaxy = await request("GET", `/api/signals/galaxy?focus=${historical.id}`);
+      expect(galaxy.statusCode).toBe(200);
+      expect(galaxy.json().data.points).toEqual(expect.arrayContaining([expect.objectContaining({ id: historical.id, ...historicalContent })]));
+      const [historicalAfter] = await h.sql`select publication_snapshot, publication_version from signals where id = ${historical.id}`;
+      expect(historicalAfter).toEqual({ publication_snapshot: historicalSnapshot, publication_version: 1 });
+      expect(await publicationRowHash(historical.id)).toBe(historicalBefore);
+    });
+  });
+
+  it.each(matchingCases)("E3 frozen real-code synthetic evaluation: $id", async (current) => {
+    await runFrozenMatchingCase(h, current, author, reader, admin, request);
+    if (matchingCaptures.every((strategy) => strategy.runs.length === matchingCases.length)) {
+      const report = frozenMatchingReport();
+      const chosen = report.strategies.find((strategy) => strategy.name === "merged-K12-score80")!.summary;
+      const runId = process.env.UNFREQ_INTEGRATION_RUN_ID;
+      if (!/^[a-f0-9]{12}$/u.test(runId ?? "")) throw new Error("Invalid evaluation run ownership.");
+      const directory = new URL("../../../../test-results/", import.meta.url);
+      await mkdir(directory, { recursive: true });
+      await writeFile(new URL(`e3-evaluation-${runId}.json`, directory), JSON.stringify(report, null, 2) + "\n");
+      // Keep the measured report even if a frozen expectation fails.
+      expect(chosen).toMatchObject({ poolRecall: 1, ndcgAt3: 1, noMatchRate: .25, falseMatchQueryRate: 0,
+        humanRelevance: null, currencyCost: null, modelQualityValidated: false });
+    }
+  });
+
 });

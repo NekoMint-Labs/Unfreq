@@ -34,7 +34,7 @@ export type GenerationOutput = Pick<CreateSignalInput,
 > & {
   expandedText: string;
   galaxyPosition: SignalGalaxyPosition;
-  embedding?: Omit<WriteSignalEmbeddingInput, "id">;
+  embedding?: Omit<WriteSignalEmbeddingInput, "id" | "expectedExpandedText">;
   status: "DRAFT" | "REVIEWING";
 };
 

@@ -81,19 +81,6 @@ function logSignalCreationBoundaryFailure(params: {
   );
 }
 
-function isContradictoryPassingReview(review: AiSignalExpansionReview): boolean {
-  return (
-    !review.pass &&
-    review.score >= 8 &&
-    review.problems.length === 0 &&
-    review.rewriteInstruction.length === 0 &&
-    review.matchesSeedType &&
-    review.preservesOriginalDirection &&
-    !review.isGenericLiteraryTemplate &&
-    !review.isForcedNegative
-  );
-}
-
 async function runSignalCreationBoundary<T>(params: {
   boundary: SignalCreationBoundary;
   logger?: EmbeddingLogger;
@@ -129,22 +116,6 @@ async function reviewOrRewriteSignalExpansion(params: {
       seedText: params.seedText,
     })
   ).result;
-
-  if (isContradictoryPassingReview(review)) {
-    params.logger?.warn(
-      {
-        action: "signal.expansion.review_contradictory",
-        reason: "INVALID_AI_REVIEW",
-        targetType: "SIGNAL",
-      },
-      "signal expansion review contradicted itself",
-    );
-
-    review = {
-      ...review,
-      pass: true,
-    };
-  }
 
   if (!review.pass) {
     try {
@@ -301,6 +272,7 @@ type SignalCreationMaterial = {
 };
 
 async function buildSignalCreationMaterial(params: {
+  excludeAuthorIds: readonly string[];
   logger?: EmbeddingLogger;
   onGenerationStatusChange?: SignalGenerationProgressWriter;
   rawInput: string;
@@ -329,6 +301,7 @@ async function buildSignalCreationMaterial(params: {
   });
   await params.onGenerationStatusChange?.("MATCHING");
   const matchResult = await findSameFrequencyMatchesForCreation({
+    excludeAuthorIds: params.excludeAuthorIds,
     classification: reviewedExpansion.classification,
     expandedText: reviewedExpansion.expansion.expandedText,
     fingerprint,
@@ -345,6 +318,7 @@ async function buildSignalCreationMaterial(params: {
 }
 
 async function generateCombinedSignalCreationMaterial(params: {
+  excludeAuthorIds: readonly string[];
   logger?: EmbeddingLogger;
   onGenerationStatusChange?: SignalGenerationProgressWriter;
   rawInput: string;
@@ -384,6 +358,7 @@ async function generateCombinedSignalCreationMaterial(params: {
   };
   await params.onGenerationStatusChange?.("MATCHING");
   const matchResult = await findSameFrequencyMatchesForCreation({
+    excludeAuthorIds: params.excludeAuthorIds,
     classification: reviewedExpansion.classification,
     expandedText: reviewedExpansion.expansion.expandedText,
     fingerprint,
@@ -400,6 +375,7 @@ async function generateCombinedSignalCreationMaterial(params: {
 }
 
 async function findSameFrequencyMatchesForCreation(params: {
+  excludeAuthorIds: readonly string[];
   classification?: AiSignalSeedClassification;
   expandedText: string;
   fingerprint: SignalFingerprint;
@@ -472,6 +448,7 @@ async function createSignalFromMaterial(params: {
   });
 
   const material = await buildSignalCreationMaterial({
+    excludeAuthorIds: [params.frequency.id],
     logger: params.logger,
     onGenerationStatusChange: params.onGenerationStatusChange,
     rawInput: params.body.seedText,
@@ -512,8 +489,9 @@ function buildPendingSignalFingerprint(params: {
   const title = toShortText(params.seedText, 24);
 
   return {
+    interpretation: { version: 1, state: "unknown", source: "unknown" },
     coreNeed: "等待信号完成",
-    displayText: "自我镜像 · 自我怀疑",
+    displayText: "等待信号完成",
     energy: 0.5,
     emotionTone: "安静等待",
     frequency: frequencyCode,
@@ -577,6 +555,7 @@ export async function generateOwnedSignalOutput(params: OwnedGenerationInput & {
     parentSignalId: params.body.parentSignalId,
   });
   const material = await buildSignalCreationMaterial({
+    excludeAuthorIds: [params.frequency.id],
     logger: params.logger,
     onGenerationStatusChange: params.onGenerationStatusChange,
     rawInput: params.body.seedText,

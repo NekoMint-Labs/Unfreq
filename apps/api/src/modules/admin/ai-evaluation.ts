@@ -1,35 +1,10 @@
+import { createHash } from "node:crypto";
+import type { AdminAiEvaluation } from "@unfreq/contracts/admin";
 import { classifyFallback, moderateFallback, tagsFallback } from "../ai/provider.js";
 
-type EvaluationMetric = {
-  description: string;
-  key: string;
-  label: string;
-  unit: "percent";
-  value: number;
-};
-
-type EvaluationGroup = {
-  label: string;
-  method: "FINAL" | "RANDOM_BASELINE" | "RULE_BASELINE";
-  metrics: EvaluationMetric[];
-};
-
-type EvaluationAblation = {
-  label: string;
-  matchTopKRelevance: number;
-};
-
-export type AiEvaluationResult = {
-  ablations: EvaluationAblation[];
-  generatedAt: string;
-  groups: EvaluationGroup[];
-  sampleSize: {
-    classification: number;
-    matching: number;
-    moderation: number;
-    tags: number;
-  };
-};
+export type AiEvaluationResult = AdminAiEvaluation;
+type FixtureOutput = AiEvaluationResult["fixtureOutputs"][number];
+type EvaluationMetric = AiEvaluationResult["groups"][number]["metrics"][number];
 
 const contentSamples = [
   {
@@ -152,109 +127,112 @@ function toPercent(value: number): number {
   return Number((value * 100).toFixed(1));
 }
 
-function metric(key: string, label: string, value: number, description: string): EvaluationMetric {
+function metric(
+  key: string,
+  label: string,
+  outputs: FixtureOutput[],
+  task: FixtureOutput["task"],
+  method: string,
+  description: string,
+): EvaluationMetric {
+  const samples = outputs.filter((output) => output.task === task);
+  const numerator = samples.filter((output) => output.hit).length;
+  const denominator = samples.length;
+
   return {
+    denominator,
     description,
     key,
     label,
+    method,
+    numerator,
     unit: "percent",
-    value: toPercent(value),
+    value: denominator === 0 ? 0 : toPercent(numerator / denominator),
   };
 }
 
-function classificationAccuracy(): number {
-  const correct = contentSamples.filter((sample) => {
-    return classifyFallback(sample.content).channel === sample.expectedChannel;
-  }).length;
+// This dataset is deliberately synthetic. The matcher is the historical local
+// demo scorer above, not the current service-matching/E3 production pipeline.
+const dataset = {
+  judgmentSource: "synthetic-presets-not-human" as const,
+  sha256: createHash("sha256").update(JSON.stringify({
+    contentSamples,
+    matchingProfile,
+    matchingSamples,
+    matcherVersion: "legacy-demo-matcher-v1",
+  })).digest("hex"),
+  version: "admin-rule-fixtures-v1",
+};
 
-  return correct / contentSamples.length;
-}
+function runFixtures(): FixtureOutput[] {
+  const outputs: FixtureOutput[] = [];
 
-function tagTopKHitRate(): number {
-  const hits = contentSamples.filter((sample) => {
+  for (const [index, sample] of contentSamples.entries()) {
+    const channel = classifyFallback(sample.content).channel;
     const tags = tagsFallback(sample.content).tags;
+    outputs.push({
+      actual: [channel], expected: [sample.expectedChannel],
+      hit: channel === sample.expectedChannel, id: `content-${index + 1}`, task: "classification",
+    }, {
+      actual: tags, expected: [...sample.expectedTags],
+      hit: sample.expectedTags.some((tag) => tags.includes(tag)),
+      id: `content-${index + 1}`, task: "tags",
+    });
+    if (sample.expectedRisk) {
+      const risk = moderateFallback(sample.content).riskLevel;
+      outputs.push({
+        actual: [risk], expected: ["MEDIUM", "HIGH"], hit: risk !== "LOW",
+        id: `content-${index + 1}`, task: "moderation",
+      });
+    }
+  }
 
-    return sample.expectedTags.some((tag) => tags.includes(tag));
-  }).length;
+  for (const [index, sample] of matchingSamples.entries()) {
+    const candidate = pickMatchedCandidate([...sample.candidates]);
+    outputs.push({
+      actual: candidate === undefined ? [] : [candidate.id],
+      expected: [sample.expectedCandidateId], hit: candidate?.id === sample.expectedCandidateId,
+      id: `matching-${index + 1}`, task: "matching",
+    });
+  }
 
-  return hits / contentSamples.length;
-}
-
-function moderationRecall(): number {
-  const riskSamples = contentSamples.filter((sample) => sample.expectedRisk);
-  const hits = riskSamples.filter((sample) => {
-    return moderateFallback(sample.content).riskLevel !== "LOW";
-  }).length;
-
-  return riskSamples.length === 0 ? 0 : hits / riskSamples.length;
-}
-
-function matchTopKRelevance(): number {
-  const hits = matchingSamples.filter((sample) => {
-    return pickMatchedCandidate([...sample.candidates])?.id === sample.expectedCandidateId;
-  }).length;
-
-  return hits / matchingSamples.length;
+  return outputs;
 }
 
 export function calculateAiEvaluation(): AiEvaluationResult {
-  const finalClassification = classificationAccuracy();
-  const finalTags = tagTopKHitRate();
-  const finalModeration = moderationRecall();
-  const finalMatching = matchTopKRelevance();
+  const fixtureOutputs = runFixtures();
 
   return {
-    ablations: [
-      {
-        label: "完整方案",
-        matchTopKRelevance: toPercent(finalMatching),
-      },
-      {
-        label: "去除语义信号",
-        matchTopKRelevance: 50,
-      },
-      {
-        label: "去除情绪兼容",
-        matchTopKRelevance: 50,
-      },
-      {
-        label: "去除安全权重",
-        matchTopKRelevance: 50,
-      },
-    ],
+    ablationStatus: "NOT_RUN",
+    ablations: [],
+    competitionEvidenceEligible: false,
+    dataset: { ...dataset },
+    evaluationKind: "DEMO_RULE_FIXTURES",
+    fixtureOutputs,
     generatedAt: new Date().toISOString(),
     groups: [
       {
-        label: "随机基线",
-        method: "RANDOM_BASELINE",
-        metrics: [
-          metric("classificationAccuracy", "频道分类准确率", 1 / 3, "三类频道随机命中。"),
-          metric("tagTopKHitRate", "标签 Top-K 命中率", 0.25, "固定标签随机命中。"),
-          metric("moderationRecall", "审核风险召回率", 0.5, "随机风险拦截。"),
-          metric("matchTopKRelevance", "匹配 Top-K 相关性", 0.5, "两个候选随机打开。"),
-        ],
-      },
-      {
-        label: "规则基线",
+        label: "Demo / 本地规则夹具",
         method: "RULE_BASELINE",
         metrics: [
-          metric("classificationAccuracy", "频道分类准确率", 0.75, "关键词规则分类。"),
-          metric("tagTopKHitRate", "标签 Top-K 命中率", 0.5, "关键词标签规则。"),
-          metric("moderationRecall", "审核风险召回率", 1, "风险关键词规则。"),
-          metric("matchTopKRelevance", "匹配 Top-K 相关性", 0.5, "标签重叠匹配。"),
-        ],
-      },
-      {
-        label: "最终方案",
-        method: "FINAL",
-        metrics: [
-          metric("classificationAccuracy", "频道分类准确率", finalClassification, "AI 频道分类。"),
-          metric("tagTopKHitRate", "标签 Top-K 命中率", finalTags, "AI 情绪标签。"),
-          metric("moderationRecall", "审核风险召回率", finalModeration, "AI 内容审核。"),
-          metric("matchTopKRelevance", "匹配 Top-K 相关性", finalMatching, "情绪语义匹配。"),
+          metric("classificationAccuracy", "频道预设命中率", fixtureOutputs, "classification",
+            "classifyFallback：预测频道等于夹具预设频道。", "4 条合成内容，不代表真实模型分类准确率。"),
+          metric("tagTopKHitRate", "标签预设命中率", fixtureOutputs, "tags",
+            "tagsFallback：返回标签至少命中一个预设标签；每条内容计一次。", "返回至多 5 个标签，不代表人工标注质量。"),
+          metric("moderationRecall", "风险预设检出率", fixtureOutputs, "moderation",
+            "moderateFallback：仅在预设有风险的样例中统计非 LOW 返回。", "分母仅 1 条风险样例，不包含无风险样例的误报评价。"),
+          metric("matchTop1PresetHitRate", "匹配 Top-1 预设命中率", fixtureOutputs, "matching",
+            "旧 Demo matcher：对固定候选打分后取第一名，与预设候选 ID 比较。", "未调用 E3 召回/重排路径，不是人工相关性或生产匹配效果。"),
         ],
       },
     ],
+    limitations: [
+      "所有输入与标签均为合成预设；没有双人盲评、作者认可或真实 Provider 运行。",
+      "匹配仅运行历史 Demo scorer，未调用当前 E3 生产召回与重排路径。",
+      "未运行真实消融，未测量模型费用、延迟或生产失败降级。",
+      "这些百分比只用于核对本地规则，不得作为参赛实测指标或模型提升证据。",
+    ],
+    modelQualityValidated: false,
     sampleSize: {
       classification: contentSamples.length,
       matching: matchingSamples.length,

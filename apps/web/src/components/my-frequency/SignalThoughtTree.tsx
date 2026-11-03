@@ -13,7 +13,7 @@ function SignalTreeItem({ node }: { node: SignalTreeNode }) {
       <div className="grid gap-3 border-l border-[color:var(--border-default)] pl-4">
         <div className="my-frequency-thought-card grid gap-1">
           <span className="font-mono text-[10px] tracking-[0.12em] text-[color:var(--text-secondary)]">
-            上层信号暂不可见
+            上层信号未在本页返回
           </span>
           <span className="break-all text-xs leading-5 text-[color:var(--text-tertiary)]">
             {node.missingParentId}

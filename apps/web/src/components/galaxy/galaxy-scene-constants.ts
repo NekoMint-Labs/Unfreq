@@ -85,5 +85,5 @@ export function getPointColor(point: GalaxySignalPoint): Color {
     return selfColor;
   }
 
-  return bandColors[point.frequencyProfile.primaryBand] ?? mutedColor;
+  return point.primaryBand === undefined ? mutedColor : bandColors[point.primaryBand] ?? mutedColor;
 }

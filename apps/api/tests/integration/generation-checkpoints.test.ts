@@ -1,24 +1,27 @@
 import { describe, expect, it } from "vitest";
+import { setTimeout as sleep } from "node:timers/promises";
 import { withGenerationHarness, type GenerationHarness, type GenerationProcess } from "./generation-harness.js";
 import type { CheckpointPoint, GenerationControlState } from "./generation-test-controls.js";
 import type { GenerationWorkerState } from "./generation-process-fixture.js";
 
 const twoBootBudget = 90_000;
-const completed = (row: { generation_status: string; positioned: boolean }) => row.generation_status === "COMPLETED" && row.positioned;
+// The retry case includes cold boot, up to three real 10s attempts and owned
+// failure cleanup. This outer test watchdog is separate from attempt deadlines.
+const retryCaseBudget = 90_000;
 
 async function arm(child: GenerationProcess, point: CheckpointPoint) {
   return (await child.request<{ gateId: string }>({ kind: "checkpoint-arm", point })).gateId;
 }
-async function reached(h: GenerationHarness, child: GenerationProcess, gateId: string) {
+async function reached(h: GenerationHarness, child: GenerationProcess, gateId: string, signalId?: string) {
   const state = await h.waitControl(child, (value) => value.checkpoint?.gateId === gateId && value.checkpoint.reached,
-    "real-repository-checkpoint-reached");
+    "real-repository-checkpoint-reached", signalId);
   return state.checkpoint!;
 }
 async function release(child: GenerationProcess, gateId: string) {
   expect(await child.request({ kind: "checkpoint-release", gateId })).toEqual({ released: true });
 }
-async function finish(h: GenerationHarness, id: string) {
-  const row = await h.waitRow(id, completed, "original-id-completed", 5_000);
+async function finish(h: GenerationHarness, id: string, expectedAttempts = 1) {
+  const [row] = await h.waitCompleted([id], "original-id-completed", expectedAttempts);
   await h.waitIdle();
   expect(row.status).toBe("DRAFT");
   return row;
@@ -116,7 +119,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       const author = await h.register(first);
       const gateId = await arm(first, "before-dispatch");
       const id = await h.createPending(first, author);
-      const point = await reached(h, first, gateId);
+      const point = await reached(h, first, gateId, id);
       expect(point.signalId).toBe(id);
       const before = await h.row(id);
       expect(before).toMatchObject({ generation_status: "EXPANDING", generation_attempt_count: 1,
@@ -126,7 +129,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       await h.waitNoAppConnections();
       const second = await h.start("undispatched-recovery");
       expect(second.pid).not.toBe(first.pid);
-      const after = await finish(h, id);
+      const after = await finish(h, id, 2);
       expect(after.generation_attempt_count).toBe(2);
       expect(after.generation_attempt_id).not.toBe(before.generation_attempt_id);
       expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
@@ -140,7 +143,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       const author = await h.register(first);
       const gateId = await arm(first, "before-complete");
       const id = await h.createPending(first, author);
-      expect((await reached(h, first, gateId)).signalId).toBe(id);
+      expect((await reached(h, first, gateId, id)).signalId).toBe(id);
       const before = await h.row(id);
       expect(before).toMatchObject({ generation_status: "WRITING", generation_attempt_count: 1 });
       expect(before.generation_dispatch_started_at).not.toBeNull();
@@ -172,12 +175,12 @@ describe("real generation checkpoints and process lifecycle", () => {
       const sampler = setInterval(() => { peakHttp = Math.max(peakHttp, h.provider.inFlight); }, 5);
       try {
         const ids = [await h.createPending(a, author)];
-        await h.waitHold(holds[0], a);
+        await h.waitHold(holds[0], a, ids[0]);
         const aGate = await arm(a, "before-next-claim");
         await reached(h, a, aGate);
         await release(b, bGate);
         for (let index = 1; index < 6; index++) ids.push(await h.createPending(b, author));
-        await h.waitHold(holds[1], b);
+        await h.waitHold(holds[1], b, ids[1]);
         const aState = await a.request<GenerationControlState>({ kind: "control-state" });
         const bState = await b.request<GenerationControlState>({ kind: "control-state" });
         await release(a, aGate);
@@ -197,9 +200,7 @@ describe("real generation checkpoints and process lifecycle", () => {
         expect(h.provider.tasks).toEqual(["signal-material", "signal-material"]);
         expect(h.provider.inFlight).toBe(2);
         h.provider.releaseAll();
-        const settled = await Promise.allSettled(ids.map((id) => h.waitRow(id, completed, "shared-capacity-work-completed", 5_000)));
-        const failures = settled.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-        if (failures.length) throw new AggregateError(failures, "Shared capacity work did not complete.");
+        await h.waitCompleted(ids, "shared-capacity-work-completed");
         await h.waitIdle();
         expect(peakHttp).toBeLessThanOrEqual(2);
         expect(h.provider.tasks.filter((task) => task === "signal-material")).toHaveLength(6);
@@ -210,6 +211,31 @@ describe("real generation checkpoints and process lifecycle", () => {
     });
   }, twoBootBudget);
 
+  it("completes a task queued beyond the former 5s observation window within its actual attempt deadline", async () => {
+    await withGenerationHarness("capacity", async (h) => {
+      const child = await h.start("delayed-queue-claim");
+      const author = await h.register(child);
+      const gateId = await arm(child, "before-next-claim");
+      await reached(h, child, gateId);
+      const id = await h.createPending(child, author);
+      const completion = h.waitCompleted([id], "delayed-queue-work-completed");
+      const releaseAfterQueueWait = (async () => {
+        await sleep(5_100);
+        expect(await h.row(id)).toMatchObject({ generation_status: "RECEIVED", generation_attempt_count: 0,
+          generation_attempt_id: null, generation_attempt_deadline_at: null });
+        expect(h.provider.tasks).toEqual([]);
+        await release(child, gateId);
+      })();
+      const results = await Promise.allSettled([completion, releaseAfterQueueWait]);
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Delayed queue observation failed.");
+      await h.waitIdle();
+      expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
+      expect((await h.row(id)).generation_attempt_count).toBe(1);
+      h.record("delayed-queue-result", { id, minimumQueueWaitMs: 5_100 });
+    });
+  }, twoBootBudget);
+
   it("rejects the real old completion CAS after administrator HIDDEN to DRAFT ABA", async () => {
     await withGenerationHarness("aba", async (h) => {
       const child = await h.start("admin-aba-worker");
@@ -217,7 +243,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       const admin = await h.register(child, true);
       const gateId = await arm(child, "before-complete");
       const id = await h.createPending(child, author);
-      const point = await reached(h, child, gateId);
+      const point = await reached(h, child, gateId, id);
       expect(point.signalId).toBe(id);
       const before = await h.row(id);
       for (const status of ["HIDDEN", "DRAFT"]) {
@@ -234,7 +260,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       await h.waitControl(child, (state) => state.completions.some((value) => value.signalId === id && value.attemptId === point.attemptId && value.outcome === "OBSOLETE"),
         "real-captured-completion-cas-rejected-after-aba");
       expect((await h.row(id)).expanded_text).toBe(before.expanded_text);
-      expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie })).statusCode).toBe(409);
+      expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie, payload: { expectedVersion: 0, digest: "0".repeat(64) } })).statusCode).toBe(409);
       expect((await h.inject(child, { method: "GET", url: `/api/signals/${id}` })).statusCode).toBe(404);
       expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
     });
@@ -246,11 +272,15 @@ describe("real generation checkpoints and process lifecycle", () => {
       const author = await h.register(child);
       const hold = h.provider.holdNextRequest();
       const id = await h.createPending(child, author);
-      await h.waitHold(hold, child);
+      await h.waitHold(hold, child, id);
       // Do not release the server-side gate to make escaped work finish.
       const diagnostics = await child.shutdown();
       expect(diagnostics).toMatchObject({ blockedHttp: 0, unhandled: 0, pendingHttp: 0 });
       expect(diagnostics.abortedHttp).toBe(1);
+      expect(diagnostics.shutdownAbortedHttp).toBe(1);
+      expect(diagnostics.closeFinishedAt).toBeGreaterThanOrEqual(diagnostics.closeStartedAt);
+      h.record("held-request-closed", { closeDurationMs: diagnostics.closeFinishedAt - diagnostics.closeStartedAt,
+        shutdownAbortedHttp: diagnostics.shutdownAbortedHttp });
       expect(child.child.exitCode).toBe(0);
       expect(child.child.signalCode).toBeNull();
       expect(h.journal.filter((event) => event.event === "owned-kill" && event.pid === child.pid)).toEqual([]);
@@ -269,7 +299,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       const author = await h.register(child);
       const gateId = await arm(child, "before-dispatch");
       const id = await h.createPending(child, author);
-      await reached(h, child, gateId);
+      await reached(h, child, gateId, id);
       expect(await child.shutdown()).toMatchObject({ blockedHttp: 0, unhandled: 0, pendingHttp: 0, abortedHttp: 0 });
       expect(child.child.exitCode).toBe(0);
       await h.waitNoAppConnections();
@@ -278,7 +308,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       expect(h.provider.tasks).toEqual([]);
       const next = await h.start("close-undispatched-recovery");
       expect(next.pid).not.toBe(child.pid);
-      expect(await finish(h, id)).toMatchObject({ generation_attempt_count: 2 });
+      expect(await finish(h, id, 2)).toMatchObject({ generation_attempt_count: 2 });
       expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
     });
   }, twoBootBudget);
@@ -290,7 +320,7 @@ describe("real generation checkpoints and process lifecycle", () => {
       await h.installDispatchFault(author, caseId === "retry" ? "twice" : "always");
       const id = await h.createPending(child, author);
       if (caseId === "retry") {
-        expect(await finish(h, id)).toMatchObject({ generation_attempt_count: 3 });
+        expect(await finish(h, id, 3)).toMatchObject({ generation_attempt_count: 3 });
         expect(h.provider.tasks).toEqual(["signal-material", "signal-expansion-review"]);
       } else {
         expect(await h.waitRow(id, (row) => row.generation_status === "FAILED", "retry-budget-exhausted", 5_000))
@@ -322,5 +352,5 @@ describe("real generation checkpoints and process lifecycle", () => {
         expect(await h.row(id)).toMatchObject({ generation_status: "FAILED", generation_attempt_count: 3 });
       }
     });
-  }, 45_000);
+  }, retryCaseBudget);
 });

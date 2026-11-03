@@ -2,7 +2,9 @@
 	encode zstd gzip
 
 	handle /api/og/* {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-Proto https
+		}
 	}
 
 	handle /api/* {
@@ -14,10 +16,16 @@
 	}
 
 	handle /web-health {
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-Proto https
+		}
 	}
 
 	handle {
-		reverse_proxy web:3000
+		# Server mode requires an HTTPS public origin; the hop from NPM is HTTP.
+		# Use that policy instead of trusting a client-supplied forwarded scheme.
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-Proto https
+		}
 	}
 }

@@ -13,15 +13,33 @@ import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtim
 type ManagedEnvironment = { databaseUrl: string; redisUrl: string; runId: string };
 type IntegrationSql = ReturnType<typeof postgres>;
 type CoreModules = {
+  adminRepository: typeof import("../../src/modules/admin/repository.js");
+  authRepository: typeof import("../../src/modules/auth/repository.js");
+  identityAudit: typeof import("../../src/modules/auth/identity-audit.js");
+  replicaAudit: typeof import("../../src/modules/signals/replica-audit.js");
+  matching: typeof import("../../src/modules/signals/service-matching.js");
+  embedding: typeof import("../../src/modules/ai/embedding.js");
+  reranker: typeof import("../../src/modules/ai/reranker.js");
+  providerConfig: typeof import("../../src/modules/ai/provider-config.js");
   app: typeof import("../../src/app.js");
   env: typeof import("../../src/config/env.js");
   repository: typeof import("../../src/modules/signals/repository.js");
+  publicationRepository: typeof import("../../src/modules/signals/publication-repository.js");
+  audioRepository: typeof import("../../src/modules/signals/audio-repository.js");
+  generationWorker: typeof import("../../src/modules/signals/generation-worker.js");
   mappers: typeof import("../../src/modules/signals/service-mappers.js");
   audioStorage: typeof import("../../src/modules/signals/audio-storage.js");
 };
 const coreModulePaths: Record<keyof CoreModules, string> = {
+  adminRepository: "modules/admin/repository.js",
+  authRepository: "modules/auth/repository.js", identityAudit: "modules/auth/identity-audit.js",
+  replicaAudit: "modules/signals/replica-audit.js",
+  matching: "modules/signals/service-matching.js", embedding: "modules/ai/embedding.js",
+  reranker: "modules/ai/reranker.js", providerConfig: "modules/ai/provider-config.js",
   app: "app.js", env: "config/env.js", repository: "modules/signals/repository.js",
   mappers: "modules/signals/service-mappers.js", audioStorage: "modules/signals/audio-storage.js",
+  publicationRepository: "modules/signals/publication-repository.js",
+  audioRepository: "modules/signals/audio-repository.js", generationWorker: "modules/signals/generation-worker.js",
 };
 
 type CoreSetupPhase =
@@ -86,7 +104,8 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     AI_PROVIDER: "integration-loopback", AI_MODEL: "synthetic-signal-v1",
     AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "",
     EMBEDDING_API_KEY: "", EMBEDDING_BASE_URL: "", EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "integration-disabled", EMBEDDING_PROVIDER: "disabled", EMBEDDING_VERSION: "integration-v1",
-    RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_MODEL: "integration-disabled", RERANKER_PROVIDER: "disabled",
+    RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_MODEL: "integration-disabled", RERANKER_PROVIDER: "disabled", RERANKER_SCORE_SCALE: "",
+    SIGNAL_MATCH_SEMANTIC_CANDIDATES: "12", SIGNAL_MATCH_RULE_CANDIDATES: "24", SIGNAL_MATCH_MIN_SCORE: "80", SIGNAL_MATCH_MAX_RERANK_CHARACTERS: "12000",
     TTS_API_KEY: "", TTS_BASE_URL: "", TTS_MODEL: "integration-disabled", TTS_PROVIDER: "disabled",
     TTS_STORAGE_DIR: join(directory, "audio"), TTS_VOICE_LEFT: "integration", TTS_VOICE_RIGHT: "integration",
     IMAGE_STORAGE_DIR: join(directory, "images"), HEALTH_DEPENDENCY_TIMEOUT_MS: "500", DB_POOL_MAX: "4",
@@ -97,6 +116,11 @@ export async function configureIsolatedEnvironment(input: ManagedEnvironment & {
     // Fault-driver fixtures keep the scanner off; normal API integration opts
     // into the same production worker with wholly synthetic timing/capacity.
     SIGNAL_GENERATION_WORKER_ENABLED: input.generationWorkerEnabled === true ? "true" : "false",
+    AI_SIGNAL_SCHEDULER_ENABLED: "false",
+    AI_SIGNAL_SCHEDULER_TIME_ZONE: "Asia/Shanghai", AI_SIGNAL_SCHEDULER_TIME: "03:00",
+    AI_SIGNAL_SCHEDULER_COUNT: "1", AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: "1",
+    AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: "30", AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS: "60000",
+    AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS: "180000", AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS: "10000",
     SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50",
     SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",
     SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",
@@ -143,6 +167,7 @@ export type IntegrationHarness = {
   app: FastifyInstance;
   sql: IntegrationSql;
   provider: IntegrationProvider;
+  readonly generationActiveCount: number;
   loadModule: <K extends keyof CoreModules>(name: K) => Promise<CoreModules[K]>;
   takeLocalLoginCode: () => string | undefined;
   close: () => Promise<void>;
@@ -161,6 +186,7 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     connection: { application_name: `unfreq-integration-harness-${managed.runId}` },
   });
   let app: FastifyInstance | undefined;
+  let generationWorker: ReturnType<CoreModules["generationWorker"]["createSignalGenerationWorker"]> | undefined;
   let lastLocalLoginCode: string | undefined;
   async function loadModule<K extends keyof CoreModules>(name: K): Promise<CoreModules[K]> {
     if (!Object.hasOwn(coreModulePaths, name)) throw new Error("Unrecognized core integration module.");
@@ -196,18 +222,20 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
       throw new Error("Owned integration app export is unavailable.");
     }
     const { buildApp } = appModule;
+    const { createSignalGenerationWorker } = await loadModule("generationWorker");
     await recordCoreSetupPhase("app-import-complete");
     await recordCoreSetupPhase("app-build-start");
-    app = await buildApp({ logger: { level: "info", stream: { write(line: string) {
-      // Observe only this synthetic local delivery channel in bounded memory.
-      // Do not replace randomness/services or emit codes to stdout/files/HTTP.
-      try {
-        const entry = JSON.parse(line) as { action?: unknown; loginChallengeCode?: unknown };
-        if (entry.action === "auth.login.challenge.request" && typeof entry.loginChallengeCode === "string" && /^\d{6}$/u.test(entry.loginChallengeCode)) {
-          lastLocalLoginCode = entry.loginChallengeCode;
-        }
-      } catch { /* Non-delivery log lines are deliberately discarded. */ }
-    } } } });
+    app = await buildApp({
+      generationWorkerFactory(options) {
+        if (generationWorker !== undefined) throw new Error("Core generation worker was already captured.");
+        // Observe the original compiled worker; all options and work remain real.
+        generationWorker = createSignalGenerationWorker(options);
+        return generationWorker;
+      },
+      // Test-only delivery stays in memory, outside the application logger.
+      testLoginChallengeDelivery(delivery) { lastLocalLoginCode = delivery.code; },
+      logger: false,
+    });
     await recordCoreSetupPhase("app-build-complete");
     app.addHook("onSend", async (request, reply, payload) => {
       if (request.method === "POST" && /^\/api\/signals\/?$/u.test(request.url) && reply.statusCode >= 200 && reply.statusCode < 300 && typeof payload === "string") {
@@ -234,6 +262,10 @@ export async function createIntegrationHarness(): Promise<IntegrationHarness> {
     app: readyApp,
     sql,
     provider,
+    get generationActiveCount() {
+      if (generationWorker === undefined) throw new Error("Core generation worker has not been captured.");
+      return generationWorker.activeCount;
+    },
     loadModule,
     takeLocalLoginCode() { const code = lastLocalLoginCode; lastLocalLoginCode = undefined; return code; },
     async close() {

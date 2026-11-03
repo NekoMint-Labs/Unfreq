@@ -3,12 +3,15 @@
 Short map of the current Unfreq signal path. Use this before changing signal,
 galaxy, audio, resonance, or my-frequency behavior.
 
-The review visibility and public-field descriptions below are observations of the
-A3 code baseline (`0ee5775d3d156c69f459a531f17b876809f9ee12`), not the approved
-future contract. [A3's approved target](../data-lifecycle.md#5-目标权限与状态转换待实现)
-requires REVIEWING to return 404 to non-owners and public responses to use strict
-per-shape allowlists. Those runtime changes belong to subsequent implementation;
-this PR only updates documentation.
+The review visibility and public-field observations below come from the A3/A2
+baseline (`0ee5775d3d156c69f459a531f17b876809f9ee12`), not the current public
+contract. [A3's approved rules](../data-lifecycle.md#5-目标权限与状态转换待实现)
+require REVIEWING to return 404 to non-owners and public responses to use strict
+per-shape allowlists. Current local behavior is recorded separately in the
+[C1 implementation](../implementation/c1-publication-20261030.md),
+[reviewing correction](../implementation/c1-reviewing-20261101.md), and
+[E4 interpretation guard](../implementation/e4-unknown-interpretation-20261101.md).
+Those records do not establish production deployment; PR #3 remains docs-only.
 
 ## Current Core Flow
 

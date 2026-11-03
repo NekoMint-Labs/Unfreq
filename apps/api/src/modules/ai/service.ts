@@ -3,7 +3,8 @@ import {
   assertGenerationActive, GenerationExecutionStopped,
   getGenerationExecutionContext, throwIfGenerationStopped,
 } from "../../shared/generation-execution.js";
-import { resolveChatProviderConfig } from "./provider-config.js";
+import { ruleExecution, type AiExecutionMetadata, type ProviderResult } from "./provider-execution.js";
+import { interpretationFromExecution } from "../signals/interpretation.js";
 import { createAiReviewRecord } from "./repository.js";
 import {
   aiClassificationSchema,
@@ -12,7 +13,7 @@ import {
   aiModerationSchema,
   aiMonthlyRecapSchema,
   aiSignalContentSchema,
-  aiSignalExpansionReviewSchema,
+  createAiSignalExpansionReviewSchema,
   aiSignalExpansionSchema,
   aiSignalFingerprintSchema,
   aiSignalMaterialSchema,
@@ -93,6 +94,7 @@ function toOutputJson(value: unknown): Record<string, unknown> {
 }
 
 async function recordAiReview(params: {
+  execution: AiExecutionMetadata;
   inputText: string;
   output: unknown;
   reviewType: string;
@@ -100,18 +102,22 @@ async function recordAiReview(params: {
 } & AiReviewTarget) {
   await assertGenerationActive();
   try {
-    const providerConfig = await resolveChatProviderConfig();
-    await assertGenerationActive();
-
+    // The managed operation is assigned by the worker, never inferred from
+    // input text. Old or unscoped calls keep their explicit target/unknown state.
+    const operation = getGenerationExecutionContext()?.auditContext;
+    const execution = operation === undefined ? params.execution : { ...params.execution, operation };
+    const implicitSignalId = params.targetId === undefined && params.targetType === undefined &&
+      operation?.kind === "signal-generation" ? operation.signalId : undefined;
     const review = await createAiReviewRecord({
+      execution,
       inputText: params.inputText,
-      model: providerConfig.model,
+      model: params.execution.model,
       outputJson: toOutputJson(params.output),
-      provider: providerConfig.provider,
+      provider: params.execution.provider,
       reviewType: params.reviewType,
       status: params.status,
-      targetId: params.targetId,
-      targetType: params.targetType,
+      targetId: params.targetId ?? implicitSignalId,
+      targetType: params.targetType ?? (implicitSignalId === undefined ? undefined : "SIGNAL"),
     });
     await assertGenerationActive();
     return review;
@@ -139,13 +145,23 @@ async function runAi<TOutput>(params: {
   inputText: string;
   parse: (value: unknown) => TOutput;
   reviewType: string;
-  providerCall: () => Promise<unknown>;
+  providerCall: () => Promise<ProviderResult<unknown>>;
+  prepareResult?: (result: TOutput, execution: AiExecutionMetadata) => TOutput;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   await assertGenerationActive();
   const rawResult = await params.providerCall();
   await assertGenerationActive();
-  const result = params.parse(rawResult);
+  let result: TOutput;
+  try { result = params.parse(rawResult.output); }
+  catch (error) {
+    if (error instanceof AppError && error.code === "AI_UNAVAILABLE") {
+      throw new AppError(error.code, error.message, { execution: rawResult.execution });
+    }
+    throw error;
+  }
+  if (params.prepareResult !== undefined) result = params.prepareResult(result, rawResult.execution);
   const review = await recordAiReview({
+    execution: rawResult.execution,
     inputText: params.inputText,
     output: result,
     reviewType: params.reviewType,
@@ -166,7 +182,8 @@ async function runAiWithFallback<TOutput>(params: {
   inputText: string;
   parse: (value: unknown) => TOutput;
   reviewType: string;
-  providerCall: () => Promise<unknown>;
+  providerCall: () => Promise<ProviderResult<unknown>>;
+  prepareResult?: (result: TOutput, execution: AiExecutionMetadata) => TOutput;
 } & AiReviewTarget): Promise<{ reviewId: string; result: TOutput }> {
   try {
     return await runAi(params);
@@ -177,8 +194,12 @@ async function runAiWithFallback<TOutput>(params: {
       throw error;
     }
 
-    const result = params.fallbackCall();
+    const previous = (error.details as { execution?: AiExecutionMetadata } | undefined)?.execution;
+    const execution = ruleExecution(params.reviewType, previous);
+    const fallback = params.fallbackCall();
+    const result = params.prepareResult === undefined ? fallback : params.prepareResult(fallback, execution);
     const review = await recordAiReview({
+      execution,
       inputText: params.inputText,
       output: result,
       reviewType: params.reviewType,
@@ -334,6 +355,7 @@ export async function generateSignalFingerprintWithFallback(
     inputText: body.content,
     parse: (value) => parseAiResult(value, aiSignalFingerprintSchema),
     providerCall: () => signalFingerprintWithProvider(body.content),
+    prepareResult: (result, execution) => ({ ...result, interpretation: interpretationFromExecution(execution) }),
     reviewType: "signal-fingerprint",
     targetId: target?.targetId,
     targetType: target?.targetType,
@@ -402,6 +424,8 @@ export async function generateSignalMaterial(
     inputText: input.content,
     parse: (value) => parseAiResult(value, aiSignalMaterialSchema),
     providerCall: () => signalMaterialWithProvider(input.content),
+    prepareResult: (result, execution) => ({ ...result,
+      fingerprint: { ...result.fingerprint, interpretation: interpretationFromExecution(execution) } }),
     reviewType: "signal-material",
     targetId: target?.targetId,
     targetType: target?.targetType,
@@ -447,7 +471,7 @@ export async function reviewSignalExpansionWithFallback(
   return runAiWithFallback<AiSignalExpansionReview>({
     fallbackCall: () => signalExpansionReviewFallback(input),
     inputText,
-    parse: (value) => parseAiResult(value, aiSignalExpansionReviewSchema),
+    parse: (value) => parseAiResult(value, createAiSignalExpansionReviewSchema(input.classification.expansionMode)),
     providerCall: () => signalExpansionReviewWithProvider(input),
     reviewType: "signal-expansion-review",
     targetId: target?.targetId,

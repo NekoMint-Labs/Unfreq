@@ -24,13 +24,44 @@ async function create(h: AbuseHarness, child: AbuseProcess, cookie: string) {
 }
 async function published(h: AbuseHarness, child: AbuseProcess, cookie: string) {
   const response = await create(h, child, cookie); expect(response.statusCode).toBe(201); const id = data(response).signal!.id;
-  await finish(h, id); expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie })).statusCode).toBe(200); return id;
+  await finish(h, id);
+  const previewResponse = await h.inject(child, { method: "GET", url: `/api/signals/${id}/publication-preview`, cookie });
+  expect(previewResponse.statusCode).toBe(200);
+  const preview = (previewResponse.body as { data: { preview: { version: number; digest: string } } }).data.preview;
+  expect((await h.inject(child, { method: "POST", url: `/api/signals/${id}/publish`, cookie, payload: { expectedVersion: preview.version, digest: preview.digest } })).statusCode).toBe(200); return id;
 }
 async function audioReady(h: AbuseHarness, id: string) {
   await h.wait(async () => (await h.sql`select audio_status from signals where id = ${id}`)[0]?.audio_status === "READY", "audio-ready", 5_000);
 }
 
 describe("real multi-process abuse controls", () => {
+  it("shares report admission and receipt-read budgets across PIDs and deduplicates pending submissions", async () => {
+    await withAbuseHarness("reports", async (h) => {
+      const [a, b] = await pair(h);
+      const author = await register(h, a);
+      const reporter = await register(h, b);
+      const id = await published(h, a, author.cookie);
+      const submit = (child: AbuseProcess, cookie = reporter.cookie, remote?: "127.0.0.2") => h.inject(child, {
+        method: "POST", url: "/api/reports", cookie, payload: { targetType: "SIGNAL", targetId: id, reason: "涉及隐私", note: "SYNTHETIC_REVIEW_ONLY" }, ...(remote ? { remote } : {}),
+      });
+      const responses = await Promise.all([submit(a), submit(b)]);
+      expect(responses.map((response) => response.statusCode)).toEqual([201, 201]);
+      const receipts = responses.map((response) => (response.body as { data: { report: { id: string } } }).data.report.id);
+      expect(new Set(receipts).size).toBe(1);
+      limited(await submit(b));
+      limited(await submit(a, reporter.cookie, "127.0.0.2"));
+      expect((await submit(a, author.cookie)).statusCode).toBe(201);
+      limited(await submit(b, author.cookie));
+      const read = (child: AbuseProcess, cookie = reporter.cookie) => h.inject(child, { method: "GET", url: `/api/reports/signal/${id}`, cookie });
+      expect((await read(a)).statusCode).toBe(200);
+      expect((await read(b)).statusCode).toBe(200);
+      limited(await read(a));
+      expect((await read(b, author.cookie)).statusCode).toBe(200);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${id} and reporter_id = ${reporter.frequency.id}`;
+      expect(count.n).toBe(1);
+    });
+  }, twoBootBudget);
+
   it("shares registration N+1 across PIDs and ignores forged forwarding by default", async () => {
     await withAbuseHarness("register", async (h) => {
       const [a, b] = await pair(h);
@@ -241,4 +272,29 @@ describe("real multi-process abuse controls", () => {
       expect(h.provider.counts.tts).toBe(1); expect(await h.redis.ping()).toBe("PONG");
     });
   }, twoBootBudget);
+  it("rejects late TTS after withdrawal and starts a fresh version only after new confirmation", async () => {
+    await withAbuseHarness("audio", async (h) => {
+      const [a, b] = await pair(h); const author = await register(h, a);
+      const id = await published(h, a, author.cookie);
+      h.provider.holdTts();
+      expect((await h.inject(a, { method: "POST", url: `/api/signals/${id}/audio` })).statusCode).toBe(200);
+      await h.wait(() => h.provider.activeWs === 1, "tts-held-before-withdrawal");
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/withdraw`, cookie: author.cookie, payload: { expectedVersion: 1 } })).statusCode).toBe(200);
+      h.provider.release();
+      await h.wait(async () => h.provider.activeWs === 0 && await h.leaseCount() === 0, "old-audio-job-drained");
+      const [withdrawn] = await h.sql`select audio_status, audio_attempt_id, publication_version from signals where id = ${id}`;
+      expect(withdrawn).toEqual({ audio_status: "FAILED", audio_attempt_id: null, publication_version: 2 });
+      expect((await h.inject(a, { method: "GET", url: `/api/signals/${id}/audio/main` })).statusCode).toBe(404);
+      const preview = (await h.inject(b, { method: "GET", url: `/api/signals/${id}/publication-preview`, cookie: author.cookie })).body as { data: { preview: { version: number; digest: string } } };
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/publish`, cookie: author.cookie, payload: { expectedVersion: preview.data.preview.version, digest: preview.data.preview.digest } })).statusCode).toBe(200);
+      expect((await h.inject(b, { method: "POST", url: `/api/signals/${id}/audio` })).statusCode).toBe(200);
+      await audioReady(h, id);
+      const detail = (await h.inject(b, { method: "GET", url: `/api/signals/${id}/audio` })).body as { data: { audio: { audioUrl: string } } };
+      expect(detail.data.audio.audioUrl).toBe(`/api/signals/${id}/audio/main?v=3`);
+      expect((await h.inject(a, { method: "GET", url: `/api/signals/${id}/audio/main?v=1` })).statusCode).toBe(404);
+      expect(h.provider.counts.tts).toBe(2);
+      expect((await h.sql`select audio_publication_version from signals where id = ${id}`)[0].audio_publication_version).toBe(3);
+    });
+  }, twoBootBudget);
+
 });

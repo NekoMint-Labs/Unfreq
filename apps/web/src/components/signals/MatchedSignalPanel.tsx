@@ -1,7 +1,9 @@
-import type { SignalMatchSummary } from "@unfreq/contracts";
+import Link from "next/link";
+import type { PublicSignalMatchSummary } from "@unfreq/contracts";
+import { contentSourceLabel } from "./content-source-label";
 
 type MatchedSignalPanelProps = {
-  matches: SignalMatchSummary[];
+  matches: PublicSignalMatchSummary[];
 };
 
 export function MatchedSignalPanel({ matches }: MatchedSignalPanelProps) {
@@ -15,27 +17,21 @@ export function MatchedSignalPanel({ matches }: MatchedSignalPanelProps) {
           {matches.map((match) => (
             <article className="radio-surface-strong p-4" key={match.id}>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="font-semibold">{match.title}</h3>
+                <h3 className="font-semibold"><Link href={`/result/${match.id}`}>{match.authorFreqCode ?? "Unfreq"}</Link></h3>
                 <span className="font-mono text-xs text-[color:var(--radio-dim)]">
-                  {match.source === "SEEDED" ? "SEEDED" : "PUBLISHED"} / {match.score}
+                  {contentSourceLabel(match.contentSource, match.source)}
                 </span>
               </div>
               <p className="mt-3 text-sm leading-7 text-[color:var(--radio-muted)]">
-                {match.summary}
+                {match.expandedText}
               </p>
-              <p className="mt-3 text-sm leading-7 text-[color:var(--radio-muted)]">
-                也在思考：{match.frequencyProfile.innerConflict}
-              </p>
-              <p className="mt-2 font-mono text-xs text-[color:var(--radio-dim)]">
-                {match.frequencyProfile.displayText} ·{" "}
-                {match.frequencyProfile.resonanceKeywords.slice(0, 3).join(" / ")}
-              </p>
+              <p className="mt-2 text-xs">{match.tags.join(" / ")}</p>
             </article>
           ))}
         </div>
       ) : (
         <p className="mt-4 text-sm leading-7 text-[color:var(--radio-muted)]">
-          暂时没有匹配到公开同频信号。这段信号会先独自停留。
+          暂无合适同频。这段信号会先独自停留，之后也可以再来看看。
         </p>
       )}
     </section>

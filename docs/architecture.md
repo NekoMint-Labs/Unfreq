@@ -35,7 +35,7 @@ Browser
        -> apps/api
             Fastify JSON API、鉴权、AI 编排、信号业务
             -> PostgreSQL：主数据、迁移、向量字段
-            -> Redis：会话、缓存、队列状态
+            -> Redis：登录挑战、共享限额和短期状态
             -> AI Provider：扩写、指纹、可选 embedding / TTS
 
 apps/web <-> packages/contracts <-> apps/api
@@ -77,6 +77,12 @@ Next.js App Router 用来组织页面入口，例如首页、登录、结果页�
 Tailwind CSS 用来做界面样式。它适合这种自定义视觉语言较强的产品，不需要先维护一套很重的组件库。
 
 3D galaxy 使用 `@react-three/fiber` 和 Three.js。选择它们是因为 galaxy 不是静态装饰，而是可拖拽、可缩放、可点击的关系空间。直接用 DOM 或 SVG 很难支撑 3D 坐标、相机控制和大量点位交互。
+
+星图坐标是艺术排布。当前 API 优先复用已存储的有限坐标，否则按信号字段生成稳定哈希位置；前端再做轨道、景深和缩放处理。这条绘制路径没有执行语义向量降维，距离不能解释为语义相似度，历史坐标的来源也不能仅凭字段名推定。
+
+当前图内规则候选来自同批公开样本：API 按既有频率资料评分，每点选取最多三个正分候选；它没有直接复用历史首次匹配关系。前端仅从这些 `matchIds` 中绘制去重的线，并应用点线预算和视觉筛选，不按几何邻近补线。颜色按公开主频段及本人标记区分；亮度和大小还混合共振、景深、闪烁及确定性装饰因素。图例与阅读面板解释这些含义，不输出伪造的相似度百分比。
+
+图内评分的现有加分项为：相同 `primaryBand` 加 20，相同 `subFeeling` 加 10，相同 `emotionTone` 或指纹 `primaryEmotion` 加 5，相同 `coreNeed` 加 5。这是候选选择规则，不是经过校准的相似度或概率；公开说明不泄露每条表达的私密资料值。
 
 ## 后端：Fastify JSON API
 
@@ -128,7 +134,7 @@ npm run contracts:build
 
 ## AI 编排
 
-AI 层在 `apps/api/src/modules/ai`，信号生成链路主要在 `apps/api/src/modules/signals/service-creation.ts`。
+AI 层在 `apps/api/src/modules/ai`，生成内容主要在 `apps/api/src/modules/signals/service-creation.ts` 编排；`generation-worker.ts` 领取 PostgreSQL 中的持久任务，`generation-repository.ts` 管理租约、执行标识和条件提交。API 接收时返回稳定信号 id，不等待正文生成完成。
 
 后端不会让浏览器直接调用 provider。它会把用户 seed 转成几个受控任务：
 
@@ -145,7 +151,8 @@ matching        查找 same-frequency signals
 - provider key 必须留在服务端。
 - 提示词、schema、fallback 和审核策略需要集中控制。
 - AI 输出不能直接发布，必须先经过结构化解析和质量检查。
-- AI/embedding 不可用时，后端可以回到本地 fallback 或规则匹配。
+- 主素材和正文扩写必须有可用聊天 Provider，失败会按任务规则重试或终止；不存在无配置的完整本地正文兜底。
+- 分类、指纹和审核等辅助阶段有各自的规则降级；embedding 不可用时，匹配可使用规则或返回空结果。这些降级不能绕过保护拒绝。
 
 这层把 AI 限定为“表达整理和语义提取工具”，不是自由聊天机器人，也不是心理诊断系统。
 
@@ -171,17 +178,27 @@ apps/api/src/db/vector.ts       向量相关处理
 - 迁移文件留在仓库里，部署时 API 容器可以按迁移推进数据库。
 - SQL 边界比较清楚，不会把复杂查询隐藏到不可控的 ORM 魔法里。
 
-## Redis：会话、缓存和队列状态
+## Redis：登录挑战与共享限额
 
 Redis 在 Compose 里使用 `redis:7-alpine`，并开启 appendonly。
 
-它承载会话、缓存和队列状态。主业务数据不放 Redis。Redis 丢失会影响登录态、缓存或未完成队列，但不应该破坏 PostgreSQL 里的主数据。
+Redis 保存邮箱登录挑战、一次性消费与冷却状态，并支持跨实例的站点请求、Provider 派发、诊断及朗读预算。会话 Cookie 由服务端签名校验，账号身份与权限读取 PostgreSQL 的 users。Redis 故障时，受保护的派发按现有规则拒绝，不把限额失效当作免费放行。
 
 选择 Redis 的原因：
 
-- session 和临时状态不适合全部塞进 PostgreSQL。
-- 队列或生成状态需要低延迟读写。
-- 后续把 in-process 生成队列升级成 Redis-backed worker 时，基础设施已经在。
+- 一次性挑战和冷却状态需要过期时间与原子消费。
+- 多个 API 进程需要共享请求和 Provider 的预算。
+- 这些短期状态与 PostgreSQL 中的信号、身份和持久任务分开维护。
+
+## 身份权威源与镜像
+
+users 是账号认证和权限的权威源，frequencies 承载内容归属和频率侧信息。两表按相同 UUID 对应，注册、凭证更新、后台状态更新和管理员提升都在同一事务中先写或锁 users，再同步 frequencies；第二次写入失败会回滚第一次写入。
+
+镜像字段为 freqCode/code、frequencyName、passwordHash、isGuest、role、status、createdAt、updatedAt。复制在 PostgreSQL 中完成，保留时间戳微秒精度。邮箱与 emotionProfile 属于 users；lastSeenAt 与 deviceHash 属于 frequencies，审计不把它们当成镜像差异。标记回响已读只更新 lastSeenAt，账号更新时间保持原值。历史只有 frequencies 的记录保留原状，后台不会通过激活它们反向创建账号。
+
+`identity:audit` 用一条只读查询统计缺失、孤立和字段差异，输出有限 UUID 与字段名，不输出字段值或自动修复。limit 只限制差异样本数量，总量仍按完整数据统计。运维命令与处置边界见 [F1 实施记录](./implementation/f1-identity-scheduler-20261031.md)。
+
+`replicas:audit` 按 signalId 只读统计显式副本关联和关联音频的文件状态，说明旧无目标审计、无版本摘要、非 top 月报、独立图片及日志/备份/第三方的盲区。用户 worker 的审计附 signal/attempt，系统调度附 batch/attempt，不推定历史血缘或自动清理；见 [F2 实施记录](./implementation/f2-recovery-replicas-20261031.md)。
 
 ## 信号生成与状态流转
 
@@ -200,7 +217,15 @@ POST /api/signals
 
 这样设计是因为 AI 扩写、review、embedding 和匹配都可能耗时。先返回 id 可以让刷新、跳转和网络波动更可控。
 
-当前生成队列主要是服务进程内调度。状态写在数据库里，所以页面恢复没问题；但跨进程重启后的任务恢复，后续更适合接 BullMQ 或独立 worker。
+用户生成任务持久保存在 PostgreSQL。worker 扫描已提交任务，以持久领取、attempt token、租期和条件写入协调多进程；未派发任务与派发结果未知的任务按不同恢复规则处理。进程内扫描器负责唤醒与取消，页面轮询读取数据库状态。具体恢复证据和升级边界见 [B1/B2 记录](./implementation/b1-b2-generation-reliability.md)。
+
+每日系统 AI 调度使用独立的 PostgreSQL 批次账本，默认关闭。启用后按显式业务时区判断当天触发时间，以 job_key + business_date 的唯一约束领取一次批次；在首次外发前持久提交领取。记录生成数量预算、逐次派发预算、进度和终态，Provider 同时受 Redis 站点预算约束。多实例共用数据库和配置时，当天只能有一个批次执行。
+
+启用时若已过当天触发时间，会补当天一次；不会补过去日期。崩溃后结果未知的 RUNNING、已失败或取消的批次都不自动重放。当日可能因此少生成，已有远端费用也不能仅由本地状态判断。关闭时停止领取、取消在途请求并等待工作排空；进程 watchdog 的预算覆盖启用的 scheduler 和生成 worker 中较长的关闭宽限期。提高预算时还需同步提高 Compose 的 stop_grace_period。
+
+`/health` 供进程存活探针使用，`/health/deep` 检查 PostgreSQL 和 Redis 就绪状态。Compose 的 API 探针使用 `/health`，部署 smoke 同时检查两者，依赖暂时故障不会因深健康探针而触发应用重启风暴。
+
+星图和详情/matches GET 不触发 Provider 或后台回填。位置缺失时只计算稳定投影，匹配读取可复用的已确认正文向量或规则候选，保留现有分数门槛和空结果。创建和显式管理脚本仍负责生成与回填。只读分数理由为 read_only，需 API/Web 兼容版本同步。
 
 ## 部署：Docker Compose + Caddy + Nginx Proxy Manager
 
@@ -231,7 +256,7 @@ Caddy 同时进入内部 `app` 网络和外部 Nginx Proxy Manager 网络。Web�
 ```text
 npm run check       contracts + api + web
 npm run api:check   lint + typecheck + test + build
-npm run web:check   lint + typecheck + build
+npm run web:check   lint + typecheck + test + build
 npm run e2e         浏览器主流程
 npm run deploy:test 部署脚本测试
 ```
@@ -248,7 +273,7 @@ Zod           环境变量、请求和 AI 输出校验
 Drizzle       类型友好的 PostgreSQL schema 和迁移
 PostgreSQL    主数据持久化
 pgvector      在主库内支持语义匹配
-Redis         会话、缓存、队列状态
+Redis         登录挑战、共享预算和短期状态
 Three.js      3D galaxy 可视化
 Docker Compose 小型服务器可复现部署
 Caddy         项目内部反代

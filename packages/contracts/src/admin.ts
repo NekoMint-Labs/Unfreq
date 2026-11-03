@@ -20,6 +20,8 @@ export type AdminAiReviewStatus = "FALLBACK" | "SUCCEEDED";
 export type AdminCapabilityStatus = "configured" | "degraded" | "disabled";
 export type AdminChatProviderProfile = "default" | "fast";
 export type AdminProviderConfigKind = "chat" | "embedding" | "reranker" | "tts";
+/** Provider relevance, higher is better; this is not a calibrated probability. */
+export type RerankerScoreScale = "zero_to_one" | "zero_to_hundred";
 
 export type AdminOverview = {
   aiReviews: {
@@ -172,7 +174,34 @@ export type AdminFrequencyRecord = {
   status: AdminUserStatus;
 };
 
+export type AiProviderAttempt = {
+  provider: string;
+  model: string;
+  profile: "default" | "fast";
+  outcome: "SUCCEEDED" | "FAILED";
+  durationMs: number;
+  failureKind?: string;
+  statusCode?: number;
+  responseModel?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; input_tokens?: number; output_tokens?: number };
+};
+
+export type AiExecutionMetadata = {
+  schemaVersion: 1;
+  taskType: string;
+  source: "provider" | "rules" | "unavailable";
+  provider: string;
+  model: string;
+  promptVersion: string;
+  inputTemplateVersion: string;
+  durationMs: number;
+  attempts: AiProviderAttempt[];
+  fallbackReason?: string;
+  cost: "unknown";
+};
+
 export type AdminAiReviewRecord = {
+  execution?: AiExecutionMetadata;
   createdAt: string;
   id: string;
   inputText: string;
@@ -186,9 +215,12 @@ export type AdminAiReviewRecord = {
 };
 
 export type AdminAiEvaluationMetric = {
+  denominator: number;
   description: string;
   key: string;
   label: string;
+  method: string;
+  numerator: number;
   unit: "percent";
   value: number;
 };
@@ -200,12 +232,29 @@ export type AdminAiEvaluationGroup = {
 };
 
 export type AdminAiEvaluation = {
+  ablationStatus: "NOT_RUN";
   ablations: Array<{
     label: string;
     matchTopKRelevance: number;
   }>;
+  competitionEvidenceEligible: false;
+  dataset: {
+    judgmentSource: "synthetic-presets-not-human";
+    sha256: string;
+    version: string;
+  };
+  evaluationKind: "DEMO_RULE_FIXTURES";
+  fixtureOutputs: Array<{
+    actual: string[];
+    expected: string[];
+    hit: boolean;
+    id: string;
+    task: "classification" | "matching" | "moderation" | "tags";
+  }>;
   generatedAt: string;
   groups: AdminAiEvaluationGroup[];
+  limitations: string[];
+  modelQualityValidated: false;
   sampleSize: {
     classification: number;
     matching: number;

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { createServer as tcpServer, connect, type Socket } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,11 +28,14 @@ export class AbuseProcess {
   readonly ready: Promise<void>;
   readonly closed: Promise<void>;
   readonly infrastructureErrors: string[] = [];
+  readonly bootEvents: { phase: string; at: number; elapsedMs: number }[] = [];
+  private spawnedAt = Date.now();
   private ended = false;
   private sequence = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private stopping: Promise<void> | undefined;
   private lastBootPhase = "before-validation";
+  private bootFailure: Error | undefined;
   constructor(entry: string, environment: NodeJS.ProcessEnv) {
     this.child = spawn(process.execPath, [entry], { cwd: root, env: environment, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     this.pid = this.child.pid ?? -1;
@@ -43,8 +46,9 @@ export class AbuseProcess {
     let bytes = 0;
     const output = (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65_536) { this.infrastructureErrors.push("OUTPUT_LIMIT"); void this.kill().catch(() => {}); } };
     this.child.stdout?.on("data", output); this.child.stderr?.on("data", output);
-    this.child.once("close", () => {
-      this.ended = true; close(); reject(new Error("Owned B3 process closed before ready."));
+    this.child.once("close", (code, signal) => {
+      this.ended = true; close();
+      reject(this.bootFailure ?? new Error(`Owned B3 process closed before ready at ${this.lastBootPhase} (code ${code ?? "none"}, signal ${signal ?? "none"}).`));
       for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new Error("Owned B3 process closed during command.")); }
       this.pending.clear();
     });
@@ -52,11 +56,11 @@ export class AbuseProcess {
       if (!raw || typeof raw !== "object" || !("kind" in raw)) return;
       const message = raw as AbuseMessage;
       if (message.kind === "boot") {
-        if (message.pid !== this.pid || !["validation-start", "validation-complete", "db-guard-start", "db-guard-complete", "app-import-start", "app-build-start", "app-ready-start"].includes(message.phase) || !Number.isSafeInteger(message.at)) {
+        if (message.pid !== this.pid || !["validation-start", "validation-complete", "db-guard-start", "db-guard-complete", "app-import-start", "app-import-complete", "app-build-start", "app-build-complete", "app-ready-start"].includes(message.phase) || !Number.isSafeInteger(message.at)) {
           this.infrastructureErrors.push("INVALID_BOOT_EVENT"); void this.kill().catch(() => {});
-        } else this.lastBootPhase = message.phase;
+        } else { this.lastBootPhase = message.phase; this.bootEvents.push({ phase: message.phase, at: message.at, elapsedMs: Date.now() - this.spawnedAt }); }
       }
-      if (message.kind === "ready") { if (message.pid === this.pid) accept(); else { this.infrastructureErrors.push("PID_MISMATCH"); void this.kill().catch(() => {}); } }
+      if (message.kind === "ready") { if (message.pid === this.pid) { this.bootEvents.push({ phase: "ready", at: Date.now(), elapsedMs: Date.now() - this.spawnedAt }); accept(); } else { this.infrastructureErrors.push("PID_MISMATCH"); void this.kill().catch(() => {}); } }
       if (message.kind === "fatal") { this.infrastructureErrors.push("FIXTURE_FATAL"); reject(new Error("Owned B3 fixture failed.")); void this.kill().catch(() => {}); }
       if (message.kind === "reply") {
         const item = this.pending.get(message.id); if (!item) return;
@@ -69,7 +73,9 @@ export class AbuseProcess {
   async waitReady() {
     let timer: NodeJS.Timeout | undefined;
     try { await Promise.race([this.ready, new Promise<never>((_, reject) => { timer = setTimeout(() => {
-      this.infrastructureErrors.push("READY_TIMEOUT"); void this.kill().then(() => reject(new Error(`B3 cold boot exceeded 20s at ${this.lastBootPhase} after terminating its PID.`)), reject);
+      this.infrastructureErrors.push("READY_TIMEOUT");
+      this.bootFailure = new Error(`B3 cold boot exceeded 20s at ${this.lastBootPhase} after terminating its PID.`);
+      void this.kill().then(() => reject(this.bootFailure), reject);
     }, 20_000); })]); }
     catch (error) { await this.kill(); throw error; }
     finally { if (timer) clearTimeout(timer); }
@@ -260,6 +266,10 @@ export async function createAbuseHarness(caseId: AbuseCase) {
       if (dirname(resolve(directory)) !== resolve(tmpdir()) || !basename(directory).startsWith(`unfreq-abuse-${nonce}-`)) throw new Error("Refusing unowned B3 media removal.");
       await rm(directory, { recursive: true, force: true });
     });
+    await mkdir(join(root, "test-results", "b3"), { recursive: true });
+    await writeFile(join(root, "test-results", "b3", `boot-${managed.runId}-${caseId}-${nonce.slice(0, 8)}.json`),
+      JSON.stringify({ runId: managed.runId, caseId, cleanupErrors: errors.length,
+        children: children.map((child) => ({ pid: child.pid, bootEvents: child.bootEvents, infrastructureErrors: child.infrastructureErrors })) }, null, 2));
     if (errors.length) throw new AggregateError(errors, "B3 experiment cleanup or fixture boundary failed.");
   })();
   try {
@@ -291,10 +301,11 @@ export async function createAbuseHarness(caseId: AbuseCase) {
       AI_API_KEY: "abuse-stub-only", AI_BASE_URL: `${provider.origin}/v1`, AI_PROVIDER: "integration-loopback", AI_MODEL: "synthetic-main",
       AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "",
       EMBEDDING_API_KEY: ["providerembedding", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", EMBEDDING_BASE_URL: ["providerembedding", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", EMBEDDING_DIMENSIONS: "1024", EMBEDDING_MODEL: "synthetic-embedding", EMBEDDING_PROVIDER: "integration-loopback", EMBEDDING_VERSION: "b3-synthetic-v1",
-      RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker",
+      RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker", RERANKER_SCORE_SCALE: "zero_to_one",
+    SIGNAL_MATCH_SEMANTIC_CANDIDATES: "12", SIGNAL_MATCH_RULE_CANDIDATES: "24", SIGNAL_MATCH_MIN_SCORE: "80", SIGNAL_MATCH_MAX_RERANK_CHARACTERS: "12000",
       TTS_API_KEY: "abuse-stub-only", TTS_BASE_URL: provider.wsUrl, TTS_PROVIDER: "integration-loopback", TTS_MODEL: "synthetic-tts", TTS_VOICE_LEFT: "synthetic", TTS_VOICE_RIGHT: "synthetic",
       TTS_STORAGE_DIR: join(directory, "audio"), IMAGE_STORAGE_DIR: join(directory, "images"), IMAGE_MAX_BYTES: "2097152",
-      SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault"].includes(caseId) ? "true" : "false",
+      SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault", "reports"].includes(caseId) ? "true" : "false",
       SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",
       SIGNAL_GENERATION_RETRY_BASE_MS: "50", SIGNAL_GENERATION_RETRY_MAX_MS: "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200", SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
       WEB_ORIGIN: caseId === "production" ? "https://b3-synthetic.example" : "http://127.0.0.1:3200", API_HOST: "127.0.0.1", API_PORT: "4000", HEALTH_DEPENDENCY_TIMEOUT_MS: "500", DB_POOL_MAX: "4", LOG_LEVEL: "warn" });

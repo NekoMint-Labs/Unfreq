@@ -43,11 +43,11 @@ apps/web/public           PWA icons and static assets
 
 ## FEE-004 Visibility branching
 
-Result pages must branch on `visibility` before reading detail fields. The following owner branches reflect the baseline contracts; [approved A3 visibility and public-field rules](../../docs/data-lifecycle.md#5-目标权限与状态转换待实现) govern the subsequent API/client update, which this docs-only PR does not implement:
+Result pages must branch on `visibility` before reading detail fields. [A3 visibility and public-field rules](../../docs/data-lifecycle.md#5-目标权限与状态转换待实现) govern the current public contract; the [C1 reviewing fix](../../docs/implementation/c1-reviewing-20261101.md) records the independent local API correction and verification limits. Legacy branches below are compatibility handling, not permission to expose old API shapes:
 
 - `GENERATION_OWNER` → redirect to `/signal/:id/transmitting` (or render generation status there).
-- `PREVIEW_OWNER` → show seed/expanded text and a publish action only; hide matches, playback, resonance, save, and share-card UI until publish returns a `PUBLISHED` `SignalDetail`.
-- Baseline `REVIEW_RESTRICTED` compatibility → restricted result, no seed/expanded/fingerprint/matches/audio/resonance/save/share fields. Retaining a defensive legacy branch does not approve the API returning REVIEWING 200 to non-owners; the target is 404 and the ordinary not-found flow, with no existence/review metadata. Owners see review status privately; authorized administrators use internal interfaces.
+- `PRIVATE_OWNER` → current owner-private detail and publication actions; review status remains private and publish controls respect server eligibility. Legacy `PREVIEW_OWNER` handling is not the current public DTO contract.
+- Baseline `REVIEW_RESTRICTED` compatibility → restricted result, no seed/expanded/fingerprint/matches/audio/resonance/save/share fields. Retaining a defensive legacy branch does not approve the API returning REVIEWING 200 to non-owners; the API now returns 404 in the local C1 correction and the client uses the ordinary not-found flow, without existence/review metadata. Owners see review status privately; authorized administrators use internal interfaces.
 - Public detail → the approved allowlisted public result. Do not require or display the owner's original input, complete fingerprint/profile, or internal identity fields to render public content.
 
 Server-rendered result pages must forward the request cookie to the API so the owner is not treated as anonymous.

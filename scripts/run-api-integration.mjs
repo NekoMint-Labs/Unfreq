@@ -11,6 +11,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = path.join(root, "tests", "integration", "compose.yaml");
 const runId = randomUUID().replaceAll("-", "").slice(0, 12);
 const project = `unfreq-it-${runId}`;
+// Fixed scope only; neither mode accepts an existing URL, project or arbitrary
+// test path. The focused drill owns the same fresh services and cleanup.
+const recoveryOnly = process.argv.length === 3 && process.argv[2] === "--f2-recovery";
+const checkpointsOnly = process.argv.length === 3 && process.argv[2] === "--generation-checkpoints";
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => [
   "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
   "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
@@ -26,7 +30,7 @@ let cleaned = false;
 let runDir;
 let envFile;
 let exitCode = 1;
-const manifest = { project, runId, composeFile, startedAt: new Date().toISOString() };
+const manifest = { project, runId, composeFile, scope: recoveryOnly ? "f2-recovery" : checkpointsOnly ? "generation-checkpoints" : "full", startedAt: new Date().toISOString() };
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
@@ -93,7 +97,7 @@ async function servicePort(service, port) {
 }
 
 try {
-  if (process.argv.length > 2) throw new Error("This runner accepts no external URLs or project overrides.");
+  if (process.argv.length > 2 && !recoveryOnly && !checkpointsOnly) throw new Error("This runner accepts no external URLs or project overrides; only fixed recovery scopes are optional.");
   if (env.DOCKER_HOST && !isLocalDockerEndpoint(env.DOCKER_HOST)) {
     throw new Error("Remote Docker hosts are not allowed for managed integration tests.");
   }
@@ -150,7 +154,8 @@ try {
     WEB_ORIGIN: "http://127.0.0.1:3300",
   };
   await writeFile(path.join(runDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  await run(process.execPath, [path.join(root, "node_modules", "vitest", "vitest.mjs"), "run", "--config", "vitest.integration.config.ts"], { childEnv: testEnv, cwd: path.join(root, "apps", "api") });
+  await run(process.execPath, [path.join(root, "node_modules", "vitest", "vitest.mjs"), "run", "--config", "vitest.integration.config.ts",
+    ...(recoveryOnly ? ["tests/integration/f2-recovery.test.ts", "tests/integration/core-flow.test.ts"] : checkpointsOnly ? ["tests/integration/generation-checkpoints.test.ts"] : [])], { childEnv: testEnv, cwd: path.join(root, "apps", "api") });
   const report = JSON.parse(await readFile(testEnv.UNFREQ_INTEGRATION_REPORT, "utf8"));
   if (report.success !== true || report.numTotalTests < 1 ||
       report.numPassedTests !== report.numTotalTests || report.numFailedTests !== 0 ||

@@ -6,6 +6,7 @@ import WebSocket, { type RawData } from "ws";
 import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
 import { AbuseControlStopped } from "../../shared/abuse-errors.js";
 import { AppError, toSafeAiFailureDetails } from "../../shared/errors.js";
+import { safeErrorType } from "../../shared/log-redaction.js";
 import { resolveTtsProviderConfigs, type TtsProviderConfig } from "./provider-config.js";
 import { isAbortError } from "./provider-errors.js";
 
@@ -125,11 +126,7 @@ function toErrorReason(error: unknown): string {
     return error.code;
   }
 
-  if (error instanceof Error) {
-    return error.name;
-  }
-
-  return "unknown";
+  return safeErrorType(error);
 }
 
 function parseDashScopeEvent(data: string): DashScopeEvent | undefined {

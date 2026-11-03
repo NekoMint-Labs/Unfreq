@@ -1,3 +1,6 @@
+import { composeMatchScore, cosineRelevance, matchScoreVersion } from "./match-scoring.js";
+import { parsePublicationSnapshot } from "./publication.js";
+import { canReferenceSignalInterpretation, unknownInterpretationText } from "./interpretation.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   generateEmbedding,
@@ -6,13 +9,18 @@ import {
   isEmbeddingProviderConfigured,
 } from "../ai/embedding.js";
 import { isRerankerProviderConfigured, rerankCandidates } from "../ai/reranker.js";
+import { normalizeRerankerScore } from "../ai/reranker-adapter.js";
 import type { AiSignalSeedClassification } from "../ai/signal-types.js";
 import {
   listPublishedSemanticSignalMatchCandidates,
+  recheckPublicSignals,
   listPublishedSignalMatchCandidates,
 } from "./repository.js";
-import { matchCandidateLimit, maxMatchCount } from "./service-constants.js";
+import { maxMatchCount } from "./service-constants.js";
+import { isMatchEligible, matchPolicyVersion, resolveMatchPolicy, type MatchPolicy, type MatchScope } from "./match-policy.js";
+import type { AiExecutionMetadata } from "../ai/provider-execution.js";
 import { buildSignalEmbeddingText } from "./service-embedding.js";
+import { isEmbeddingSpaceKey } from "../ai/embedding-space.js";
 import { toSafeErrorReason } from "./service-errors.js";
 import {
   getFingerprintFrequencyProfile,
@@ -22,86 +30,19 @@ import {
 } from "./service-mappers.js";
 import type {
   SignalFingerprint,
+  SignalFrequencyProfile,
   SignalMatchSummary,
   SignalRecord,
   SignalSemanticMatchRecord,
 } from "./types.js";
 
-const seededSignalMatches: SignalMatchSummary[] = [
-  {
-    expandedText: "有人在通勤路上反复整理明天的任务，想停下来，又怕自己落后。",
-    frequencyProfile: {
-      coreNeed: "确认努力是否值得",
-      displayText: "时代星群 · 效率焦虑",
-      emotionTone: "紧绷疲惫",
-      innerConflict: "想停下来，却担心自己被进度落下",
-      primaryBand: "era_cluster",
-      resonanceKeywords: ["通勤", "任务", "落后"],
-      subFeeling: "efficiency_anxiety",
-    },
-    frequencyCode: "FM 21.07",
-    id: "seed-pressure-wave-001",
-    primaryEmotion: "压力",
-    resonanceCount: 0,
-    score: 1,
-    seedText: "通勤路上的未完成清单。",
-    signalType: "pressure-wave",
-    source: "SEEDED",
-    summary: "有人在通勤路上反复整理明天的任务，想停下来，又怕自己落后。",
-    tags: ["压力", "焦虑", "疲惫"],
-    title: "通勤里的未完成清单",
-  },
-  {
-    expandedText: "有人把一整天的沉默留在夜里，希望有个陌生人刚好听见。",
-    frequencyProfile: {
-      coreNeed: "希望被一个陌生人听见",
-      displayText: "关系星云 · 被理解需求",
-      emotionTone: "安静孤独",
-      innerConflict: "想被理解，又不想主动打扰别人",
-      primaryBand: "relationship_nebula",
-      resonanceKeywords: ["沉默", "夜里", "听见"],
-      subFeeling: "need_to_be_understood",
-    },
-    frequencyCode: "FM 29.18",
-    id: "seed-life-fragment-001",
-    primaryEmotion: "孤独",
-    resonanceCount: 0,
-    score: 1,
-    seedText: "夜里还有一个空白座位。",
-    signalType: "life-fragment",
-    source: "SEEDED",
-    summary: "有人把一整天的沉默留在夜里，希望有个陌生人刚好听见。",
-    tags: ["孤独", "夜晚", "等待"],
-    title: "夜里的空白座位",
-  },
-  {
-    expandedText: "有人没有发出那句问候，只把想念调成很低的音量。",
-    frequencyProfile: {
-      coreNeed: "确认没有说出口的想念仍然被接住",
-      displayText: "关系星云 · 关系失望",
-      emotionTone: "低声想念",
-      innerConflict: "想靠近对方，却把问候留在了原地",
-      primaryBand: "relationship_nebula",
-      resonanceKeywords: ["问候", "想念", "未送达"],
-      subFeeling: "relationship_disappointment",
-    },
-    frequencyCode: "FM 24.63",
-    id: "seed-missing-echo-001",
-    primaryEmotion: "想念",
-    resonanceCount: 0,
-    score: 1,
-    seedText: "那句问候最后没有发出去。",
-    signalType: "life-fragment",
-    source: "SEEDED",
-    summary: "有人没有发出那句问候，只把想念调成很低的音量。",
-    tags: ["想念", "迟疑", "未送达"],
-    title: "没有发出的问候",
-  },
-];
-
-export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: SignalRecord): number {
-  const currentProfile = getFingerprintFrequencyProfile(fingerprint);
-  const candidateProfile = getSignalFrequencyProfile(candidate);
+export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: SignalRecord,
+  prepared?: { current: SignalFrequencyProfile; candidate: SignalFrequencyProfile }): number {
+  const currentProfile = prepared?.current ?? getFingerprintFrequencyProfile(fingerprint);
+  const candidateProfile = prepared?.candidate ?? getSignalFrequencyProfile(candidate);
+  // Shared default enum values or neutral placeholders are not similarity.
+  if (!canReferenceSignalInterpretation(fingerprint.interpretation) ||
+      !canReferenceSignalInterpretation(candidate.fingerprintJson.interpretation)) return 0;
   let score = 0;
 
   if (candidateProfile.primaryBand === currentProfile.primaryBand) {
@@ -113,280 +54,173 @@ export function scoreSignalMatch(fingerprint: SignalFingerprint, candidate: Sign
   }
 
   if (
-    candidateProfile.emotionTone === currentProfile.emotionTone ||
-    candidate.fingerprintJson.primaryEmotion === fingerprint.primaryEmotion
+    (candidateProfile.emotionTone !== unknownInterpretationText && candidateProfile.emotionTone === currentProfile.emotionTone) ||
+    (fingerprint.primaryEmotion.trim().length > 0 && fingerprint.primaryEmotion !== unknownInterpretationText && candidate.fingerprintJson.primaryEmotion === fingerprint.primaryEmotion)
   ) {
     score += 5;
   }
 
-  if (candidateProfile.coreNeed === currentProfile.coreNeed) {
+  if (currentProfile.coreNeed !== unknownInterpretationText && candidateProfile.coreNeed === currentProfile.coreNeed) {
     score += 5;
   }
 
   return score;
 }
 
-function scoreSeededMatch(fingerprint: SignalFingerprint, candidate: SignalMatchSummary): number {
-  const currentProfile = getFingerprintFrequencyProfile(fingerprint);
-  let score = 0;
+type MatchCandidate = { signal: SignalRecord; distance?: number };
+export type MatchDiagnostics = {
+  policyVersion: string; semanticIds: string[]; poolIds: string[]; rankedIds: string[];
+  acceptedCount: number; minScore: number; latencyMs: number; inputCharacters: number;
+  embeddingExecution?: AiExecutionMetadata; rerankerExecution?: AiExecutionMetadata;
+};
+export type MatchInput = {
+  classification?: AiSignalSeedClassification; excludeSignalId?: string; excludeAuthorIds?: readonly string[];
+  corpusIds?: readonly string[]; publicTags?: readonly string[]; publicBand?: SignalFingerprint["primaryBand"];
+  expandedText: string; fingerprint: SignalFingerprint; logger?: EmbeddingLogger;
+  rawInput: string; publicQuery?: boolean; policy?: MatchPolicy;
+  readOnly?: boolean; storedEmbedding?: EmbeddingResult;
+};
 
-  if (candidate.frequencyProfile.primaryBand === currentProfile.primaryBand) {
-    score += 20;
-  }
-
-  if (candidate.frequencyProfile.subFeeling === currentProfile.subFeeling) {
-    score += 10;
-  }
-
-  if (
-    candidate.frequencyProfile.emotionTone === currentProfile.emotionTone ||
-    candidate.primaryEmotion === fingerprint.primaryEmotion
-  ) {
-    score += 5;
-  }
-
-  if (candidate.frequencyProfile.coreNeed === currentProfile.coreNeed) {
-    score += 5;
-  }
-
-  return score;
-}
-
-async function findKeywordSameFrequencyMatches(
-  fingerprint: SignalFingerprint,
-  options: {
-    excludeSignalId?: string;
-  } = {},
-): Promise<SignalMatchSummary[]> {
-  await assertGenerationActive();
-  const publishedCandidates = await listPublishedSignalMatchCandidates(
-    matchCandidateLimit,
-    options.excludeSignalId,
-  );
-  await assertGenerationActive();
-  const publishedMatches = publishedCandidates
-    .filter((candidate) => candidate.id !== options.excludeSignalId)
-    .map((candidate) => toMatchSummary(candidate, scoreSignalMatch(fingerprint, candidate)))
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      return left.id.localeCompare(right.id);
-    })
-    .slice(0, maxMatchCount);
-
-  if (publishedMatches.length >= maxMatchCount) {
-    return publishedMatches;
-  }
-
-  const existingIds = new Set(publishedMatches.map((match) => match.id));
-  const seededMatches = seededSignalMatches
-    .map((candidate) => ({
-      ...candidate,
-      score: scoreSeededMatch(fingerprint, candidate),
-    }))
-    .filter((candidate) => candidate.score > 0 && !existingIds.has(candidate.id))
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      return left.id.localeCompare(right.id);
-    });
-
-  return [...publishedMatches, ...seededMatches].slice(0, maxMatchCount);
-}
-
-async function rerankSemanticMatches(params: {
-  candidates: SignalSemanticMatchRecord[];
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-}): Promise<SignalMatchSummary[]> {
-  await assertGenerationActive();
-  const applyFrequencyScore = (match: SignalMatchSummary, candidate: SignalRecord) => {
-    const semanticScore = match.score;
-    const frequencyScore = scoreSignalMatch(params.fingerprint, candidate);
-
-    return {
-      ...match,
-      score: Number(((semanticScore * 0.6) + frequencyScore).toFixed(4)),
-    };
-  };
-
-  const configured = await isRerankerProviderConfigured();
-  await assertGenerationActive();
-  if (!configured) {
-    return params.candidates
-      .map((candidate) => applyFrequencyScore(toSemanticMatchSummary(candidate), candidate))
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
-  }
-
+async function semanticCandidates(input: MatchInput, scope: MatchScope, policy: MatchPolicy): Promise<{ embedding?: EmbeddingResult; candidates: SignalSemanticMatchRecord[] }> {
+  let embedding: EmbeddingResult | undefined;
   try {
-    const reranked = await rerankCandidates({
-      candidates: params.candidates.map((candidate) => {
-        return {
-          distance: candidate.distance,
-          expandedText: candidate.expandedText,
-          id: candidate.id,
-        };
-      }),
-      queryText: params.expandedText,
-    });
     await assertGenerationActive();
-    const scoreById = new Map(
-      reranked.results.map((result) => {
-        return [result.id, result.score];
-      }),
-    );
-
-    return params.candidates
-      .map((candidate) => {
-        const fallback = toSemanticMatchSummary(candidate);
-        const score = scoreById.get(candidate.id);
-        const match = {
-          ...fallback,
-          score: score === undefined ? fallback.score : Number(score.toFixed(4)),
-        };
-
-        return applyFrequencyScore(match, candidate);
-      })
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
+    if (input.readOnly) {
+      embedding = input.storedEmbedding;
+      if (embedding === undefined || !isEmbeddingSpaceKey(embedding.version) || embedding.dimensions !== embedding.embedding.length ||
+          embedding.dimensions < 1 || !embedding.embedding.every(Number.isFinite)) return { candidates: [] };
+    } else {
+      const configured = await isEmbeddingProviderConfigured();
+      await assertGenerationActive();
+      if (!configured) return { candidates: [] };
+      embedding = await generateEmbedding(buildSignalEmbeddingText(input), {
+        logger: input.logger, purpose: input.publicQuery ? "public-detail" : "creation",
       });
+    }
+    await assertGenerationActive();
+    const rows = await listPublishedSemanticSignalMatchCandidates(embedding.embedding, policy.semanticCandidates, scope.excludeSignalId, embedding, scope);
+    await assertGenerationActive();
+    const candidates = rows.filter((row) => isMatchEligible(row, scope) && Number.isFinite(row.distance) && row.distance >= 0 && row.distance <= 2);
+    input.logger?.info({ action: "signal.semantic_match.candidates", version: embedding.version,
+      candidates: candidates.length, requested: policy.semanticCandidates, legacyVectorsIncluded: false }, "same-space public candidate recall");
+    return { embedding, candidates };
   } catch (error) {
-    throwIfGenerationStopped(error);
-    await assertGenerationActive();
-    params.logger?.warn(
-      {
-        action: "signal.reranker.fallback",
-        reason: toSafeErrorReason(error),
-        targetType: "SIGNAL",
-      },
-      "signal reranker fell back",
-    );
-
-    return params.candidates
-      .map((candidate) => applyFrequencyScore(toSemanticMatchSummary(candidate), candidate))
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
+    throwIfGenerationStopped(error); await assertGenerationActive();
+    input.logger?.warn({ action: "signal.semantic_match.fallback", reason: toSafeErrorReason(error) }, "semantic recall unavailable");
+    return { embedding, candidates: [] };
   }
 }
 
-async function findSemanticSameFrequencyMatches(params: {
-  classification?: AiSignalSeedClassification;
-  excludeSignalId?: string;
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-  rawInput: string;
-}): Promise<{ embedding: EmbeddingResult; matches: SignalMatchSummary[] } | undefined> {
-  await assertGenerationActive();
-  const configured = await isEmbeddingProviderConfigured();
-  await assertGenerationActive();
-  if (!configured) {
-    return undefined;
+function mergeCandidates(semantic: SignalSemanticMatchRecord[], rules: SignalRecord[], scope: MatchScope): MatchCandidate[] {
+  const pool = new Map<string, MatchCandidate>();
+  const changed = new Set<string>();
+  for (const row of [...rules, ...semantic]) {
+    if (!isMatchEligible(row, scope) || changed.has(row.id)) continue;
+    const previous = pool.get(row.id);
+    if (previous !== undefined && previous.signal.publicationVersion !== row.publicationVersion) {
+      pool.delete(row.id); changed.add(row.id); continue;
+    }
+    const distance = "distance" in row && typeof row.distance === "number" ? row.distance : previous?.distance;
+    pool.set(row.id, { signal: row, ...(distance === undefined ? {} : { distance }) });
   }
-
-  try {
-    const embedding = await generateEmbedding(
-      buildSignalEmbeddingText({
-        classification: params.classification,
-        expandedText: params.expandedText,
-        fingerprint: params.fingerprint,
-        seedText: params.rawInput,
-      }),
-      {
-        logger: params.logger,
-      },
-    );
-    await assertGenerationActive();
-    const semanticCandidates = await listPublishedSemanticSignalMatchCandidates(
-      embedding.embedding,
-      maxMatchCount,
-      params.excludeSignalId,
-      embedding.version,
-    );
-    await assertGenerationActive();
-    const matches = await rerankSemanticMatches({
-      candidates: semanticCandidates,
-      expandedText: params.expandedText,
-      fingerprint: params.fingerprint,
-      logger: params.logger,
-    });
-    await assertGenerationActive();
-
-    const rankedMatches = matches
-      .filter((candidate) => candidate.id !== params.excludeSignalId)
-      .slice(0, maxMatchCount);
-
-    return {
-      embedding,
-      matches: rankedMatches,
-    };
-  } catch (error) {
-    throwIfGenerationStopped(error);
-    await assertGenerationActive();
-    params.logger?.warn(
-      {
-        action: "signal.semantic_match.fallback",
-        reason: toSafeErrorReason(error),
-        targetType: "SIGNAL",
-      },
-      "signal semantic matching fell back",
-    );
-
-    return undefined;
-  }
+  return [...pool.values()];
 }
-
-export async function findSameFrequencyMatches(params: {
-  classification?: AiSignalSeedClassification;
-  excludeSignalId?: string;
-  expandedText: string;
-  fingerprint: SignalFingerprint;
-  logger?: EmbeddingLogger;
-  rawInput: string;
-}): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[] }> {
+async function recheckCandidates(pool: MatchCandidate[], scope: MatchScope): Promise<MatchCandidate[]> {
   await assertGenerationActive();
-  const semanticResult = await findSemanticSameFrequencyMatches(params);
+  const current = await recheckPublicSignals(pool.map((entry) => entry.signal));
   await assertGenerationActive();
-  const keywordMatches = await findKeywordSameFrequencyMatches(params.fingerprint, {
-    excludeSignalId: params.excludeSignalId,
+  return pool.flatMap((entry) => {
+    const row = current.find((row) => row.id === entry.signal.id && row.publicationVersion === entry.signal.publicationVersion);
+    return row === undefined || !isMatchEligible(row, scope) ? [] : [{ ...entry, signal: row }];
   });
-  await assertGenerationActive();
+}
 
-  if (semanticResult === undefined || semanticResult.matches.length === 0) {
-    return {
-      matches: keywordMatches,
-    };
+async function rankCandidates(pool: MatchCandidate[], input: MatchInput, scope: MatchScope, policy: MatchPolicy): Promise<{
+  matches: SignalMatchSummary[]; execution?: AiExecutionMetadata; inputCharacters: number;
+}> {
+  let active = await recheckCandidates(pool, scope);
+  let execution: AiExecutionMetadata | undefined;
+  let inputCharacters = 0;
+  const score = (entry: MatchCandidate, retrieval: number | undefined,
+    reason: "reranker_complete" | "reranker_not_configured" | "reranker_failed" | "read_only"): SignalMatchSummary => ({
+    ...(entry.distance === undefined ? toMatchSummary(entry.signal, 0) : toSemanticMatchSummary({ ...entry.signal, distance: entry.distance })),
+    score: composeMatchScore(retrieval, scoreSignalMatch(input.fingerprint, entry.signal)),
+    scoreProvenance: { version: matchScoreVersion, scale: "zero_to_hundred",
+      method: reason === "reranker_complete" ? "reranker" : entry.distance === undefined ? "rules" : "cosine",
+      reason: reason !== "reranker_complete" && entry.distance === undefined && reason !== "reranker_failed" && reason !== "read_only" ? "rules_only" : reason },
+  });
+  const fallback = (reason: "reranker_not_configured" | "reranker_failed" | "read_only") => active.map((entry) =>
+    score(entry, entry.distance === undefined ? undefined : cosineRelevance(entry.distance), reason));
+  if (active.length === 0) return { matches: [], inputCharacters };
+  if (input.readOnly) return { matches: fallback("read_only"), inputCharacters };
+  try {
+    const configured = await isRerankerProviderConfigured();
+    await assertGenerationActive();
+    if (!configured) return { matches: fallback("reranker_not_configured"), inputCharacters };
+    active = await recheckCandidates(active, scope);
+    if (active.length === 0) return { matches: [], inputCharacters };
+    const candidates = active.map(({ signal, distance }) => ({ id: signal.id,
+      expandedText: parsePublicationSnapshot(signal.publicationSnapshot)!.content.expandedText,
+      ...(distance === undefined ? {} : { distance }) }));
+    inputCharacters = input.expandedText.length + candidates.reduce((total, candidate) => total + candidate.expandedText.length, 0);
+    if (inputCharacters > policy.maxRerankCharacters) {
+      input.logger?.warn({ action: "signal.reranker.input_budget", inputCharacters, budget: policy.maxRerankCharacters,
+        dispatched: false }, "rerank skipped for the entire oversized batch");
+      return { matches: fallback("reranker_failed"), inputCharacters };
+    }
+    const reranked = await rerankCandidates({ candidates, queryText: input.expandedText }, undefined, { logger: input.logger });
+    await assertGenerationActive();
+    execution = reranked.execution;
+    const byId = new Map(reranked.results.map((result) => [result.id, result.score]));
+    if (reranked.scoreScale !== "zero_to_one" || byId.size !== active.length || reranked.results.length !== active.length ||
+        reranked.results.some((result) => normalizeRerankerScore(result.rawScore, result.rawScale) !== result.score) ||
+        active.some(({ signal }) => { const value = byId.get(signal.id); return value === undefined || !Number.isFinite(value) || value < 0 || value > 1; })) {
+      throw new Error("Incomplete normalized rerank batch.");
+    }
+    const matches = active.map((entry) => score(entry, byId.get(entry.signal.id)!, "reranker_complete"));
+    const previous = active.map(({ signal }) => ({ id: signal.id, score: Number((0.6 * reranked.results.find((item) => item.id === signal.id)!.rawScore + scoreSignalMatch(input.fingerprint, signal)).toFixed(4)) }))
+      .sort((a,b) => b.score-a.score || a.id.localeCompare(b.id));
+    input.logger?.info({ action: "signal.match.scoring", version: matchScoreVersion, comparison: "same-pool-e2-formula-only", execution,
+      previous, current: [...matches].sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).map(({ id, score }) => ({ id, score })),
+      rawScores: reranked.results.map(({ id, rawScore, rawScale, score }) => ({ id, rawScore, rawScale, normalizedScore: score })) }, "same-pool score scale comparison; no quality claim");
+    return { matches, execution, inputCharacters };
+  } catch (error) {
+    throwIfGenerationStopped(error); await assertGenerationActive();
+    if (typeof error === "object" && error !== null && "details" in error) execution = (error.details as { execution?: AiExecutionMetadata } | undefined)?.execution;
+    input.logger?.warn({ action: "signal.reranker.fallback", reason: toSafeErrorReason(error) }, "whole-batch scoring fallback");
+    return { matches: fallback("reranker_failed"), execution, inputCharacters };
   }
+}
 
-  const existingIds = new Set(semanticResult.matches.map((match) => match.id));
-  const matches = [
-    ...semanticResult.matches,
-    ...keywordMatches.filter((match) => !existingIds.has(match.id)),
-  ].slice(0, maxMatchCount);
-
-  return {
-    embedding: semanticResult.embedding,
-    matches,
-  };
+export async function findSameFrequencyMatches(input: MatchInput): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[]; diagnostics: MatchDiagnostics }> {
+  await assertGenerationActive();
+  const startedAt = performance.now();
+  const policy = resolveMatchPolicy(input.policy);
+  const referenceInterpretation = canReferenceSignalInterpretation(input.fingerprint.interpretation);
+  const scope: MatchScope = { excludeSignalId: input.excludeSignalId, excludeAuthorIds: input.excludeAuthorIds,
+    corpusIds: input.corpusIds, tags: input.publicQuery ? input.publicTags ?? [] : referenceInterpretation ? input.fingerprint.tags : [],
+    band: input.publicQuery ? input.publicBand : referenceInterpretation ? input.fingerprint.primaryBand : undefined };
+  const semantic = await semanticCandidates(input, scope, policy);
+  await assertGenerationActive();
+  const rules = await listPublishedSignalMatchCandidates(policy.ruleCandidates, scope.excludeSignalId, scope);
+  await assertGenerationActive();
+  const pool = mergeCandidates(semantic.candidates, rules, scope);
+  const ranked = await rankCandidates(pool, input, scope, policy);
+  if (input.readOnly) input.logger?.info({ action: "signal.match.read_only", providerDispatches: 0,
+    persisted: false, storedVectorUsed: semantic.embedding !== undefined }, "public matching read without provider dispatch or backfill");
+  await assertGenerationActive();
+  // Recheck the whole pool before selecting the final positions. Withdrawn top
+  // candidates may leave fewer results; weak candidates are never added to fill three.
+  const current = await recheckCandidates(pool, scope);
+  const matches = ranked.matches.filter((match) => match.score > 0 && match.score >= policy.minScore &&
+    current.some((entry) => entry.signal.id === match.id && entry.signal.publicationVersion === match.publicationVersion))
+    .sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).slice(0, maxMatchCount);
+  const diagnostics: MatchDiagnostics = { policyVersion: matchPolicyVersion, semanticIds: semantic.candidates.map((row) => row.id),
+    poolIds: pool.map(({ signal }) => signal.id), rankedIds: [...ranked.matches].sort((a,b) => b.score-a.score || a.id.localeCompare(b.id)).map((match) => match.id), acceptedCount: matches.length,
+    minScore: policy.minScore, latencyMs: Math.max(0, performance.now() - startedAt), inputCharacters: ranked.inputCharacters,
+    embeddingExecution: semantic.embedding?.execution, rerankerExecution: ranked.execution };
+  input.logger?.info({ action: "signal.match.selection", policyVersion: matchPolicyVersion, semanticCandidates: policy.semanticCandidates,
+    ruleCandidates: policy.ruleCandidates, minScore: policy.minScore, pooled: pool.length, accepted: matches.length,
+    durationMs: diagnostics.latencyMs, contentPolicy: "other-owned-human-initiated" }, "matching policy applied; calibration pending");
+  return { embedding: semantic.embedding, matches, diagnostics };
 }

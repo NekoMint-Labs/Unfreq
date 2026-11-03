@@ -3,7 +3,7 @@ import type {
   AdminProviderConfigKind,
   AdminProviderConfigTestResult,
 } from "@unfreq/contracts/admin";
-import { buildRerankerRequestBody, parseRerankerResponsePayload } from "./reranker-adapter.js";
+import { buildRerankerRequestBody, isRerankerScoreScale, parseRerankerResponsePayload } from "./reranker-adapter.js";
 import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
 import { throwIfAbuseStopped } from "../../shared/abuse-errors.js";
 
@@ -152,10 +152,11 @@ export async function testProviderConfig(
     config.baseUrl.length === 0 ||
     config.model.length === 0 ||
     config.provider.length === 0 ||
-    (kind !== "chat" && config.apiKey.length === 0)
+    (kind !== "chat" && config.apiKey.length === 0) ||
+    (kind === "reranker" && !isRerankerScoreScale(config.extraJson.scoreScale))
   ) {
     return buildResult({
-      detail: "baseUrl、provider、model 或 API key 缺失。",
+      detail: "baseUrl、provider、model、API key 或 Reranker 分数范围声明缺失。",
       durationMs: Date.now() - startedAt,
       kind,
       model: config.model,
@@ -268,6 +269,7 @@ export async function testProviderConfig(
               candidates: rerankerTestCandidates,
               payload,
               provider: config.provider,
+              scoreScale: config.extraJson.scoreScale,
             }).length > 0;
 
     if (!isPayloadValid) {

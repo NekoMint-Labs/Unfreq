@@ -1,4 +1,7 @@
+import { maxSignalPublicationVersion } from "@unfreq/contracts/signals";
+import { signalPublicContentSchema, signalPublicationPreviewSchema, publicMatchSchema } from "./publication.js";
 import { z } from "zod";
+import { decodeHistoryCursor } from "./history-cursor.js";
 import {
   signalPrimaryBands,
   signalSubFeelings,
@@ -18,6 +21,7 @@ export const signalIdParamsSchema = z.object({
 });
 
 export const signalGalaxyQuerySchema = z.object({
+  focus: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   band: z.enum(signalPrimaryBands).optional(),
   theme: z.string().trim().min(1).max(48).optional(),
 });
@@ -33,7 +37,13 @@ export const createSignalEchoBodySchema = z.object({
 
 export const signalResonanceBodySchema = z.object({});
 
+export const signalInterpretationSchema = z.strictObject({
+  version: z.literal(1), state: z.enum(["unknown", "unverified"]),
+  source: z.enum(["rules", "provider", "unknown"]),
+}).refine((value) => value.state === "unverified" ? value.source === "provider" : value.source !== "provider");
+
 export const signalFingerprintSchema = z.object({
+  interpretation: signalInterpretationSchema.optional(),
   coreNeed: z.string().min(1),
   displayText: z.string().min(1),
   energy: z.number().min(0).max(1),
@@ -45,7 +55,7 @@ export const signalFingerprintSchema = z.object({
   openness: z.number().min(0).max(1),
   primaryEmotion: z.string().min(1),
   primaryBand: z.enum(signalPrimaryBands),
-  resonanceKeywords: z.array(z.string().min(1)).min(1).max(3),
+  resonanceKeywords: z.array(z.string().min(1)).max(3),
   riskLevel: z.enum(["HIGH", "LOW", "MEDIUM"]),
   secondaryEmotions: z.array(z.string().min(1)),
   signalType: z.string().min(1),
@@ -56,12 +66,13 @@ export const signalFingerprintSchema = z.object({
 });
 
 export const signalFrequencyProfileSchema = z.object({
+  interpretation: signalInterpretationSchema.optional(),
   coreNeed: z.string().min(1),
   displayText: z.string().min(1),
   emotionTone: z.string().min(1),
   innerConflict: z.string().min(1),
   primaryBand: z.enum(signalPrimaryBands),
-  resonanceKeywords: z.array(z.string().min(1)).min(1).max(3),
+  resonanceKeywords: z.array(z.string().min(1)).max(3),
   subFeeling: z.enum(signalSubFeelings),
 });
 
@@ -170,12 +181,21 @@ export const signalGenerationDetailSchema = z.object({
   visibility: z.literal("GENERATION_OWNER"),
 });
 
-export const signalResultDetailSchema = z.union([
-  signalPreviewDetailSchema,
-  signalDetailSchema,
-  reviewingSignalRestrictedDetailSchema,
-  signalGenerationDetailSchema,
-]);
+export const publicationRequestSchema = z.strictObject({ expectedVersion: z.number().int().min(0).max(maxSignalPublicationVersion), digest: z.string().regex(/^[a-f0-9]{64}$/u) });
+export const withdrawalRequestSchema = publicationRequestSchema.omit({ digest: true });
+export const publicationActionsSchema = z.strictObject({ canPublish: z.boolean(), canWithdraw: z.boolean(),
+  version: z.number().int().min(0).max(maxSignalPublicationVersion),
+  state: z.enum(["DRAFT", "PUBLIC", "WITHDRAWN", "REVIEWING", "HIDDEN", "DELETED", "GENERATING", "FAILED", "UNCONFIRMED"]),
+  preview: signalPublicationPreviewSchema.optional(), publishedContent: signalPublicContentSchema.optional() });
+export const publicSignalDetailSchema = signalPublicContentSchema.safeExtend({
+  id: z.uuid(), createdAt: z.string(), updatedAt: z.string(), publishedAt: z.string(),
+  publicationVersion: z.number().int().min(1), status: z.literal("PUBLISHED"), visibility: z.literal("PUBLIC"),
+  echoCount: z.number().int().nonnegative(), resonanceCount: z.number().int().nonnegative(),
+  source: z.enum(["ai_generated", "human", "seed"]), hasSaved: z.boolean().optional(), matches: z.array(publicMatchSchema) });
+export const ownerSignalDetailSchema = signalDetailSchema.omit({ matches: true }).extend({
+  visibility: z.literal("PRIVATE_OWNER"), matches: z.array(publicMatchSchema), publication: publicationActionsSchema });
+export const signalResultDetailSchema = z.union([publicSignalDetailSchema, ownerSignalDetailSchema, reviewingSignalRestrictedDetailSchema,
+  signalGenerationDetailSchema.extend({ publication: publicationActionsSchema.optional() })]);
 
 export const signalAudioDetailSchema = z.object({
   audioError: z.string().optional(),
@@ -189,6 +209,8 @@ export const signalAudioDetailSchema = z.object({
 export const signalAudioResponseSchema = z.object({
   audio: signalAudioDetailSchema,
 });
+
+export const signalAudioVersionQuerySchema = z.strictObject({ v: z.coerce.number().int().min(1).max(maxSignalPublicationVersion).optional() });
 
 export const signalAudioSideParamsSchema = signalIdParamsSchema.extend({
   side: z.enum(["left", "main", "right"]),
@@ -209,20 +231,28 @@ export const signalResponseSchema = z.object({
 });
 
 export const signalMatchesResponseSchema = z.object({
-  matches: z.array(signalMatchSummarySchema),
+  matches: z.array(publicMatchSchema),
 });
 
 export const signalHallResponseSchema = z.object({
-  signals: z.array(signalDetailSchema),
+  signals: z.array(publicSignalDetailSchema),
 });
 
 export const signalGalaxyResponseSchema = z.object({
+  coverage: z.object({
+    totalEligibleCount: z.number().int().nonnegative(), returnedCount: z.number().int().min(0).max(80),
+    sampleLimit: z.literal(80), samplingVersion: z.literal("recent-band-v1"),
+    filters: z.object({ band: z.enum(signalPrimaryBands).optional(), theme: z.string().optional() }).strict(),
+    latestOwnSignalId: z.uuid().optional(), focusSignalId: z.uuid().optional(),
+    focusStatus: z.enum(["none", "available", "unavailable"]),
+  }).strict(),
   bandOptions: z.array(z.object({
     label: z.string().min(1),
     value: z.enum(signalPrimaryBands),
   })),
   generatedAt: z.string(),
-  points: z.array(galaxySignalPointSchema),
+  points: z.array(signalPublicContentSchema.safeExtend({ id: z.uuid(), createdAt: z.string(), publicationVersion: z.number().int().min(1),
+    position: signalGalaxyPositionSchema, source: z.enum(["ai_generated", "human", "seed"]), isMine: z.boolean(), matchIds: z.array(z.uuid()), resonanceCount: z.number().int().nonnegative() })),
   themeOptions: z.array(z.string().min(1)),
 });
 
@@ -248,6 +278,7 @@ export const signalSaveResponseSchema = z.object({
 });
 
 export const mySignalSummarySchema = z.object({
+  publicationState: publicationActionsSchema.shape.state.optional(),
   createdAt: z.string(),
   expandedText: z.string(),
   frequencyProfile: signalFrequencyProfileSchema,
@@ -261,7 +292,15 @@ export const mySignalSummarySchema = z.object({
 export const mySignalsResponseSchema = z.object({
   signals: z.array(mySignalSummarySchema),
   totalResonanceCount: z.number().int().nonnegative(),
+  totalSignalCount: z.number().int().nonnegative().optional(),
+  topSignal: mySignalSummarySchema.optional(),
+  page: z.object({ limit: z.number().int().min(1).max(80), hasMore: z.boolean(), nextCursor: z.string().optional() }).optional(),
 });
+
+export const mySignalsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(80).default(80),
+  cursor: z.string().max(256).refine((value) => decodeHistoryCursor(value) !== undefined, "Invalid history cursor").optional(),
+}).strict();
 
 export const echoSummaryResponseSchema = z.object({
   summary: z.object({
@@ -281,7 +320,8 @@ export const savedSignalSummarySchema = mySignalSummarySchema.extend({
 });
 
 export const savedSignalsResponseSchema = z.object({
-  signals: z.array(savedSignalSummarySchema),
+  signals: z.array(signalPublicContentSchema.safeExtend({ id: z.uuid(), createdAt: z.string(), savedAt: z.string(), publicationVersion: z.number().int().min(1),
+    status: z.literal("PUBLISHED"), resonanceCount: z.number().int().nonnegative(), source: z.enum(["ai_generated", "human", "seed"]) })),
 });
 
 export type CreatePublishedSignalBody = z.infer<typeof createPublishedSignalBodySchema>;

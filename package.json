@@ -7,15 +7,17 @@
     "packages/*"
   ],
   "scripts": {
-    "postinstall": "node scripts/apply-postgres-startup-patch.mjs",
+    "postinstall": "node scripts/apply-postgres-lifecycle-patch.mjs",
     "contracts:build": "npm --workspace @unfreq/contracts run build",
     "contracts:typecheck": "npm --workspace @unfreq/contracts run typecheck",
     "api:build": "npm run contracts:build && npm --workspace @unfreq/api run build",
     "api:dev": "npm run contracts:build && npm --workspace @unfreq/api run dev",
     "api:lint": "npm --workspace @unfreq/api run lint",
     "api:integration": "npm run contracts:build && node scripts/run-api-integration.mjs",
+    "api:recovery:verify": "npm run contracts:build && node scripts/run-api-integration.mjs --f2-recovery",
+    "redis:recovery:verify": "node scripts/verify-redis-aof.mjs",
     "api:check": "npm run test:integration-tools && npm run api:lint && npm run api:typecheck && npm run api:test && npm run api:build",
-    "api:migrate": "npm --workspace @unfreq/api run migrate",
+    "api:migrate": "npm --workspace @unfreq/api run migrate --",
     "api:migrate:generate": "npm --workspace @unfreq/api run migrate:generate",
     "api:start": "npm run contracts:build && npm --workspace @unfreq/api run start",
     "api:test": "npm run contracts:build && npm --workspace @unfreq/api run test",
@@ -23,18 +25,28 @@
     "check": "npm run contracts:typecheck && npm run api:check && npm run web:check",
     "deploy:test": "sh scripts/test-deployment-scripts.sh",
     "e2e": "npm run contracts:build && playwright test",
-    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/runtime-guard.test.mjs",
+    "test:integration-tools": "node --test tests/integration/runner-safety.test.mjs tests/integration/patch-install.test.mjs tests/integration/postgres-module.test.mjs tests/integration/runtime-guard.test.mjs tests/integration/dependency-overrides.test.mjs tests/images/web-verifier.test.mjs tests/recovery/redis-aof-safety.test.mjs tests/images/og-webpack.test.mjs tests/images/web-fetch-guard.test.mjs tests/images/web-stop-policy.test.mjs tests/images/web-builder.test.mjs",
+    "api:image:verify": "node scripts/verify-api-image.mjs",
+    "web:image:verify": "node scripts/verify-web-image.mjs",
     "web:dev": "npm run contracts:build && npm --workspace @unfreq/web run dev",
     "web:build": "npm run contracts:build && npm --workspace @unfreq/web run build",
     "web:check": "npm run web:lint && npm run web:typecheck && npm run web:test && npm run web:build",
     "web:lint": "npm --workspace @unfreq/web run lint",
-    "web:test": "npm --workspace @unfreq/web run test",
+    "web:test": "npm run contracts:build && npm --workspace @unfreq/web run test",
     "web:typecheck": "npm run contracts:typecheck && npm --workspace @unfreq/web run typecheck"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "devDependencies": {
     "playwright": "^1.60.0"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.3"
+    },
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    }
   }
 }

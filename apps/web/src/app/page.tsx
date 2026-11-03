@@ -9,6 +9,7 @@ type HomePageProps = {
     onboarding?: string;
     parentSignalId?: string;
     seed?: string;
+    continue?: string;
   }>;
 };
 
@@ -40,6 +41,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
       initialFrequency={frequency}
       initialParentSignalId={params.parentSignalId}
       initialSeedText={params.seed}
+      restoreContinuation={params.continue === "1"}
       onboardingStep={onboardingStep}
       isApiUnavailable={isApiUnavailable}
     />

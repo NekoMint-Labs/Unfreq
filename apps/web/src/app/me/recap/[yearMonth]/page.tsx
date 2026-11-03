@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getCurrentMe } from "@/lib/current-frequency";
 import { getFrequencyCode } from "@/lib/frequency-data";
 import { getMonthlyRecap } from "@/lib/signal-data";
+import { MonthlyRecapSourceNote } from "@/components/my-frequency/MonthlyRecapEntry";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,7 @@ export default async function MonthlyRecapPage({ params }: MonthlyRecapPageProps
         <p className="font-serif text-xl leading-[1.8] text-[color:var(--text-primary)]">
           {recap.summary}
         </p>
+        <MonthlyRecapSourceNote />
 
         <dl className="stat-grid">
           <div className="stat-cell">

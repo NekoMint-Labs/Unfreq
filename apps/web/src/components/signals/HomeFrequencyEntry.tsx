@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiClientError } from "@/lib/api-client";
@@ -9,6 +9,7 @@ import { createSignal, getRandomSignal } from "@/lib/signal-data";
 import type { FrequencyIdentity } from "@unfreq/contracts";
 import { getHomeEntryStateCopy, type HomeEntryPhase } from "./home-frequency-entry-state";
 import { SignalGenerationProgress } from "./SignalGenerationProgress";
+import { clearContinuation, normalizeContinuation, parseContinuation, readContinuationSnapshot, saveContinuation } from "@/lib/signal-continuation";
 
 const minSeedLength = 5;
 const maxSeedLength = 200;
@@ -32,21 +33,42 @@ type HomeFrequencyEntryProps = {
   initialSeedText?: string;
   isApiUnavailable?: boolean;
   onboardingStep?: "seed";
+  restoreContinuation?: boolean;
 };
 
-export function HomeFrequencyEntry({
+const subscribeContinuation = () => () => {};
+const getClientReady = () => true;
+const getServerClientReady = () => false;
+export function HomeFrequencyEntry(props: HomeFrequencyEntryProps) {
+  const snapshot = useSyncExternalStore(subscribeContinuation, readContinuationSnapshot, () => null);
+  const stored = props.restoreContinuation ? parseContinuation(snapshot) : undefined;
+  const initial = stored ?? normalizeContinuation(props.initialSeedText ?? "", props.initialParentSignalId);
+  useEffect(() => {
+    if (props.initialParentSignalId === undefined && props.initialSeedText === undefined) return;
+    const legacy = normalizeContinuation(props.initialSeedText ?? "", props.initialParentSignalId);
+    try { saveContinuation(legacy); } catch { /* Keep the visible composer content if storage is unavailable. */ }
+    window.history.replaceState(null, "", `/?continue=1${props.onboardingStep === "seed" ? "&onboarding=seed" : ""}`);
+  }, [props.initialParentSignalId, props.initialSeedText, props.onboardingStep]);
+  return <HomeFrequencyComposer {...props} initialSeedText={initial.seedText} initialParentSignalId={initial.parentSignalId}
+    key={props.restoreContinuation ? stored === undefined ? "empty" : `draft:${stored.parentSignalId ?? "seed"}` : "initial"} />;
+}
+
+function HomeFrequencyComposer({
   initialFrequency,
   initialParentSignalId,
   initialSeedText = "",
   isApiUnavailable = false,
   onboardingStep,
+  restoreContinuation,
 }: HomeFrequencyEntryProps) {
   const router = useRouter();
+  const isClientReady = useSyncExternalStore(subscribeContinuation, getClientReady, getServerClientReady);
   const [frequency] = useState<FrequencyIdentity | undefined>(initialFrequency);
   const [phase, setPhase] = useState<HomeEntryPhase>(
     initialFrequency !== undefined ? "ready" : isApiUnavailable ? "failed" : "locked",
   );
   const [seedText, setSeedText] = useState(initialSeedText);
+  const [parentSignalId, setParentSignalId] = useState(initialParentSignalId);
   const [error, setError] = useState<string | undefined>();
   const [isTuningRandom, setIsTuningRandom] = useState(false);
   const [randomTuneError, setRandomTuneError] = useState<string | undefined>();
@@ -59,15 +81,17 @@ export function HomeFrequencyEntry({
   const isLocked = phase === "locked";
   const shouldShowFrequencyEntry = frequency === undefined && isLocked;
   const stateCopy = getHomeEntryStateCopy(phase, isApiUnavailable);
-  const loginHref = `/login?returnTo=${encodeURIComponent("/?onboarding=seed")}`;
+  const hasContinuation = seedText.length > 0 || parentSignalId !== undefined;
+  const loginHref = `/login?returnTo=${encodeURIComponent(hasContinuation ? "/?continue=1" : "/?onboarding=seed")}`;
   const canSubmit = useMemo(() => {
     return (
+      isClientReady &&
       phase === "ready" &&
       seedLength >= minSeedLength &&
       seedLength <= maxSeedLength &&
       !isSubmitting
     );
-  }, [isSubmitting, phase, seedLength]);
+  }, [isClientReady, isSubmitting, phase, seedLength]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -82,9 +106,10 @@ export function HomeFrequencyEntry({
 
     try {
       const signal = await createSignal({
-        parentSignalId: initialParentSignalId,
+        parentSignalId,
         seedText: trimmedSeedText,
       });
+      clearContinuation();
 
       const transmittingPath = `/signal/${signal.id}/transmitting`;
       const nextPath = onboardingStep === "seed"
@@ -99,6 +124,7 @@ export function HomeFrequencyEntry({
   };
 
   const tuneRandom = async () => {
+    if (!isClientReady || isTuningRandom || isSubmitting) return;
     setError(undefined);
     setRandomTuneError(undefined);
     setIsTuningRandom(true);
@@ -134,7 +160,7 @@ export function HomeFrequencyEntry({
           </div>
         ) : null}
 
-        <form className="home-void-form" onSubmit={submit}>
+        <form className="home-void-form" method="post" onSubmit={submit}>
           <label className="sr-only" htmlFor="seed-text">
             写下种子
           </label>
@@ -146,14 +172,20 @@ export function HomeFrequencyEntry({
             ) : null}
             <textarea
               className={`home-seed-textarea disabled:opacity-60 ${hasSeedText ? "" : "home-seed-textarea-empty"} ${isLocked ? "home-seed-textarea-locked" : ""}`}
-              disabled={phase !== "ready" && !isSubmitting}
+              disabled={!isClientReady || (phase !== "ready" && !isSubmitting)}
               id="seed-text"
               maxLength={maxSeedLength}
               minLength={minSeedLength}
               name="seedText"
-              onChange={(event) => setSeedText(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSeedText(value);
+                if (restoreContinuation || initialParentSignalId !== undefined || initialSeedText.length > 0) {
+                  try { saveContinuation({ seedText: value, parentSignalId }); } catch { /* Editing remains available without storage. */ }
+                }
+              }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (isClientReady && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
@@ -171,7 +203,7 @@ export function HomeFrequencyEntry({
           >
             <button
               className="home-void-action home-void-action-zh"
-              disabled={isTuningRandom || isSubmitting}
+              disabled={!isClientReady || isTuningRandom || isSubmitting}
               onClick={tuneRandom}
               type="button"
             >
@@ -200,6 +232,11 @@ export function HomeFrequencyEntry({
               <Link
                 className="home-fm-entry-link"
                 href={loginHref}
+                onClick={(event) => {
+                  if (!hasContinuation) return;
+                  try { saveContinuation({ seedText, parentSignalId }); }
+                  catch { event.preventDefault(); setError("暂时无法保存续写内容，请复制后再接入频率。"); }
+                }}
               >
                 创建或登录 FM
               </Link>
@@ -217,6 +254,7 @@ export function HomeFrequencyEntry({
                 {error}
               </p>
             ) : null}
+            {hasContinuation && !isSubmitting ? <button className="home-fm-entry-link" disabled={!isClientReady} type="button" onClick={() => { clearContinuation(); setSeedText(""); setParentSignalId(undefined); router.replace("/"); }}>清除续写</button> : null}
             {randomTuneError ? (
               <p className="home-micro-text" role="status">
                 {randomTuneError}

@@ -1,23 +1,20 @@
 import Link from "next/link";
-import type { SignalDetail } from "@unfreq/contracts";
+import type { PublicSignalDetail } from "@unfreq/contracts";
 import { SignalPlaybackButton } from "@/components/signals/SignalPlaybackButton";
 import { SignalResonanceButton } from "@/components/signals/SignalResonanceButton";
 
 type SignalCardProps = {
-  signal: SignalDetail;
+  signal: PublicSignalDetail;
 };
 
 export function SignalCard({ signal }: SignalCardProps) {
-  const displayTags =
-    signal.fingerprint.tags.length > 0
-      ? signal.fingerprint.tags
-      : signal.frequencyProfile.resonanceKeywords;
+  const displayTags = signal.tags;
 
   return (
     <article className="radio-surface radio-card-interactive p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-mono text-sm tracking-[0.16em] text-[color:var(--radio-text)]">
-          {signal.authorFreqCode ?? signal.fingerprint.frequency}
+          {signal.authorFreqCode ?? "Unfreq"}
         </span>
         <time className="text-sm text-[color:var(--radio-dim)]" dateTime={signal.createdAt}>
           {new Date(signal.createdAt).toLocaleString("zh-CN", {
@@ -30,14 +27,10 @@ export function SignalCard({ signal }: SignalCardProps) {
       </div>
 
       <h2 className="mt-4 text-xl font-semibold leading-tight">
-        {signal.seedText}
-      </h2>
-      <p className="mt-3 text-sm leading-7 text-[color:var(--radio-muted)]">
         {signal.expandedText}
-      </p>
+      </h2>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <span className="radio-tag">{signal.frequencyProfile.displayText}</span>
         {displayTags.slice(0, 5).map((tag) => (
           <span className="radio-tag" key={tag}>
             {tag}
@@ -55,14 +48,6 @@ export function SignalCard({ signal }: SignalCardProps) {
             signalId={signal.id}
           />
           <SignalPlaybackButton
-            initialAudio={{
-              audioError: signal.audioError,
-              audioStatus: signal.audioStatus,
-              audioUrl: signal.audioUrl,
-              audioUrlLeft: signal.audioUrlLeft,
-              audioUrlRight: signal.audioUrlRight,
-              signalId: signal.id,
-            }}
             signalId={signal.id}
             text={signal.expandedText}
           />
