@@ -994,6 +994,9 @@ async function prepareE4Interpretations(context: BrowserContext) {
 async function openE4InterpretationWithKeyboard(page: Page) {
   const disclosure = page.getByText("查看表达记录（私密）", { exact: true });
   const details = disclosure.locator("..");
+  // Denied-page checks in other contexts can leave this page in the background.
+  // Keyboard focus assertions also require its document to be active.
+  await page.bringToFront();
   await disclosure.focus();
   await expect(disclosure).toBeFocused();
   await page.keyboard.press("Enter");

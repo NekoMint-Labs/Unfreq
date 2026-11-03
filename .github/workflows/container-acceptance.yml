@@ -62,3 +62,6 @@ jobs:
             test-results/${{ matrix.component }}-image/**/probe.json
             test-results/${{ matrix.component }}-image/**/playwright.json
             test-results/${{ matrix.component }}-image/**/*metadata*.json
+            test-results/${{ matrix.component }}-image/**/error-context.md
+            test-results/${{ matrix.component }}-image/**/trace.zip
+            test-results/${{ matrix.component }}-image/**/*.png
