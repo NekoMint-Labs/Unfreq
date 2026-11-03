@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ApiClientError } from "@/lib/api-client";
@@ -13,6 +13,9 @@ import { SignalGenerationProgress } from "./SignalGenerationProgress";
 const minSeedLength = 5;
 const maxSeedLength = 200;
 const defaultFrequencyCode = "FM 00.00";
+const subscribeToClientReady = () => () => {};
+const getClientReady = () => true;
+const getServerClientReady = () => false;
 
 function toErrorMessage(caughtError: unknown): string {
   if (caughtError instanceof ApiClientError && caughtError.code === "VALIDATION_ERROR") {
@@ -42,6 +45,7 @@ export function HomeFrequencyEntry({
   onboardingStep,
 }: HomeFrequencyEntryProps) {
   const router = useRouter();
+  const isClientReady = useSyncExternalStore(subscribeToClientReady, getClientReady, getServerClientReady);
   const [frequency] = useState<FrequencyIdentity | undefined>(initialFrequency);
   const [phase, setPhase] = useState<HomeEntryPhase>(
     initialFrequency !== undefined ? "ready" : isApiUnavailable ? "failed" : "locked",
@@ -62,12 +66,13 @@ export function HomeFrequencyEntry({
   const loginHref = `/login?returnTo=${encodeURIComponent("/?onboarding=seed")}`;
   const canSubmit = useMemo(() => {
     return (
+      isClientReady &&
       phase === "ready" &&
       seedLength >= minSeedLength &&
       seedLength <= maxSeedLength &&
       !isSubmitting
     );
-  }, [isSubmitting, phase, seedLength]);
+  }, [isClientReady, isSubmitting, phase, seedLength]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -99,6 +104,7 @@ export function HomeFrequencyEntry({
   };
 
   const tuneRandom = async () => {
+    if (!isClientReady || isTuningRandom || isSubmitting) return;
     setError(undefined);
     setRandomTuneError(undefined);
     setIsTuningRandom(true);
@@ -134,7 +140,7 @@ export function HomeFrequencyEntry({
           </div>
         ) : null}
 
-        <form className="home-void-form" onSubmit={submit}>
+        <form className="home-void-form" method="post" onSubmit={submit}>
           <label className="sr-only" htmlFor="seed-text">
             写下种子
           </label>
@@ -146,14 +152,14 @@ export function HomeFrequencyEntry({
             ) : null}
             <textarea
               className={`home-seed-textarea disabled:opacity-60 ${hasSeedText ? "" : "home-seed-textarea-empty"} ${isLocked ? "home-seed-textarea-locked" : ""}`}
-              disabled={phase !== "ready" && !isSubmitting}
+              disabled={!isClientReady || (phase !== "ready" && !isSubmitting)}
               id="seed-text"
               maxLength={maxSeedLength}
               minLength={minSeedLength}
               name="seedText"
               onChange={(event) => setSeedText(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (isClientReady && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
@@ -171,7 +177,7 @@ export function HomeFrequencyEntry({
           >
             <button
               className="home-void-action home-void-action-zh"
-              disabled={isTuningRandom || isSubmitting}
+              disabled={!isClientReady || isTuningRandom || isSubmitting}
               onClick={tuneRandom}
               type="button"
             >

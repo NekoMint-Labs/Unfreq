@@ -41,3 +41,9 @@ The first case uses the actual login form and its native validation. A baseline
 form error should be reported or repaired directly, not bypassed in the test.
 All accounts, cookies and content in this directory are synthetic fixtures, and
 publishing changes only the mock server's process-local state.
+
+The readiness regressions hold the real Next client scripts after the SSR document
+commits. Login credentials and the home seed stay disabled until handlers are ready;
+after release, they verify the submitted values and the existing session cookie.
+The tests/deployment/caddy-web-proto.test.mjs regression separately runs the repository
+Caddy configuration against synthetic Web/API upstreams on a disposable Linux runner.
