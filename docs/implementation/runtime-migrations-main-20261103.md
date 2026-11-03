@@ -17,3 +17,5 @@
 首轮独立镜像工作流 [41658671633](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41658671633) 在 generate 验证器查找 toolkit 时失败：该包未导出 package.json 子路径。实际安装与原四文件补丁已通过，尚未执行镜像构建；修正为使用根工作区固定安装位置的 bin.cjs，保留此原始失败并重跑最终 Head。
 
 本候选最初直接从 main 提取；为使新增连接工厂遵守 postgres v4 的显式参数推断约定，随后将整个小 PR 重放到 #17。上述 main/PG3 的本地 guard 和首轮失败只保留历史范围，最终通过必须来自 PG4 组合精确 Head 的完整 CI、真实兼容与镜像验收，不能代替未来与 C1 合并后的复验。
+
+PG4 组合首轮 [41659595523](https://github.com/NekoMint-Labs/Unfreq/actions/runs/41659595523) 因重基自动保留了两份 manifest/lock 注册而被原来源校验拒绝，API 工具与集成均未通过；未放宽哈希、输入数或 marker 上限，仅去掉三个重复清单项后重新验收。
