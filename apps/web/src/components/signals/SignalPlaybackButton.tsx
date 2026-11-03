@@ -131,7 +131,9 @@ export function SignalPlaybackButton({
     nextAudio.addEventListener("error", stop, { once: true });
 
     announcePlaybackStart();
-    window.speechSynthesis.cancel();
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
     await nextAudio.play();
     setIsPlaying(true);
   }, [announcePlaybackStart, audio]);

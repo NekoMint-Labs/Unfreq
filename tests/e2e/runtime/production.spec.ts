@@ -210,3 +210,99 @@ test("OG rejects a version that becomes withdrawn while its PNG is rendering", a
   expect((await context.request.get("/api/og/runtime-public-001?v=1")).status()).toBe(404);
   expect((await context.request.get(`${apiBaseUrl}/api/signals/runtime-public-001`)).status()).toBe(404);
 });
+
+
+test("READY server audio plays and stops when browser speech synthesis is unavailable", async ({ page, context }, testInfo) => {
+  const audioPath = "/api/signals/runtime-public-001/audio";
+  const endpoint = `${apiBaseUrl}${audioPath}`;
+  const mediaUrl = `${apiBaseUrl}${audioPath}/main?v=1`;
+  const readable = await context.request.get(endpoint);
+  expect(readable.status()).toBe(200);
+  expect((await readable.json()).data.audio.audioStatus).toBe("NOT_REQUESTED");
+  // Keep the real public fixture's read permission check. Only this case adds
+  // a READY response and a valid silent PCM WAV; no TTS service is called.
+  let readyRequests = 0;
+  await context.route((url) => url.href === endpoint, async (route) => {
+    const permission = await context.request.get(endpoint);
+    if (permission.status() !== 200) {
+      await route.fulfill({ response: permission });
+      return;
+    }
+    readyRequests += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" },
+      body: JSON.stringify({ data: { audio: { signalId: "runtime-public-001", audioStatus: "READY", audioUrl: mediaUrl } },
+        meta: { requestId: "synthetic-ready-audio" } }) });
+  });
+  const samples = 8000 * 10;
+  const wav = Buffer.alloc(44 + samples, 128);
+  wav.write("RIFF", 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVE", 8);
+  wav.write("fmt ", 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28); wav.writeUInt16LE(1, 32); wav.writeUInt16LE(8, 34);
+  wav.write("data", 36); wav.writeUInt32LE(samples, 40);
+  let mediaRequests = 0;
+  await context.route((url) => url.href === mediaUrl, async (route) => {
+    mediaRequests += 1;
+    await route.fulfill({ status: 200, contentType: "audio/wav", body: wav });
+  });
+  await context.addInitScript(() => {
+    const state = { playCalls: 0, pauseCalls: 0, utterances: 0, lastAudio: undefined as HTMLMediaElement | undefined };
+    const probeWindow = window as typeof window & { syntheticAudioProbe: typeof state };
+    probeWindow.syntheticAudioProbe = state;
+    for (let target: object | null = window; target !== null; target = Object.getPrototypeOf(target) as object | null) {
+      if (Object.prototype.hasOwnProperty.call(target, "speechSynthesis") && !Reflect.deleteProperty(target, "speechSynthesis")) {
+        throw new Error("The controlled browser could not disable speech synthesis");
+      }
+    }
+    if ("speechSynthesis" in window) throw new Error("Speech synthesis must be absent in this case");
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: function () {
+      state.utterances += 1;
+      throw new Error("This case must play the server WAV, not browser speech");
+    } });
+    const play = HTMLMediaElement.prototype.play;
+    const pause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+      state.playCalls += 1;
+      state.lastAudio = this;
+      return play.call(this);
+    };
+    HTMLMediaElement.prototype.pause = function (this: HTMLMediaElement) {
+      state.pauseCalls += 1;
+      return pause.call(this);
+    };
+  });
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto(publicPath);
+  expect(await page.evaluate(() => "speechSynthesis" in window)).toBe(false);
+  const requested = page.waitForRequest((request) => request.url() === endpoint && request.method() === "POST");
+  await page.getByRole("button", { name: "播放", exact: true }).click();
+  expect((await requested).postDataJSON()).toEqual({});
+  const stop = page.getByRole("button", { name: "停止播放", exact: true });
+  await expect(stop).toBeEnabled();
+  const readPlayback = () => page.evaluate(() => {
+    const state = (window as typeof window & { syntheticAudioProbe: {
+      playCalls: number; pauseCalls: number; utterances: number; lastAudio?: HTMLMediaElement;
+    } }).syntheticAudioProbe;
+    return { playCalls: state.playCalls, pauseCalls: state.pauseCalls, utterances: state.utterances,
+      paused: state.lastAudio?.paused, currentSrc: state.lastAudio?.currentSrc, readyState: state.lastAudio?.readyState };
+  });
+  const playing = await readPlayback();
+  expect(playing.playCalls).toBe(1);
+  expect(playing.utterances).toBe(0);
+  expect(playing.paused).toBe(false);
+  expect(playing.currentSrc).toBe(mediaUrl);
+  expect(playing.readyState).toBeGreaterThanOrEqual(2);
+  expect(readyRequests).toBe(1);
+  expect(mediaRequests).toBeGreaterThan(0);
+  await page.screenshot({ path: testInfo.outputPath("server-audio-without-speech-playing.png") });
+  await stop.click();
+  await expect(page.getByRole("button", { name: "播放", exact: true })).toBeEnabled();
+  const stopped = await readPlayback();
+  expect(stopped.paused).toBe(true);
+  expect(stopped.pauseCalls).toBeGreaterThan(0);
+  expect(stopped.playCalls).toBe(1);
+  expect(stopped.utterances).toBe(0);
+  await expect(page.getByRole("button", { name: "播放", exact: true }).locator("..").getByRole("alert")).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
