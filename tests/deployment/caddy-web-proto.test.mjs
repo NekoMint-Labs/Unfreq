@@ -89,6 +89,14 @@ test("Caddy routes Web requests with the server HTTPS policy and preserves API r
       sourceSha256: createHash("sha256").update(source).digest("hex"), image, imageId, results,
     }, null, 2));
     console.log(JSON.stringify({ routes: results.length, imageId }));
+  } catch (error) {
+    if (attemptedContainer) {
+      const logs = await docker("logs", container).catch(() => ({ stdout: "", stderr: "" }));
+      console.error(logs.stdout, logs.stderr);
+      const state = await docker("inspect", "--format", "{{json .State}}", container).catch(() => ({ stdout: "" }));
+      console.error(state.stdout);
+    }
+    throw error;
   } finally {
     const cleanup = await Promise.allSettled([
       attemptedContainer ? docker("rm", "--force", container).catch((error) => {
