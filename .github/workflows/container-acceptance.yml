@@ -26,7 +26,8 @@ concurrency:
 jobs:
   images:
     name: ${{ matrix.component }} image acceptance
-    runs-on: ubuntu-latest
+    # Playwright 1.60 supports this image; ubuntu-latest has moved to 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -60,4 +61,4 @@ jobs:
             test-results/${{ matrix.component }}-image/**/manifest.json
             test-results/${{ matrix.component }}-image/**/probe.json
             test-results/${{ matrix.component }}-image/**/playwright.json
-            test-results/${{ matrix.component }}-image/**/metadata*.json
+            test-results/${{ matrix.component }}-image/**/*metadata*.json
