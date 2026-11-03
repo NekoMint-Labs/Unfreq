@@ -184,9 +184,10 @@ jobs:
           set -euo pipefail
           [[ "$SECURITY_HEAD" =~ ^[a-f0-9]{40}$ ]]
           mkdir -p test-results/high-runtime-compatibility
-          git diff --binary "$FIXED_MAIN" "$SECURITY_HEAD" -- package.json package-lock.json apps/api/package.json apps/api/src/app.ts apps/api/src/modules/frontend-diagnostics/security.test.ts apps/api/src/shared/error-handler.test.ts > "$RUNNER_TEMP/high-security.patch"
+          git diff --binary "$FIXED_MAIN" "$SECURITY_HEAD" -- package-lock.json apps/api/package.json apps/api/src/app.ts apps/api/src/modules/frontend-diagnostics/security.test.ts apps/api/src/shared/error-handler.test.ts apps/api/src/shared/log-controller.ts apps/api/src/shared/log-controller.test.ts tests/dependencies/production-security.test.mjs tests/dependencies/development-security.test.mjs > "$RUNNER_TEMP/high-security.patch"
           cp "$RUNNER_TEMP/high-security.patch" test-results/high-runtime-compatibility/security.patch
           git -C runtime-candidate apply --3way "$RUNNER_TEMP/high-security.patch"
+          node tests/dependencies/compose-runtime.mjs runtime-candidate > test-results/high-runtime-compatibility/manifest-composition.json
           git -C runtime-candidate diff --cached --check
           git -C runtime-candidate -c user.name='Dependency compatibility test' -c user.email='dependency-test@invalid.example' commit -m 'test-only: apply the security patch to the fixed runtime candidate'
           node --input-type=module -e 'import{execFileSync}from"node:child_process";import{readFileSync,writeFileSync}from"node:fs";import{createHash}from"node:crypto";const git=(...a)=>execFileSync("git",["-C","runtime-candidate",...a],{encoding:"utf8"}).trim();const bytes=readFileSync(process.env.RUNNER_TEMP+"/high-security.patch");writeFileSync("test-results/high-runtime-compatibility/inputs.json",JSON.stringify({securityHead:process.env.SECURITY_HEAD,fixedMain:process.env.FIXED_MAIN,fixedRuntime:process.env.FIXED_RUNTIME,patchSha256:createHash("sha256").update(bytes).digest("hex"),combinationCommit:git("rev-parse","HEAD"),combinationTree:git("rev-parse","HEAD^{tree}"),note:"This temporary combination is not the pull request head tree."},null,2));'

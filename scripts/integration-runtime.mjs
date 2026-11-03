@@ -14,7 +14,7 @@ const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-contr
   "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/repository", "modules/signals/generation-repository", "modules/signals/audio-repository", "modules/signals/audio-worker",
   "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
-  "shared/shutdown-budget", "shared/log-redaction", "server"];
+  "shared/shutdown-budget", "shared/log-redaction", "shared/log-controller", "server"];
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
   runtimeEntryRelatives.abuse,
