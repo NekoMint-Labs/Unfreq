@@ -26,19 +26,21 @@ function GalaxyLineBucket({
   isMuted,
   lineWidth,
   opacity,
+  reducedMotion,
 }: {
   color: string;
   geometry: BufferGeometry;
   isMuted: boolean;
   lineWidth: number;
   opacity: number;
+  reducedMotion: boolean;
 }) {
   const materialRef = useRef<LineBasicMaterial>(null);
   const haloMaterialRef = useRef<LineBasicMaterial>(null);
 
   useFrame((_, delta) => {
     const targetOpacity = isMuted ? opacity * 0.1 : opacity;
-    const alpha = 1 - Math.exp(-delta * 2.2);
+    const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 2.2);
 
     if (materialRef.current !== null) {
       materialRef.current.opacity = MathUtils.lerp(
@@ -89,10 +91,12 @@ export function GalaxyLinks({
   budget,
   isMuted,
   points,
+  reducedMotion,
 }: {
   budget?: GalaxyLineBudget;
   isMuted: boolean;
   points: GalaxySignalPoint[];
+  reducedMotion: boolean;
 }) {
   const lineBuckets = useMemo(() => {
     return buildGalaxyLineBucketLayouts(points, budget).map<GalaxyLineBucketData>((bucket) => {
@@ -132,6 +136,7 @@ export function GalaxyLinks({
             key={bucket.id}
             lineWidth={bucket.lineWidth}
             opacity={bucket.opacity}
+            reducedMotion={reducedMotion}
           />
         );
       })}

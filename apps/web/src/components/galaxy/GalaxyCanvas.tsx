@@ -8,6 +8,10 @@ import type { GalaxySignalPoint, SignalPrimaryBand } from "@unfreq/contracts";
 import { GalaxyScene } from "./GalaxyScene";
 import { GalaxySignalSheet } from "./GalaxySignalSheet";
 import { GalaxyViewportSync } from "./GalaxyViewportSync";
+import { GalaxyGraphicsBoundary } from "./GalaxyGraphicsBoundary";
+import { GalaxyGeneratedTime } from "./GalaxyGeneratedTime";
+import { useGalaxyReducedMotion } from "./useGalaxyReducedMotion";
+import { galaxyLegendItems } from "./galaxy-semantics";
 import {
   getActiveGalaxySelection,
   getCameraDistance,
@@ -42,6 +46,11 @@ export function GalaxyCanvas({
   selectedBand,
 }: GalaxyCanvasProps) {
   const canvasHostRef = useRef<HTMLDivElement>(null);
+  const listToggleRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const reducedMotion = useGalaxyReducedMotion();
+  const [graphics, setGraphics] = useState<"checking" | "enabled" | "failed" | "disabled">("checking");
+  const [listVisible, setListVisible] = useState(false);
   const closeTimeoutRef = useRef<number | undefined>(undefined);
   const [canvasSize, setCanvasSize] = useState<GalaxyCanvasSize | undefined>();
   const [detailPoint, setDetailPoint] = useState<GalaxySignalPoint | undefined>();
@@ -76,8 +85,9 @@ export function GalaxyCanvas({
     closeTimeoutRef.current = undefined;
   }, []);
 
-  const showPointDetail = useCallback((point: GalaxySignalPoint) => {
+  const showPointDetail = useCallback((point: GalaxySignalPoint, trigger?: HTMLElement) => {
     clearCloseTimeout();
+    returnFocusRef.current = trigger ?? listToggleRef.current;
     setDetailPoint(point);
     setSelectedId(point.id);
     setIsDetailVisible(true);
@@ -90,8 +100,33 @@ export function GalaxyCanvas({
     closeTimeoutRef.current = window.setTimeout(() => {
       setDetailPoint(undefined);
       closeTimeoutRef.current = undefined;
-    }, detailFadeExitMs);
-  }, [clearCloseTimeout]);
+    }, reducedMotion ? 0 : detailFadeExitMs);
+  }, [clearCloseTimeout, reducedMotion]);
+
+  const graphicsUnavailable = useCallback(() => {
+    setGraphics("failed");
+    setListVisible(true);
+  }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const probe = document.createElement("canvas").getContext("webgl2");
+        if (!probe) { graphicsUnavailable(); return; }
+        probe.getExtension("WEBGL_lose_context")?.loseContext();
+        setGraphics("enabled");
+      } catch { graphicsUnavailable(); }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [graphicsUnavailable]);
+
+  useEffect(() => {
+    const host = canvasHostRef.current;
+    if (!host) return;
+    const lost = (event: Event) => { event.preventDefault(); graphicsUnavailable(); };
+    host.addEventListener("webglcontextlost", lost, true);
+    return () => host.removeEventListener("webglcontextlost", lost, true);
+  }, [graphicsUnavailable]);
 
   useEffect(() => {
     const host = canvasHostRef.current;
@@ -139,33 +174,6 @@ export function GalaxyCanvas({
       clearCloseTimeout();
     };
   }, [clearCloseTimeout]);
-
-  useEffect(() => {
-    if (detailPoint === undefined) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Element && event.target.closest(".galaxy-detail-content")) {
-        return;
-      }
-
-      hidePointDetail();
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        hidePointDetail();
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [detailPoint, hidePointDetail]);
 
   if (points.length === 0) {
     return (
@@ -234,10 +242,7 @@ export function GalaxyCanvas({
         </h1>
         <p className="mt-1 font-mono text-xs text-[color:var(--text-secondary)]">
           SIGNALS {points.length.toString().padStart(3, "0")} ·{" "}
-          {new Date(generatedAt).toLocaleTimeString("zh-CN", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+          <GalaxyGeneratedTime generatedAt={generatedAt} />
         </p>
         {selectedBand !== undefined ? (
           <p className="mt-1 text-xs text-[color:var(--text-secondary)]">
@@ -250,7 +255,25 @@ export function GalaxyCanvas({
         <p className="galaxy-select-cue">
           点击亮点 · 打开阅读层
         </p>
+        <button ref={listToggleRef} type="button" className="radio-button-secondary"
+          aria-controls="galaxy-sample-list" aria-expanded={listVisible}
+          onClick={() => setListVisible((value) => !value)}>用列表阅读</button>
+        <button type="button" className="radio-button-secondary" disabled={graphics !== "enabled"}
+          onClick={() => { setGraphics("disabled"); setListVisible(true); }}>关闭三维视图</button>
+        <p role="status">{graphics === "failed" ? "三维视图不可用，已切换到列表。" : graphics === "disabled" ? "三维视图已关闭。" : ""}</p>
+        <details className="galaxy-legend"><summary>星图说明</summary><dl>{galaxyLegendItems.map((item) =>
+          <div key={item.label}><dt>{item.label}</dt><dd>{item.text}</dd></div>)}</dl></details>
       </div>
+
+      {listVisible ? <section id="galaxy-sample-list" className="galaxy-sample-list" aria-label="公开信号列表">
+        <h2>当前公开信号 · {points.length}</h2>
+        <p>列表与星图使用同一批公开信号。</p>
+        <ul>{points.map((point) => <li key={point.id}><button type="button" className="galaxy-sample-read"
+          onClick={(event) => showPointDetail(point, event.currentTarget)}>
+          <span>{point.authorFreqCode ?? "Unfreq"}</span><br />{point.expandedText.slice(0, 90)}
+        </button></li>)}</ul>
+        <button type="button" onClick={() => { setListVisible(false); listToggleRef.current?.focus(); }}>收起列表</button>
+      </section> : null}
 
       {bandOptions.length > 0 ? (
         <nav
@@ -289,11 +312,15 @@ export function GalaxyCanvas({
 
       <div
         className="galaxy-canvas-host"
+        data-motion={reducedMotion ? "reduced" : "full"}
+        data-graphics={graphics}
         ref={canvasHostRef}
         style={{ inset: 0, overflow: "hidden", position: "absolute" }}
       >
-        {canvasSize !== undefined ? (
+        {canvasSize !== undefined && graphics === "enabled" ? (
+          <GalaxyGraphicsBoundary onUnavailable={graphicsUnavailable}>
           <Canvas
+            frameloop={reducedMotion ? "demand" : "always"}
             dpr={[1, 2]}
             gl={{ antialias: true, alpha: true }}
             key={isMobileHitArea ? "mobile" : "desktop"}
@@ -311,11 +338,13 @@ export function GalaxyCanvas({
               onSelect={showPointDetail}
               performanceProfile={performanceProfile}
               points={renderPoints}
+              reducedMotion={reducedMotion}
               sceneScale={sceneScale}
               selectedId={activeSelectedId}
               selectedPoint={selectedPoint}
             />
           </Canvas>
+          </GalaxyGraphicsBoundary>
         ) : null}
       </div>
 
@@ -330,6 +359,9 @@ export function GalaxyCanvas({
               key={detailPoint.id}
               onClose={hidePointDetail}
               point={detailPoint}
+              sample={points}
+              reducedMotion={reducedMotion}
+              returnFocusRef={returnFocusRef}
             />,
             document.body,
           )
