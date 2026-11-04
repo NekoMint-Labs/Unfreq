@@ -239,9 +239,11 @@ export async function getRandomSignal(): Promise<PublicSignalDetail | undefined>
 export async function getSignal(
   id: string,
   cookieHeader?: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<SignalResultDetail | undefined> {
   try {
     const result = await apiClient.get<SignalResponse>(`/api/signals/${id}`, {
+      signal: options.signal,
       cache: "no-store",
       headers: cookieHeader !== undefined && cookieHeader.length > 0
         ? { cookie: cookieHeader }
