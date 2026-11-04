@@ -58,6 +58,17 @@ jobs:
         run: npm ci
       - name: Real API with managed PostgreSQL and Redis
         run: npm run api:integration
+      - name: Preserve isolated integration results and cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v7.0.1
+        with:
+          name: api-integration-evidence
+          if-no-files-found: error
+          path: |
+            test-results/integration/run-*/manifest.json
+            test-results/integration/run-*/vitest.json
+            test-results/integration/run-*/f2-recovery/recovery-report.json
+            test-results/f1/scheduler-*.json
 
   deployment-scripts:
     name: Deployment script tests
