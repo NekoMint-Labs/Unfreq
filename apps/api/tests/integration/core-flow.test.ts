@@ -1132,7 +1132,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await confirm(relevant.id, reader.id);
       await h.sql`update signals set created_at = '2000-01-01T00:00:00Z' where id = ${relevant.id}`;
       const irrelevant = await createWithdrawalFixture(track, "DRAFT", reader);
-      await h.sql`update signals set fingerprint_json = ${h.sql.json({ ...fixtureFingerprint, primaryBand: "relationship_nebula", tags: ["无关"] })}, primary_band = 'relationship_nebula' where id = ${irrelevant.id}`;
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify({ ...fixtureFingerprint, primaryBand: "relationship_nebula", tags: ["无关"] })}::jsonb, primary_band = 'relationship_nebula' where id = ${irrelevant.id}`;
       await confirm(irrelevant.id, reader.id);
       const newer = await h.sql<{ id: string }[]>`insert into signals
         (author_id, frequency_id, raw_input, seed_text, expanded_text, fingerprint_json, program_json, primary_band,
