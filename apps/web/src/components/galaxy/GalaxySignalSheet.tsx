@@ -6,6 +6,7 @@ import Link from "next/link";
 import { SignalPlaybackButton } from "@/components/signals/SignalPlaybackButton";
 import { SignalResonanceButton } from "@/components/signals/SignalResonanceButton";
 import { SignalSaveButton } from "@/components/signals/SignalSaveButton";
+import { SignalReportButton } from "@/components/signals/SignalReportButton";
 import type { GalaxySignalPoint } from "@unfreq/contracts";
 import { detailFadeDurationSeconds } from "./galaxy-scene-constants";
 import { getGalaxyAssociationInfo, galaxyAssociationMethod, galaxyAssociationDistance } from "./galaxy-semantics";
@@ -86,6 +87,7 @@ function GalaxySignalDetailContent({
         <Link className="radio-button-text galaxy-open-link" href={`/result/${point.id}`}>
           打开结果
         </Link>
+        <SignalReportButton buttonClassName="galaxy-text-action" signalId={point.id} />
       </div>
 
       <button className="galaxy-return-link" onClick={onClose} type="button">
