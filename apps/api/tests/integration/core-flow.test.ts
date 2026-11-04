@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
 import type { ReadOwnedPublicationPreviewResult } from "../../src/modules/signals/publication-repository.js";
+import { runRealWebJourney } from "./real-web-journey.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -1137,4 +1138,11 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await expectNotPublic(id);
     } finally { hold.release(); await waitForActualGenerationIdle(); }
   });
+
+  if (process.env.UNFREQ_INTEGRATION_BROWSER === "1") {
+    it("runs the production browser through real API/PG/Redis generation, publication, withdrawal and republish without paid read dispatches", async () => {
+      await waitForActualGenerationIdle();
+      await runRealWebJourney({ harness: h, author, adminCookie: admin.cookie, waitForGenerationIdle: waitForActualGenerationIdle });
+    }, 90_000);
+  }
 });

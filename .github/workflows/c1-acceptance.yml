@@ -47,3 +47,40 @@ jobs:
           path: |
             test-results/c1-browser.json
             test-results/runtime/**
+
+  real-api-browser:
+    name: Real browser API PostgreSQL Redis journey
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      API_INTERNAL_BASE_URL: "http://127.0.0.1:4200"
+      NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:4200"
+      UNFREQ_INTEGRATION_BROWSER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build production Web for the real loopback API
+        run: npm run web:build
+      - name: Exercise Chromium with real API and managed PostgreSQL and Redis
+        run: npm run api:integration
+      - name: Preserve journey evidence and cleanup manifest
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: real-browser-api-pg-redis
+          if-no-files-found: error
+          path: |
+            test-results/integration/run-*/manifest.json
+            test-results/integration/run-*/vitest.json
+            test-results/integration/run-*/browser/**
