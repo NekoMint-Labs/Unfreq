@@ -1179,12 +1179,6 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     } finally { hold.release(); await waitForActualGenerationIdle(); }
   });
 
-  if (process.env.UNFREQ_INTEGRATION_BROWSER === "1") {
-    it("runs the production browser through real API/PG/Redis generation, publication, withdrawal and republish without paid read dispatches", async () => {
-      await waitForActualGenerationIdle();
-      await runRealWebJourney({ harness: h, author, adminCookie: admin.cookie, waitForGenerationIdle: waitForActualGenerationIdle });
-    }, 90_000);
-  }
   it("keeps concurrent reports private, idempotent and traceable through the existing admin queue", async () => {
     await withSyntheticWithdrawalRows(async (track) => {
       const signal = await createWithdrawalFixture(track);
@@ -1241,5 +1235,14 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
+
+  // The browser journey leaves its republished synthetic control visible.
+  // Run it last so the earlier single-public-control privacy checks stay deterministic.
+  if (process.env.UNFREQ_INTEGRATION_BROWSER === "1") {
+    it("runs the production browser through real API/PG/Redis generation, publication, withdrawal and republish without paid read dispatches", async () => {
+      await waitForActualGenerationIdle();
+      await runRealWebJourney({ harness: h, author, adminCookie: admin.cookie, waitForGenerationIdle: waitForActualGenerationIdle });
+    }, 90_000);
+  }
 
 });
