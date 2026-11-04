@@ -176,6 +176,13 @@
       "when": 1793221491240,
       "tag": "0024_c1_publication_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793810572548,
+      "tag": "0025_f1_ai_signal_scheduler",
+      "breakpoints": true
     }
   ]
 }

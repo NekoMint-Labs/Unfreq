@@ -82,7 +82,7 @@ try {
   const migrationFolder = path.join(root, "apps/api/src/db/migrations");
   const journal = JSON.parse(await readFile(path.join(migrationFolder, "meta/_journal.json"), "utf8"));
   assert.deepEqual({ ...journal, entries: [] }, { version: "7", dialect: "postgresql", entries: [] });
-  assert.equal(journal.entries.length, 25, "The release candidate must contain exactly the original 24 migrations and C1.");
+  assert.equal(journal.entries.length, 26, "The release candidate must contain exactly the original 24 migrations, C1 and scheduler.");
   // Pin the original main e5b459c entries/SQL and the exact C1 388bc5c append.
   // Git stores LF; source provenance tolerates only checkout CRLF conversion.
   // The real ledger hash below still uses the actual SQL bytes read by Drizzle.
@@ -98,6 +98,10 @@ try {
   assert.equal(hash(JSON.stringify(sourceManifest.slice(0, 24))), "556cec334a4260908800a878a46b1d6470690b329bf4970849e6c59fb785c43e");
   assert.equal(migrations[24].sourceHash, "9405d5d05704875af7e9cdd5df5db9234a8f5c3422ab2661c4da48a0b0e3d021");
   const expectedLedger = migrations.map(({ hash, when }) => ({ hash, createdAt: when }));
+
+  assert.deepEqual(journal.entries[25], { idx: 25, version: "7", when: 1793810572548,
+    tag: "0025_f1_ai_signal_scheduler", breakpoints: true });
+  assert.equal(migrations[25].sourceHash, "95709799272eeaeda66c6fba4d41b0a297080ce5ab6dd5775f94cd4a5a892a86");
   report.migrations = { count: expectedLedger.length, sourceManifestSha256: hash(JSON.stringify(sourceManifest)) };
   const build = docker(["build", "--platform", "linux/amd64", "--file", "Dockerfile.api", "--target", "runner",
     "--label", `${label}=${runId}`, "--label", `org.opencontainers.image.revision=${report.sourceCommit}`,
@@ -143,7 +147,7 @@ try {
   const rerun = exec(api, ["npm", "run", "api:migrate"]);
   assert.match(rerun.stdout, /Database migrations completed\./u);
   assert.equal(query(ledgerSql), ledger);
-  check("the bundled compiled CLI preserves every SQL hash and timestamp in the exact 25-entry C1 ledger and is idempotent");
+  check("the bundled compiled CLI preserves every SQL hash and timestamp in the exact 26-entry scheduler ledger and is idempotent");
   const blank = docker(["exec", "--env", "DATABASE_URL=", api, "node", "apps/api/dist/scripts/migrate.js"], { allowFailure: true });
   assert.equal(blank.status, 1); assert.equal(blank.stdout, ""); assert.equal(blank.stderr, "Database migration failed.\n");
   check("the production CLI rejects an empty URL with bounded fixed failure output");
