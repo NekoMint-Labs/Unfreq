@@ -2,7 +2,7 @@ import { confirmUnitPublication } from "../../../tests/unit/publication-fixture.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GenerationExecutionStopped, runWithGenerationExecution, type GenerationExecutionContext } from "../../shared/generation-execution.js";
 import { fixtureFingerprint } from "../../../tests/integration/fixtures.js";
-import { findSameFrequencyMatches } from "./service-matching.js";
+import { findPublicSignalMatches, findSameFrequencyMatches } from "./service-matching.js";
 import type { SignalSemanticMatchRecord } from "./types.js";
 
 const calls = vi.hoisted(() => ({
@@ -108,14 +108,33 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     expect(calls.rerank).not.toHaveBeenCalled();
     expect(calls.keyword).not.toHaveBeenCalled();
   });
-  it("sends only confirmed candidate text and the approved public query to providers", async () => {
+  it("sends only confirmed candidate text to the generation reranker", async () => {
     const original = candidate.expandedText;
     candidate.expandedText = "PRIVATE-unconfirmed-candidate-edit";
     try {
-      await findSameFrequencyMatches({ ...input, publicQuery: true });
-      expect(calls.embedding.mock.calls[0]?.[0]).toBe(input.expandedText);
+      await findSameFrequencyMatches(input);
       expect(calls.rerank.mock.calls[0]?.[0].candidates[0].expandedText).toBe("synthetic public candidate");
     } finally { candidate.expandedText = original; }
+  });
+  it("keeps public matching local even when paid providers are configured and unavailable", async () => {
+    calls.keyword.mockResolvedValue([candidate]);
+    calls.embeddingConfigured.mockRejectedValue(new Error("provider config unavailable"));
+    calls.embedding.mockRejectedValue(new Error("paid provider unavailable"));
+    calls.rerank.mockRejectedValue(new Error("paid provider unavailable"));
+    const matches = await findPublicSignalMatches(fixtureFingerprint, "other-parent");
+    expect(matches.map((match) => match.id)).toEqual([candidate.id]);
+    expect(calls.keyword).toHaveBeenCalledExactlyOnceWith(50, "other-parent");
+    expect(calls.embeddingConfigured).not.toHaveBeenCalled();
+    expect(calls.rerankerConfigured).not.toHaveBeenCalled();
+    expect(calls.embedding).not.toHaveBeenCalled();
+    expect(calls.rerank).not.toHaveBeenCalled();
+    expect(calls.semantic).not.toHaveBeenCalled();
+  });
+  it("drops locally matched candidates whose confirmed epoch was withdrawn or replaced", async () => {
+    calls.keyword.mockResolvedValue([candidate]);
+    calls.recheck.mockResolvedValue([]);
+    expect(await findPublicSignalMatches(fixtureFingerprint, "other-parent")).toEqual([]);
+    expect(calls.recheck).toHaveBeenCalledWith([{ id: candidate.id, publicationVersion: candidate.publicationVersion }]);
   });
   it("does not dispatch a candidate withdrawn while provider configuration is loading", async () => {
     calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValue([]);

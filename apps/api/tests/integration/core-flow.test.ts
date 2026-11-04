@@ -1070,6 +1070,48 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
+  it("publishes and serves public/owner detail and matches without dispatching configured paid matching", async () => {
+    await waitForActualGenerationIdle();
+    const configIds: string[] = [];
+    const originalFetch = globalThis.fetch;
+    let dispatches = 0;
+    try {
+      for (const kind of ["embedding", "reranker"]) {
+        const response = await request("POST", `/api/admin/provider-configs/${kind}`, admin.cookie, {
+          apiKey: "synthetic-unavailable-matching-only", baseUrl: `${h.provider.origin}/v1`,
+          model: "synthetic-unavailable", provider: "integration-unavailable", isEnabled: true,
+        });
+        expect(response.statusCode).toBe(201);
+        configIds.push(response.json().data.providerConfig.id);
+      }
+      expect(await h.sql`select id from provider_configs where id in ${h.sql(configIds)} and is_enabled = true`).toHaveLength(2);
+      globalThis.fetch = async () => { dispatches += 1; throw new Error("Paid matching is unavailable in this synthetic read test."); };
+      await withSyntheticWithdrawalRows(async (track) => {
+        const signal = await createWithdrawalFixture(track);
+        await publish(signal.id);
+        for (let repeat = 0; repeat < 3; repeat += 1) {
+          for (const cookie of [undefined, reader.cookie, author.cookie]) {
+            const response = await request("GET", `/api/signals/${signal.id}`, cookie);
+            expect(response.statusCode).toBe(200);
+            expect(response.json().data.signal).toMatchObject({ id: signal.id, status: "PUBLISHED" });
+          }
+          const matches = await request("GET", `/api/signals/${signal.id}/matches`);
+          expect(matches.statusCode).toBe(200);
+          expect(matches.json().data.matches.length).toBeGreaterThan(0);
+        }
+        expect(dispatches).toBe(0);
+        const withdrawn = await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 });
+        expect(withdrawn.statusCode).toBe(200);
+        expectError(await request("GET", `/api/signals/${signal.id}`), 404, "NOT_FOUND");
+        await publish(signal.id);
+        expect(dispatches).toBe(0);
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (configIds.length !== 0) await h.sql`delete from provider_configs where id in ${h.sql(configIds)}`;
+    }
+  });
+
   it("keeps legacy and unowned system samples non-public without author confirmation", async () => {
     await withSyntheticWithdrawalRows(async (track) => {
       const signal = await createWithdrawalFixture(track, "PUBLISHED");
