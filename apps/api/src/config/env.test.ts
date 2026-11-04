@@ -5,7 +5,7 @@ const policyRuleNames = [
   "passwordFailureIp", "passwordFailureIdentityIp", "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite",
   "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp",
   "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite",
-  "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite",
+  "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite", "reportRequestUser", "reportRequestIp", "reportReadUser",
 ] as const;
 const completePolicy = {
   namespace: "unfreq-env-unit",
@@ -70,7 +70,7 @@ describe("API environment validation", () => {
       },
     });
     expect(Object.keys(imported.env.abusePolicy.budgets).sort()).toEqual([...policyRuleNames].sort());
-    expect(Object.keys(imported.env.abusePolicy.budgets)).toHaveLength(23);
+    expect(Object.keys(imported.env.abusePolicy.budgets)).toHaveLength(26);
   });
 
   it("rejects placeholder production secrets", async () => {

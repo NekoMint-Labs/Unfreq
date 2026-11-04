@@ -304,7 +304,7 @@ export async function createAbuseHarness(caseId: AbuseCase) {
       RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${provider.origin}/v1` : "", RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker",
       TTS_API_KEY: "abuse-stub-only", TTS_BASE_URL: provider.wsUrl, TTS_PROVIDER: "integration-loopback", TTS_MODEL: "synthetic-tts", TTS_VOICE_LEFT: "synthetic", TTS_VOICE_RIGHT: "synthetic",
       TTS_STORAGE_DIR: join(directory, "audio"), IMAGE_STORAGE_DIR: join(directory, "images"), IMAGE_MAX_BYTES: "2097152",
-      SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault"].includes(caseId) ? "true" : "false",
+      SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault", "reports"].includes(caseId) ? "true" : "false",
       SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200", SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3",
       SIGNAL_GENERATION_RETRY_BASE_MS: "50", SIGNAL_GENERATION_RETRY_MAX_MS: "500", SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200", SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
       WEB_ORIGIN: caseId === "production" ? "https://b3-synthetic.example" : "http://127.0.0.1:3200", API_HOST: "127.0.0.1", API_PORT: "4000", HEALTH_DEPENDENCY_TIMEOUT_MS: "500", DB_POOL_MAX: "4", LOG_LEVEL: "warn" });

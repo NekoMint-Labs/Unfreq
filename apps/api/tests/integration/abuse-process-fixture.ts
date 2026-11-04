@@ -9,7 +9,7 @@ import { ruleNames, type AbuseRuleName } from "../../src/config/abuse.js";
 import { verifyIntegrationRuntime } from "../../../../scripts/integration-runtime.mjs";
 import { fixtureSeed } from "./fixtures.js";
 
-export const abuseCases = ["register", "trusted", "password", "email", "disabled", "production", "diagnostic",
+export const abuseCases = ["register", "trusted", "password", "email", "disabled", "production", "diagnostic", "reports",
   "generation", "generationfailed", "request", "daily", "providerchat", "providerembedding", "providerreranker", "providertts", "redisfault", "audio", "audiostop", "audiofault"] as const;
 export type AbuseCase = typeof abuseCases[number];
 export function syntheticAbusePolicy(caseId: AbuseCase, namespace: string) {
@@ -19,6 +19,7 @@ export function syntheticAbusePolicy(caseId: AbuseCase, namespace: string) {
   if (caseId === "register" || caseId === "trusted") budgets.registerIp.limit = 2;
   if (caseId === "password") { budgets.passwordFailureIdentityIp.limit = 2; budgets.passwordFailureIp.limit = 20; }
   if (caseId === "diagnostic") { budgets.diagnosticIp.limit = 2; budgets.diagnosticSite.limit = 3; }
+  if (caseId === "reports") { budgets.reportRequestUser.limit = 2; budgets.reportRequestIp.limit = 3; budgets.reportReadUser.limit = 2; }
   if (caseId === "daily") budgets.generationDailyUser.limit = 2;
   if (caseId === "request") budgets.generationRequestUser.limit = 2;
   if (caseId === "generationfailed") budgets.chatCallsSite.limit = 0;
@@ -88,7 +89,7 @@ async function main() {
     RERANKER_API_KEY: ["providerreranker", "redisfault"].includes(caseId) ? "abuse-stub-only" : "", RERANKER_BASE_URL: ["providerreranker", "redisfault"].includes(caseId) ? `${http.origin}/v1` : "",
     RERANKER_PROVIDER: "integration-loopback", RERANKER_MODEL: "synthetic-reranker",
     TTS_API_KEY: "abuse-stub-only", TTS_BASE_URL: ws.toString(), TTS_PROVIDER: "integration-loopback", TTS_MODEL: "synthetic-tts", TTS_VOICE_LEFT: "synthetic", TTS_VOICE_RIGHT: "synthetic",
-    SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault"].includes(caseId) ? "true" : "false",
+    SIGNAL_GENERATION_WORKER_ENABLED: ["generation", "generationfailed", "request", "daily", "audio", "audiostop", "audiofault", "reports"].includes(caseId) ? "true" : "false",
     SIGNAL_GENERATION_CONCURRENCY: "2", SIGNAL_GENERATION_SCAN_INTERVAL_MS: "50", SIGNAL_GENERATION_LEASE_MS: "2000", SIGNAL_GENERATION_HEARTBEAT_MS: "200",
     SIGNAL_GENERATION_ATTEMPT_TIMEOUT_MS: "10000", SIGNAL_GENERATION_MAX_ATTEMPTS: "3", SIGNAL_GENERATION_RETRY_BASE_MS: "50", SIGNAL_GENERATION_RETRY_MAX_MS: "500",
     SIGNAL_GENERATION_SHUTDOWN_GRACE_MS: "200", SIGNAL_GENERATION_DB_STATEMENT_TIMEOUT_MS: "5000", SIGNAL_GENERATION_DB_LOCK_TIMEOUT_MS: "1000",
@@ -128,7 +129,7 @@ async function main() {
   let unhandled = 0;
   let closing = false;
   await send({ kind: "boot", phase: "app-build-start", pid: process.pid, at: Date.now() });
-  const app = await buildApp({ logger: { level: "warn", stream: { write(line: string) {
+  const app = await buildApp({ logger: { level: caseId === "reports" ? "info" : "warn", stream: { write(line: string) {
     logBytes += Buffer.byteLength(line); if (logBytes <= 65_536) logs.push(line);
   } } } });
   await send({ kind: "boot", phase: "app-build-complete", pid: process.pid, at: Date.now() });
@@ -138,7 +139,7 @@ async function main() {
   process.on("uncaughtException", fatal); process.on("unhandledRejection", fatal);
   process.once("disconnect", () => { if (!closing) process.exit(1); });
   const diagnostics = () => ({ blocked, unhandled, logOverflow: logBytes > 65_536,
-    logLeaks: [fixtureSeed, "SYNTHETIC_B3_DIAGNOSTIC_MARKER", "abuse-stub-only", expected.SESSION_SECRET, expected.ABUSE_HMAC_SECRET].some((marker) => logs.join("").includes(marker)),
+    logLeaks: [fixtureSeed, "SYNTHETIC_REVIEW_ONLY", "SYNTHETIC_B3_DIAGNOSTIC_MARKER", "abuse-stub-only", expected.SESSION_SECRET, expected.ABUSE_HMAC_SECRET].some((marker) => logs.join("").includes(marker)),
     diagnosticEvents: logs.filter((line) => line.includes('"action":"frontend.error.report"')).length });
   const registeredIds = new Set<string>();
   async function validateChatConfiguration() {
@@ -198,9 +199,10 @@ async function main() {
         return { ok: true };
       } catch (error) { return { ok: false, limited: error instanceof Error && error.name === "AbuseControlStopped" }; }
     }
-    const allowed = command.method === "GET" ? /^\/api\/signals\/[a-f0-9-]{36}(?:\/(?:publication-preview|audio(?:\/(?:main|left|right))?))?(?:\?v=\d{1,10})?$/u.test(command.url) :
+    const reportAllowed = caseId === "reports" && (command.method === "POST" ? command.url === "/api/reports" : /^\/api\/reports\/signal\/[a-f0-9-]{36}$/u.test(command.url));
+    const allowed = reportAllowed || (command.method === "GET" ? /^\/api\/signals\/[a-f0-9-]{36}(?:\/(?:publication-preview|audio(?:\/(?:main|left|right))?))?(?:\?v=\d{1,10})?$/u.test(command.url) :
       ["/api/auth/register", "/api/auth/frequency/login", "/api/auth/login", "/api/auth/login/verify", "/api/frontend-diagnostics/errors", "/api/signals"].includes(command.url) ||
-      /^\/api\/signals\/[a-f0-9-]{36}\/(?:publish|withdraw|audio)$/u.test(command.url);
+      /^\/api\/signals\/[a-f0-9-]{36}\/(?:publish|withdraw|audio)$/u.test(command.url));
     if (!allowed) throw new Error("B3 route refused.");
     const response = await app.inject({ method: command.method, url: command.url,
       remoteAddress: command.remote ?? "127.0.0.1", headers: { ...(command.cookie ? { cookie: command.cookie } : {}), ...(command.forwarded ? { "x-forwarded-for": command.forwarded } : {}) },

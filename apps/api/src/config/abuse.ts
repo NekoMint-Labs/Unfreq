@@ -6,6 +6,7 @@ export const ruleNames = [
   "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp",
   "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite",
   "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite",
+  "reportRequestUser", "reportRequestIp", "reportReadUser",
 ] as const;
 
 export type AbuseRuleName = typeof ruleNames[number];

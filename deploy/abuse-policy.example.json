@@ -92,6 +92,18 @@
     "ttsCharactersSite": {
       "limit": 0,
       "windowMs": 60000
+    },
+    "reportRequestUser": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "reportRequestIp": {
+      "limit": 0,
+      "windowMs": 60000
+    },
+    "reportReadUser": {
+      "limit": 0,
+      "windowMs": 60000
     }
   },
   "pendingPerUser": 1,

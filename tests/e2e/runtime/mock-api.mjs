@@ -59,6 +59,7 @@ const relationshipSignal = makeSignal(
   },
 );
 let acceptedGeneration;
+const reportReceipts = new Map();
 const signals = new Map([privateSignal, publicSignal, relationshipSignal].map((signal) => [signal.id, signal]));
 
 function identity(request) {
@@ -113,6 +114,7 @@ const server = createServer(async (request, response) => {
     privateSignal.status = "DRAFT"; privateSignal.publicationVersion = 0; privateSignal.withdrawn = false;
     publicSignal.withdrawn = false; revokeAfterPublicReads = undefined;
     acceptedGeneration = undefined;
+    reportReceipts.clear();
     return ok(response, { synthetic: true });
   }
   if (request.method === "POST" && url.pathname === "/__runtime/revoke-after-first-public-read") {
@@ -130,6 +132,23 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === "/api/me") {
     return current === undefined ? fail(response, 401, "UNAUTHORIZED") : ok(response, { frequency: current });
+  }
+  if (url.pathname.startsWith("/api/reports")) {
+    if (!current) return fail(response, 401, "UNAUTHORIZED");
+    if (request.method === "GET") {
+      const targetId = decodeURIComponent(url.pathname.split("/").pop());
+      const report = reportReceipts.get(`${current.id}:${targetId}`);
+      return ok(response, report ? { report } : {});
+    }
+    let body;
+    try { body = await readBody(request); } catch { return fail(response, 400, "VALIDATION_ERROR"); }
+    const target = signals.get(body.targetId);
+    if (!target || target.status !== "PUBLISHED" || target.withdrawn) return fail(response, 404, "NOT_FOUND");
+    const key = `${current.id}:${target.id}`;
+    const report = reportReceipts.get(key) ?? { id: "synthetic-report-receipt", targetId: target.id,
+      targetType: "SIGNAL", status: "PENDING", createdAt: now };
+    reportReceipts.set(key, report);
+    return send(response, 201, { data: { report }, meta: { requestId: "synthetic-runtime" } });
   }
   if (url.pathname.startsWith("/api/me/")) {
     if (current === undefined) return fail(response, 401, "UNAUTHORIZED");

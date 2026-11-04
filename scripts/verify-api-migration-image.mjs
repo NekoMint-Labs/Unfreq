@@ -120,7 +120,7 @@ try {
   const redis = create("redis", "redis:7-alpine", ["--tmpfs", "/data"]);
   await waitFor(() => exec(pg, ["pg_isready", "-U", "postgres", "-d", "unfreq_image"], { allowFailure: true }).status === 0);
   await waitFor(() => exec(redis, ["redis-cli", "ping"], { allowFailure: true }).stdout.trim() === "PONG");
-  const ruleNames = ["registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite", "passwordFailureIp", "passwordFailureIdentityIp", "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite", "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"];
+  const ruleNames = ["registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite", "passwordFailureIp", "passwordFailureIdentityIp", "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite", "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite", "reportRequestUser", "reportRequestIp", "reportReadUser"];
   const paid = new Set(["embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"]);
   const policy = { namespace: `migration-${runId}`, budgets: Object.fromEntries(ruleNames.map((name) => [name, { limit: paid.has(name) ? 0 : 100, windowMs: 60_000 }])), pendingPerUser: 2, ttsConcurrency: 1, ttsTaskTimeoutMs: 1000 };
   const env = { NODE_ENV: "production", API_HOST: "0.0.0.0", API_PORT: "4000", WEB_ORIGIN: "https://migration-image.example",
