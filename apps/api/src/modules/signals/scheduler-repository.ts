@@ -42,7 +42,7 @@ export function configureAiSignalSchedulerRepository(config: Pick<AiSignalSchedu
     async recordProgress(claim, progress) {
       const rows = await client`update ai_signal_scheduler_batches
         set accepted_count = ${progress.accepted}, rejected_count = ${progress.rejected}, generation_attempts = ${progress.attempts},
-          result_signal_ids = ${JSON.stringify(progress.signalIds)}::jsonb
+          result_signal_ids = ${client.json(progress.signalIds)}
         where id = ${claim.id} and owner_token = ${claim.ownerToken} and status = 'RUNNING' and deadline_at > clock_timestamp() returning id`;
       return rows.length === 1;
     },
@@ -50,7 +50,7 @@ export function configureAiSignalSchedulerRepository(config: Pick<AiSignalSchedu
       const rows = await client`update ai_signal_scheduler_batches
         set status = ${result.status}, completed_at = clock_timestamp(), failure_code = ${result.failureCode ?? null},
           accepted_count = ${result.accepted}, rejected_count = ${result.rejected}, generation_attempts = ${result.attempts},
-          result_signal_ids = ${JSON.stringify(result.signalIds)}::jsonb
+          result_signal_ids = ${client.json(result.signalIds)}
         where id = ${claim.id} and owner_token = ${claim.ownerToken} and status = 'RUNNING'
           and (${result.status} <> 'COMPLETED' or deadline_at > clock_timestamp()) returning id`;
       return rows.length === 1;

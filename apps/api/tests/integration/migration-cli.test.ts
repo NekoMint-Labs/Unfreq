@@ -150,7 +150,7 @@ it("runs the compiled CLI on an empty database and preserves the same ledger on 
   await withDatabase(async (url, sql) => {
     expectOutcome(await runCli(url), true);
     const first = await ledger(sql);
-    expect(first).toHaveLength(25);
+    expect(first).toHaveLength(26);
     const [tables] = await sql`select to_regclass('public.users')::text as users, to_regclass('public.signals')::text as signals`;
     expect(tables).toEqual({ users: "users", signals: "signals" });
     expectOutcome(await runCli(url), true);
@@ -268,7 +268,7 @@ it("preserves the existing toolkit ledger in both toolkit-to-runner and runner-t
       if (toolkitFirst) await toolkitRun();
       else expectOutcome(await runCli(url), true);
       const original = await ledger(sql);
-      expect(original).toHaveLength(25);
+      expect(original).toHaveLength(26);
       if (toolkitFirst) expectOutcome(await runCli(url), true);
       else await toolkitRun();
       expect(await ledger(sql)).toEqual(original);
