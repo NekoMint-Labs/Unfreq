@@ -14,6 +14,7 @@ import {
   users,
 } from "../../db/schema.js";
 import { serializePgVector } from "../../db/vector.js";
+import type { PublicMatchScope } from "./service-matching.js";
 import type {
   CreateSignalInput,
   SignalAudioStatus,
@@ -412,6 +413,7 @@ export async function findRandomPublishedSignal(params: {
 export async function listPublishedSignalMatchCandidates(
   limit: number,
   excludeSignalId?: string,
+  scope?: PublicMatchScope,
 ): Promise<SignalRecord[]> {
   const filters = getPublicCompletedSignalFilters();
 
@@ -419,12 +421,22 @@ export async function listPublishedSignalMatchCandidates(
     filters.push(ne(signals.id, excludeSignalId));
   }
 
+  let bandRank = sql`0::integer`;
+  let tagRank = sql`0::integer`;
+  if (scope !== undefined) {
+    const author = sql`coalesce(${signals.authorId}, ${signals.frequencyId})`;
+    filters.push(eq(signals.source, "human"), isNotNull(author));
+    if (scope.excludeAuthorIds.length > 0) filters.push(sql`${author} not in (${sql.join(scope.excludeAuthorIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    if (scope.content.primaryBand !== undefined) bandRank = sql`case when ${signals.publicationSnapshot}->'content'->>'primaryBand' = ${scope.content.primaryBand} then 1 else 0 end`;
+    if (scope.content.tags.length > 0) tagRank = sql`(select count(*)::integer from jsonb_array_elements_text(case when jsonb_typeof(${signals.publicationSnapshot}->'content'->'tags') = 'array' then ${signals.publicationSnapshot}->'content'->'tags' else '[]'::jsonb end) as tag(value) where tag.value in (${sql.join(scope.content.tags.map((tag) => sql`${tag}`), sql`, `)}))`;
+  }
+
   const rows = await db
     .select(signalSelection)
     .from(signals)
     .leftJoin(users, eq(signals.authorId, users.id))
     .where(and(...filters))
-    .orderBy(desc(signals.createdAt))
+    .orderBy(desc(bandRank), desc(tagRank), desc(signals.createdAt), desc(signals.id))
     .limit(limit);
 
   return rows.map(toSignalRecord);

@@ -85,7 +85,7 @@ export const signalMatchSummarySchema = z.object({
   id: z.string().min(1),
   primaryEmotion: z.string().min(1),
   resonanceCount: z.number().int().nonnegative(),
-  score: z.number().min(0),
+  score: z.number().min(0).max(100),
   seedText: z.string().min(1).optional(),
   signalType: z.string().min(1),
   source: z.enum(["FALLBACK", "PUBLISHED", "SEEDED"]),

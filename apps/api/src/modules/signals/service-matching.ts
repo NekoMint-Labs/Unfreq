@@ -1,5 +1,8 @@
 import { isPublicSignal } from "./publication-policy.js";
 import { parsePublicationSnapshot } from "./publication.js";
+import { composeMatchScore } from "./match-scoring.js";
+import type { SignalPublicContent } from "@unfreq/contracts/signals";
+import { signalBandLabels as importedBandLabels } from "./frequency-taxonomy.js";
 import { assertGenerationActive, throwIfGenerationStopped } from "../../shared/generation-execution.js";
 import {
   generateEmbedding,
@@ -88,13 +91,32 @@ async function findKeywordSameFrequencyMatches(
 // Reads use bounded database candidates and local scoring only. Billable
 // embeddings/reranking belong to the admitted generation path below.
 export async function findPublicSignalMatches(
-  fingerprint: SignalFingerprint,
   excludeSignalId: string,
+  scope: PublicMatchScope,
 ): Promise<SignalMatchSummary[]> {
-  const matches = await findKeywordSameFrequencyMatches(fingerprint, { excludeSignalId });
+  const rows = await listPublishedSignalMatchCandidates(matchCandidateLimit, excludeSignalId, scope);
+  const matches = rows.filter((row) => isPublicDiscoveryCandidate(row, scope.excludeAuthorIds))
+    .map((row) => toMatchSummary(row, scorePublicDiscoveryCandidate(scope.content, row)))
+    .filter((match) => match.score > 0).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+    .slice(0, maxMatchCount);
   const current = await recheckPublicSignals(matches.flatMap((match) =>
     match.publicationVersion === undefined ? [] : [{ id: match.id, publicationVersion: match.publicationVersion }]));
-  return matches.filter((match) => current.some((row) => row.id === match.id));
+  return matches.filter((match) => current.some((row) => row.id === match.id && isPublicDiscoveryCandidate(row, scope.excludeAuthorIds)));
+}
+
+export type PublicMatchScope = { content: SignalPublicContent; excludeAuthorIds: string[] };
+export function isPublicDiscoveryCandidate(row: SignalRecord, excludeAuthorIds: readonly string[]): boolean {
+  const author = row.authorId ?? row.frequencyId;
+  return isPublicSignal(row) && row.source === "human" && author !== null && !excludeAuthorIds.includes(author);
+}
+export function scorePublicDiscoveryCandidate(content: SignalPublicContent, row: SignalRecord): number {
+  const other = parsePublicationSnapshot(row.publicationSnapshot)?.content;
+  if (!other) return 0;
+  const sameBand = content.primaryBand !== undefined && content.primaryBand === other.primaryBand;
+  const bandLabels = new Set<string>(Object.values(importedBandLabels));
+  const tags = new Set(content.tags.filter((tag) => !bandLabels.has(tag)));
+  const overlap = other.tags.filter((tag) => tags.has(tag)).length;
+  return (sameBand ? 20 : 0) + Math.min(2, overlap) * 10;
 }
 
 async function rerankSemanticMatches(params: {
@@ -110,7 +132,7 @@ async function rerankSemanticMatches(params: {
 
     return {
       ...match,
-      score: Number(((semanticScore * 0.6) + frequencyScore).toFixed(4)),
+      score: composeMatchScore(semanticScore / 100, frequencyScore),
     };
   };
 
@@ -152,6 +174,9 @@ async function rerankSemanticMatches(params: {
         return [result.id, result.score];
       }),
     );
+    if (scoreById.size !== params.candidates.length || reranked.results.length !== params.candidates.length) {
+      throw new Error("Reranker returned an incomplete candidate batch.");
+    }
 
     return params.candidates
       .map((candidate) => {
@@ -159,7 +184,7 @@ async function rerankSemanticMatches(params: {
         const score = scoreById.get(candidate.id);
         const match = {
           ...fallback,
-          score: score === undefined ? fallback.score : Number(score.toFixed(4)),
+          score: score === undefined ? fallback.score : Number((score * 100).toFixed(4)),
         };
 
         return applyFrequencyScore(match, candidate);
@@ -230,7 +255,8 @@ async function findSemanticSameFrequencyMatches(params: {
       embedding.version,
     );
     await assertGenerationActive();
-    const eligible = semanticCandidates.filter(isPublicSignal);
+    const eligible = semanticCandidates.filter((candidate) => isPublicSignal(candidate) &&
+      Number.isFinite(candidate.distance) && candidate.distance >= 0 && candidate.distance <= 2);
     const matches = await rerankSemanticMatches({
       candidates: eligible,
       expandedText: params.expandedText,

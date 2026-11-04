@@ -133,6 +133,8 @@ describe("provider health checks", () => {
         documents: ["一段安静的测试文本。", "另一段用于排序的测试文本。"],
         model: "Qwen/Qwen3-Reranker-0.6B",
         query: "测试文本",
+        top_n: 2,
+        return_documents: false,
       });
 
       return Promise.resolve(
@@ -143,6 +145,7 @@ describe("provider health checks", () => {
                 index: 0,
                 relevance_score: 0.91,
               },
+              { index: 1, relevance_score: 0.12 },
             ],
           }),
           { status: 200 },

@@ -83,6 +83,7 @@ export type TtsProviderConfig = {
 };
 
 export type RerankerProviderConfig = {
+  scoreScale?: string;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -701,6 +702,7 @@ export async function resolveRerankerProviderConfigs(): Promise<RerankerProvider
               baseUrl: config.baseUrl,
               model: config.model,
               provider: config.provider,
+              scoreScale: readStringExtra(config.extraJson, "scoreScale", env.rerankerScoreScale),
             },
           ];
     });
@@ -712,6 +714,7 @@ export async function resolveRerankerProviderConfigs(): Promise<RerankerProvider
       baseUrl: env.rerankerBaseUrl,
       model: env.rerankerModel,
       provider: env.rerankerProvider,
+      scoreScale: env.rerankerScoreScale,
     },
   ];
 }

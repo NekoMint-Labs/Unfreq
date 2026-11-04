@@ -4,6 +4,7 @@ import { GenerationExecutionStopped, runWithGenerationExecution, type Generation
 import { fixtureFingerprint } from "../../../tests/integration/fixtures.js";
 import { findPublicSignalMatches, findSameFrequencyMatches } from "./service-matching.js";
 import type { SignalSemanticMatchRecord } from "./types.js";
+import { parsePublicationSnapshot } from "./publication.js";
 
 const calls = vi.hoisted(() => ({
   embeddingConfigured: vi.fn(), embedding: vi.fn(), rerankerConfigured: vi.fn(), rerank: vi.fn(),
@@ -29,6 +30,7 @@ const candidate: SignalSemanticMatchRecord = confirmUnitPublication({
   qualityReason: null, qualityScore: null, source: "human", status: "PUBLISHED", subFeeling: "self_acceptance", isKept: false,
 });
 const input = { expandedText: "synthetic expansion", fingerprint: fixtureFingerprint, rawInput: "synthetic input" };
+const publicScope = { content: parsePublicationSnapshot(candidate.publicationSnapshot)!.content, excludeAuthorIds: [] as string[] };
 
 function execution() {
   const controller = new AbortController();
@@ -121,9 +123,9 @@ describe("matching cancellation does not become an ordinary degradation", () => 
     calls.embeddingConfigured.mockRejectedValue(new Error("provider config unavailable"));
     calls.embedding.mockRejectedValue(new Error("paid provider unavailable"));
     calls.rerank.mockRejectedValue(new Error("paid provider unavailable"));
-    const matches = await findPublicSignalMatches(fixtureFingerprint, "other-parent");
+    const matches = await findPublicSignalMatches("other-parent", publicScope);
     expect(matches.map((match) => match.id)).toEqual([candidate.id]);
-    expect(calls.keyword).toHaveBeenCalledExactlyOnceWith(50, "other-parent");
+    expect(calls.keyword).toHaveBeenCalledExactlyOnceWith(50, "other-parent", publicScope);
     expect(calls.embeddingConfigured).not.toHaveBeenCalled();
     expect(calls.rerankerConfigured).not.toHaveBeenCalled();
     expect(calls.embedding).not.toHaveBeenCalled();
@@ -133,8 +135,17 @@ describe("matching cancellation does not become an ordinary degradation", () => 
   it("drops locally matched candidates whose confirmed epoch was withdrawn or replaced", async () => {
     calls.keyword.mockResolvedValue([candidate]);
     calls.recheck.mockResolvedValue([]);
-    expect(await findPublicSignalMatches(fixtureFingerprint, "other-parent")).toEqual([]);
+    expect(await findPublicSignalMatches("other-parent", publicScope)).toEqual([]);
     expect(calls.recheck).toHaveBeenCalledWith([{ id: candidate.id, publicationVersion: candidate.publicationVersion }]);
+  });
+  it("excludes own/system discovery candidates and scores only the confirmed labels", async () => {
+    calls.keyword.mockResolvedValue([candidate, { ...candidate, id: "system", source: "ai_generated" }]);
+    expect(await findPublicSignalMatches("parent", { ...publicScope, excludeAuthorIds: [candidate.authorId!] })).toEqual([]);
+    const original = candidate.fingerprintJson;
+    candidate.fingerprintJson = { ...fixtureFingerprint, tags: [], primaryEmotion: "PRIVATE-EDIT" };
+    try {
+      expect((await findPublicSignalMatches("parent", publicScope)).map((match) => match.id)).toEqual([candidate.id]);
+    } finally { candidate.fingerprintJson = original; }
   });
   it("does not dispatch a candidate withdrawn while provider configuration is loading", async () => {
     calls.recheck.mockResolvedValueOnce([candidate]).mockResolvedValue([]);

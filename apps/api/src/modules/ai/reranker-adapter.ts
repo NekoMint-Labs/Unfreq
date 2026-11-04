@@ -37,6 +37,8 @@ export function buildRerankerRequestBody(params: {
   if (isSiliconFlowProvider(params.provider)) {
     return {
       documents: params.candidates.map((candidate) => candidate.expandedText),
+      top_n: params.candidates.length,
+      return_documents: false,
       model: params.model,
       query: params.queryText,
     };
@@ -127,13 +129,26 @@ export function parseRerankerResponsePayload(params: {
   candidates: RerankerAdapterCandidate[];
   payload: unknown;
   provider: string;
+  scoreScale?: unknown;
 }): RerankerAdapterResult[] {
-  if (isSiliconFlowProvider(params.provider)) {
-    return parseSiliconFlowRerankerPayload(params.payload, params.candidates);
-  }
-
-  return parseGenericRerankerPayload(
+  const raw = readGenericRerankerResults(params.payload);
+  if (raw.length !== params.candidates.length) return [];
+  const results = isSiliconFlowProvider(params.provider)
+    ? parseSiliconFlowRerankerPayload(params.payload, params.candidates)
+    : parseGenericRerankerPayload(
     params.payload,
     new Set(params.candidates.map((candidate) => candidate.id)),
   );
+  if (results.length !== params.candidates.length || new Set(results.map((item) => item.id)).size !== results.length) return [];
+  const normalized = results.map((item) => ({ ...item, score: normalizeRerankerScore(item.score, params.scoreScale ?? "zero_to_one") }));
+  if (normalized.some((item) => item.score === undefined)) return [];
+  return normalized.map((item) => ({ ...item, score: item.score! }));
+}
+
+/** An explicitly declared relevance range; never infer it from observed values. */
+export function normalizeRerankerScore(value: unknown, scale: unknown): number | undefined {
+  if (scale !== "zero_to_one" && scale !== "zero_to_hundred") return undefined;
+  const maximum = scale === "zero_to_one" ? 1 : 100;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum
+    ? value / maximum : undefined;
 }
