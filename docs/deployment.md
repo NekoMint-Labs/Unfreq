@@ -49,7 +49,7 @@ TTS_API_KEY                可选服务端 TTS；为空时保留浏览器朗读 
 
 API 容器启动时会先执行数据库迁移。生产模式会拒绝占位 `SESSION_SECRET`、占位 `PROVIDER_CONFIG_SECRET`、占位域名和非 HTTPS `WEB_ORIGIN`。
 
-`AI_SIGNAL_SCHEDULER_ENABLED` 默认 `false`。当前每日 03:00 调度仍是进程内定时器，不提供跨副本领取或在途调度任务排空；试用和多副本部署保持关闭。仅在已单独验收的单调度实例上显式设为 `true`。此开关不影响用户生成 worker，也不代表 F1 持久调度已完成。
+`AI_SIGNAL_SCHEDULER_ENABLED` 默认 `false`。F1 使用迁移 0025 的数据库日批次领取与逐次派发预算；启用前先同步部署迁移与 API，并独立验收多实例、时区、预算和退出排空。RUNNING、FAILED、CANCELLED 批次不会自动重试；进程崩溃后的部分结果需人工核对。所有副本须使用相同业务时区和计划配置，容器停止期限须覆盖配置的退出预算。此开关不影响用户生成 worker，不会公开无作者确认的系统样例。详见 [F1 调度说明](implementation/f1-scheduler-main-20261105.md)。
 
 C1 首次上线须同步发布 API、contracts 和 Web，迁移只在原 0000–0023 后追加 0024。缺少作者有效确认的历史公开内容及无作者样例会停止公开；历史内容由原作者重新预览并确认，无作者样例的处置另行决定，不能批量回填同意。
 
