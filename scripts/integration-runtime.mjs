@@ -7,11 +7,12 @@ import { fileURLToPath } from "node:url";
 // runs in the coordinator and is emitted by tsc into the child's runtime tree.
 export const runtimeEntryRelative = "apps/api/tests/integration/generation-process-fixture.js";
 export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRelative,
+  scheduler: "apps/api/tests/integration/f1-scheduler-process-fixture.js",
   abuse: "apps/api/tests/integration/abuse-process-fixture.js" });
 const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
   "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
-  "modules/signals/service-creation", "modules/signals/scheduler", "modules/frontend-diagnostics/routes", "db/schema",
+  "modules/signals/scheduler-types", "modules/signals/scheduler-time", "modules/signals/scheduler-repository", "modules/signals/service-generated", "modules/signals/service-creation", "modules/signals/scheduler", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/service-queries", "modules/signals/service-matching", "modules/signals/service-interactions",
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
   "modules/signals/publication-policy", "modules/signals/repository", "modules/signals/generation-repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
@@ -44,11 +45,12 @@ export const migrationPayloadPaths = Object.freeze([
   "apps/api/src/db/migrations/0021_absurd_firedrake.sql",
   "apps/api/src/db/migrations/0022_signal_generation_leases.sql",
   "apps/api/src/db/migrations/0023_b3_audio_attempt.sql",
-  "apps/api/src/db/migrations/0024_c1_publication_foundation.sql"
+  "apps/api/src/db/migrations/0024_c1_publication_foundation.sql",
+  "apps/api/src/db/migrations/0025_f1_ai_signal_scheduler.sql"
 ]);
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
-  runtimeEntryRelatives.abuse,
+  runtimeEntryRelatives.abuse, runtimeEntryRelatives.scheduler,
   "apps/api/tests/integration/generation-test-controls.js",
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
@@ -75,6 +77,8 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/tests/integration/migration-cli.test.ts",
   ...migrationPayloadPaths,
   "apps/api/tests/integration/abuse-process-fixture.ts",
+  "apps/api/tests/integration/f1-scheduler-process-fixture.ts",
+  "apps/api/tests/integration/f1-scheduler.test.ts", "apps/api/tests/integration/provider-stub.ts",
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.ts`),
 ]);
 const sourcePaths = runtimeSourcePaths;
@@ -163,7 +167,7 @@ export async function verifyIntegrationRuntime({ repositoryRoot, runId, runtimeD
       marker.ownershipToken !== ownershipToken || !Number.isSafeInteger(marker.ownerPid) || marker.ownerPid <= 0 ||
       !samePath(marker.sourceRoot, root) || !samePath(marker.runtimeDirectory, directory) ||
       marker.entryRelative !== runtimeEntryRelative || !marker.entryRelatives ||
-      Object.keys(marker.entryRelatives).length !== 2 ||
+      Object.keys(marker.entryRelatives).length !== Object.keys(runtimeEntryRelatives).length ||
       Object.entries(runtimeEntryRelatives).some(([name, value]) => marker.entryRelatives[name] !== value)) fail();
   const files = await hashes(directory, runtimeArtifactPaths);
   equalHashes(files, marker.files, runtimeArtifactPaths);

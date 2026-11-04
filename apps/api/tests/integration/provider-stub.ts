@@ -21,6 +21,7 @@ type InternalHold = ProviderRequestHold & {
 };
 
 export type ProviderTask =
+  "signal-content" | "signal-quality" |
   "signal-material" | "signal-intent-analysis" | "signal-fingerprint" |
   "signal-expansion" | "signal-expansion-review" | "unsupported" | "invalid";
 export type ProviderRequestEvent = {
@@ -44,6 +45,8 @@ export type IntegrationProvider = {
 };
 
 const taskOutputs: Record<Exclude<ProviderTask, "unsupported" | "invalid">, unknown> = {
+  "signal-content": { rawInput: "今天完成一页练习后，我想在窗边停一会儿。我把手里的铅笔放到一旁，想让自己的呼吸慢下来。" },
+  "signal-quality": { score: 5, reason: "Synthetic scheduler fixture; not model-quality evidence." },
   "signal-material": fixtureMaterial,
   "signal-intent-analysis": fixtureClassification,
   "signal-fingerprint": fixtureFingerprint,
