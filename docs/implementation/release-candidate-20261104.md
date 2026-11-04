@@ -24,7 +24,17 @@
 - `AI_SIGNAL_SCHEDULER_ENABLED` 现在由配置读取并实际控制定时器，默认关闭。禁用测试跨过 03:00 并确认无计时器/无派发；显式启用测试保留原调度行为及停止后不再派发。此处仅补禁用路径，未引入 F1 持久领取或多实例调度。
 - 部署与运维文档新增 C1 同步发布、历史内容及回退条件。已撤回内容保留 `PUBLISHED`，因此不能直接回退 pre-C1 公共接口。
 - 本机实际开发迁移生成暴露 Windows 反斜杠被当作 glob 转义的问题；验证脚本将 schema 路径转换为正斜杠，并在现有三个 Node/系统矩阵中执行真实 generate。此修正不更改 SQL、schema 或生产迁移入口。
-- 后续仅收敛剩余生产包告警 [GHSA-px8p-9vwx-vf98](https://github.com/advisories/GHSA-px8p-9vwx-vf98)：两条 fflate 分别从 0.8.2/0.6.10 升到现有约束允许的 0.8.3/0.6.11，锁中其余包、分类和平台元数据保持不变。独立有界子进程覆盖异常 ZIP64 拒绝、普通 ZIP 和有效 ZIP64 控制，并接入既有三平台矩阵。本次不新增外部 ZIP/模型加载入口，也不将包告警表述为已证实的公网可利用漏洞。
+- fflate 收尾提交 `e2d42ee` 处理生产包告警 [GHSA-px8p-9vwx-vf98](https://github.com/advisories/GHSA-px8p-9vwx-vf98)：两条 fflate 分别从 0.8.2/0.6.10 升到现有约束允许的 0.8.3/0.6.11，该提交中其余锁条目不变。独立有界子进程覆盖异常 ZIP64 拒绝、普通 ZIP 和有效 ZIP64 控制，并接入既有三平台矩阵。本次不新增外部 ZIP/模型加载入口，也不将包告警表述为已证实的公网可利用漏洞。
+
+## 开发依赖收尾
+
+Vitest 与配套 mocker 升到 4.1.12，Babel core 升到 7.29.6，tsx 升到 4.23.15。Drizzle kit 保留 0.31.10 及原迁移协议；仅限定 kit/core-utils 使用 esbuild 0.28.2，并把 TypeScript-ESTree 的独立 minimatch 副本升到 11.0.4。ESLint 使用的根 minimatch 3.1.5 和 Vite 8.1.6 保留，全部既有生产包锁条目不变。整图检查还补齐 Tailwind 可选 WASM 的私有 runtime 版本边，未升级 unrs-resolver 共用的旧 runtime。
+
+旧依赖基线已实际复现 mocker 越界读文件/代码生成注入、Babel 外部 source map 读取、esbuild CORS/Windows 回溯和 minimatch 扩增；候选用同份输入及正常控制复验。Windows 实测还发现 esbuild 0.25.12 留有回溯读取，故没有仅凭审计范围把它当成安全终点。所有复现只在隔离副本使用回环服务与合成数据，子进程、HTTP 和清理都有期限。
+
+完整官方审计仍有 15 条 moderate 包记录，全部追溯到根 minimatch 3.1.5 的同一公告；生产审计保持零。发布者[原始公告](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249)描述 10.x 的 firstPhasePreProcess 扩增，[数据库聚合范围](https://github.com/advisories/GHSA-g3hv-75wg-m249)却覆盖所有小于 11.0.1 的版本。已独立校验官方 3.1.5 tarball/SRI 与源码；它没有该预处理阶段，因此不为此机制更改旧接口。不能把这个结论泛化为 v3 对所有问题都安全。
+
+`scripts/check-development-audit.mjs` 保留完整原始 JSON，只接受唯一根 3.1.5、副本 SRI/源码指纹、指定公告及其完整传播链；新增公告、不同版本、其他副本或严重度均失败。它没有让 `npm audit` 假装清零：普通完整 audit 仍 exit 1，处置结果单独上传。旧报告因含受影响的 nested 副本被检查拒绝，合法根链才通过。
 
 ## 本候选验收
 

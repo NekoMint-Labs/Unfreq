@@ -9,6 +9,7 @@ on:
       - "Dockerfile.*"
       - "tests/dependencies/**"
       - "scripts/verify-migration-generate.mjs"
+      - "scripts/check-development-audit.mjs"
       - ".github/workflows/high-dependency-acceptance.yml"
   workflow_dispatch:
 
@@ -54,10 +55,11 @@ jobs:
           mkdir -p test-results/high-dependencies
           npm audit --registry=https://registry.npmjs.org --audit-level=high --json > test-results/high-dependencies/full-audit.json
           npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high --json > test-results/high-dependencies/production-audit.json
+          node scripts/check-development-audit.mjs test-results/high-dependencies/full-audit.json | tee test-results/high-dependencies/audit-disposition.json
       - name: Verify the malicious inputs and legitimate dependency controls
         run: |
           set -euo pipefail
-          node --test tests/dependencies/production-security.test.mjs tests/dependencies/development-security.test.mjs tests/dependencies/zip-security.test.mjs | tee test-results/high-dependencies/focused.tap
+          npm run test:dependency-security | tee test-results/high-dependencies/focused.tap
       - name: Exercise the real API and Web test toolchains on this platform
         run: |
           set -euo pipefail
