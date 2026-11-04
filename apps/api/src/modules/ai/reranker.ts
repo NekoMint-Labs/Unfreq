@@ -1,4 +1,5 @@
 import { AppError } from "../../shared/errors.js";
+import { disposeProviderResponse } from "./provider-response-cleanup.js";
 import {
   assertGenerationActive,
   beforeGenerationDispatch,
@@ -91,16 +92,17 @@ export async function rerankCandidates(
     }
 
     let timeout: NodeJS.Timeout | undefined;
+    const controller = new AbortController();
+    let response: Response | undefined;
     let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
 
     try {
       await authorizeProviderDispatch("reranker");
       await beforeGenerationDispatch("reranker", "rerank");
-      const controller = new AbortController();
       combined = combineGenerationAbortSignal(controller.signal);
       timeout = setTimeout(() => { controller.abort(); }, rerankerTimeoutMs);
       throwIfGenerationStopped();
-      const response = await fetch(`${normalizeBaseUrl(resolvedConfig.baseUrl)}/rerank`, {
+      response = await fetch(`${normalizeBaseUrl(resolvedConfig.baseUrl)}/rerank`, {
         body: JSON.stringify(
           buildRerankerRequestBody({
             candidates: input.candidates,
@@ -147,6 +149,7 @@ export async function rerankCandidates(
       await assertGenerationActive();
       lastError = error;
     } finally {
+      await disposeProviderResponse(response, controller);
       if (timeout !== undefined) clearTimeout(timeout);
       combined?.dispose();
     }
