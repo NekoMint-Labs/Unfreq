@@ -13,7 +13,7 @@ export default defineConfig({
   projects: [{ name: "chromium-production", use: { ...devices["Desktop Chrome"] } }],
   reporter: process.env.CI === "true" ? "github" : "list",
   testDir: "tests/e2e/runtime",
-  testMatch: "production.spec.ts",
+  testMatch: "*.spec.ts",
   timeout: 60_000,
   use: { baseURL: webBaseUrl, trace: "retain-on-failure" },
   workers: 1,
