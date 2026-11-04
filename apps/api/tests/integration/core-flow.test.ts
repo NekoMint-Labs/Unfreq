@@ -1095,4 +1095,61 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await expectNotPublic(id);
     } finally { hold.release(); await waitForActualGenerationIdle(); }
   });
+  it("keeps concurrent reports private, idempotent and traceable through the existing admin queue", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const body = { targetType: "SIGNAL", targetId: signal.id, reason: "涉及隐私", note: "SYNTHETIC_PRIVATE_REPORT_NOTE" };
+      expectError(await request("POST", "/api/reports", undefined, body), 401, "UNAUTHORIZED");
+      const submitted = await Promise.all(Array.from({ length: 5 }, () => request("POST", "/api/reports", reader.cookie, body)));
+      for (const response of submitted) {
+        expect(response.statusCode).toBe(201);
+        expect(response.headers["cache-control"]).toContain("no-store");
+        expect(Object.keys(response.json().data.report).sort()).toEqual(["createdAt", "id", "status", "targetId", "targetType"]);
+        expect(response.body).not.toContain(body.note);
+        expect(response.body).not.toContain(reader.frequencyCode);
+      }
+      const receipt = submitted[0].json().data.report as { id: string };
+      expect(new Set(submitted.map((response) => response.json().data.report.id)).size).toBe(1);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${signal.id} and reporter_id = ${reader.id}`;
+      expect(count.n).toBe(1);
+      const queue = await request("GET", "/api/admin/reports?status=PENDING", admin.cookie);
+      expect(queue.statusCode).toBe(200);
+      expect(queue.json().data.reports).toEqual(expect.arrayContaining([expect.objectContaining({ id: receipt.id, note: body.note, reporterFreqCode: reader.frequencyCode })]));
+      expectError(await request("GET", "/api/admin/reports", author.cookie), 403, "FORBIDDEN");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, author.cookie)).json().data).toEqual({});
+      expectError(await request("GET", `/api/reports/signal/${signal.id}`), 401, "UNAUTHORIZED");
+      const resolved = await request("PATCH", `/api/admin/reports/${receipt.id}`, admin.cookie, { status: "RESOLVED", resolution: "SYNTHETIC_INTERNAL_REVIEW_NOTE" });
+      expect(resolved.statusCode).toBe(200);
+      const ownStatus = await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie);
+      expect(ownStatus.json()).toMatchObject({ data: { report: { id: receipt.id, status: "RESOLVED", targetId: signal.id } } });
+      expect(ownStatus.body).not.toContain("SYNTHETIC_INTERNAL_REVIEW_NOTE");
+      const publicResult = await request("GET", `/api/signals/${signal.id}`);
+      expect(publicResult.statusCode).toBe(200);
+      expect(publicResult.body).not.toContain(body.note);
+      expect(publicResult.body).not.toContain(receipt.id);
+      expect((await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 })).statusCode).toBe(200);
+      expectError(await request("POST", "/api/reports", reader.cookie, body), 404, "NOT_FOUND");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie)).json().data.report.status).toBe("RESOLVED");
+      await expectNotPublic(signal.id);
+    });
+  });
+
+  it("rejects reports of private, unconfirmed, unfinished and moderated targets without creating records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"] as const) {
+        const signal = await createWithdrawalFixture(track, status);
+        expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: signal.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+        expect((await h.sql`select id from reports where target_id = ${signal.id}`).length).toBe(0);
+      }
+      const unfinished = await createWithdrawalFixture(track);
+      await publish(unfinished.id);
+      await h.sql`update signals set generation_status = 'WRITING' where id = ${unfinished.id}`;
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: unfinished.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: randomUUID(), reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "USER", targetId: author.id, reason: "垃圾信息" }), 400, "VALIDATION_ERROR");
+    });
+  });
+
+
 });

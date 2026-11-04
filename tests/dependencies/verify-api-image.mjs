@@ -111,7 +111,7 @@ try {
   await waitFor(async () => (await docker("exec", redis, "redis-cli", "ping")).stdout.trim() === "PONG");
   const rules = ["registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite", "passwordFailureIp", "passwordFailureIdentityIp",
     "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite", "generationRequestUser", "generationDailyUser", "generationDailySite",
-    "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"];
+    "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite", "reportRequestUser", "reportRequestIp", "reportReadUser"];
   const paid = new Set(["chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"]);
   const policy = { namespace: prefix, pendingPerUser: 2, ttsConcurrency: 1, ttsTaskTimeoutMs: 1000,
     budgets: Object.fromEntries(rules.map((rule) => [rule, { limit: paid.has(rule) ? 0 : 20, windowMs: 60_000 }])) };

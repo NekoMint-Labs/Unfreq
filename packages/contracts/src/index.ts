@@ -10,3 +10,6 @@ export {
   signalPrimaryBands,
   signalSubFeelings,
 } from "./signals.js";
+
+export type * from "./reports.js";
+export { reportStatuses } from "./reports.js";

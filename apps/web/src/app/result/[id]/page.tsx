@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { SignalPublishButton } from "@/components/signals/SignalPublishButton";
 import { SignalWithdrawButton } from "@/components/signals/SignalWithdrawButton";
+import { SignalReportButton } from "@/components/signals/SignalReportButton";
 import { SignalFingerprintPanel } from "@/components/signals/SignalFingerprintPanel";
 import { SignalPlaybackButton } from "@/components/signals/SignalPlaybackButton";
 import { SignalResonanceButton } from "@/components/signals/SignalResonanceButton";
@@ -61,6 +62,7 @@ function OwnerContent({ signal, onboarding, origin }: { signal: OwnerSignalDetai
     {publication.state === "PUBLIC" ? <>
       {onboarding ? <section className="tour-panel-result" role="status"><h2>读回声里的自己</h2><Link href="/galaxy?onboarding=galaxy">进入星图</Link></section> : null}
       <MatchedSignalPanel matches={signal.matches} />
+      <SignalReportButton signalId={signal.id} />
       <section className="signal-archive-section signal-action-section"><Link className="signal-next-primary" href={onboarding ? "/galaxy?onboarding=galaxy" : "/galaxy"}>进入星图</Link></section>
       <ShareSignalCardPreview card={{ signalId: signal.id, frequencyCode: publication.publishedContent?.authorFreqCode ?? "Unfreq", expandedText: publication.publishedContent?.expandedText ?? "", imageUrl: `${origin}/api/og/${signal.id}?v=${publication.version}` }} shareUrl={`${origin}/result/${signal.id}`} />
     </> : null}
@@ -89,6 +91,7 @@ export default async function SignalResultPage({ params, searchParams }: Props) 
       <SignalPlaybackButton signalId={signal.id} text={signal.expandedText} />
       <SignalResonanceButton signalId={signal.id} initialCount={signal.resonanceCount} />
       <SignalSaveButton signalId={signal.id} initialSaved={signal.hasSaved} />
+      <SignalReportButton signalId={signal.id} />
     </div></section>
     <MatchedSignalPanel matches={signal.matches} />
     <ShareSignalCardPreview card={{ signalId: signal.id, frequencyCode: signal.authorFreqCode ?? "Unfreq", expandedText: signal.expandedText, imageUrl: `${origin}/api/og/${signal.id}?v=${signal.publicationVersion}` }} shareUrl={`${origin}/result/${signal.id}`} />
