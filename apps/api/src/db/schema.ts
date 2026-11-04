@@ -403,6 +403,7 @@ export const signals = pgTable(
   {
     authorId: uuid("author_id").references(() => users.id),
     audioAttemptId: uuid("audio_attempt_id"),
+    audioPublicationVersion: integer("audio_publication_version"),
     audioError: text("audio_error"),
     audioStatus: signalAudioStatusEnum("audio_status").default("NOT_REQUESTED").notNull(),
     audioStorageKey: text("audio_storage_key"),
@@ -444,6 +445,9 @@ export const signals = pgTable(
     parentSignalId: uuid("parent_signal_id").references((): AnyPgColumn => signals.id),
     primaryBand: signalPrimaryBandEnum("primary_band"),
     programJson: jsonb("program_json").$type<Record<string, unknown>>().notNull(),
+    // Null is deliberately unconfirmed; an old PUBLISHED flag is not consent.
+    publicationSnapshot: jsonb("publication_snapshot").$type<unknown>(),
+    publicationVersion: integer("publication_version").default(0).notNull(),
     qualityReason: text("quality_reason"),
     qualityScore: integer("quality_score"),
     rawInput: text("raw_input").notNull(),
@@ -454,10 +458,13 @@ export const signals = pgTable(
     status: signalStatusEnum("status").default("DRAFT").notNull(),
     subFeeling: signalSubFeelingEnum("sub_feeling"),
     isKept: boolean("is_kept").default(false).notNull(),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     index("signals_author_created_at_idx").on(table.authorId, table.createdAt),
+    check("signals_publication_version_check", sql`${table.publicationVersion} >= 0`),
+    check("signals_audio_publication_version_check", sql`${table.audioPublicationVersion} is null or ${table.audioPublicationVersion} >= 0`),
     index("signals_frequency_created_at_idx").on(table.frequencyId, table.createdAt),
     index("signals_generation_status_created_at_idx").on(
       table.generationStatus,

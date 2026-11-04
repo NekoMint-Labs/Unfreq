@@ -6,4 +6,6 @@ export { generateAiSignals, seedSignalLibrary } from "./service-generated.js";
 export { addSignalEcho, addSignalResonance, addSignalSave, generateSignalInteractions, getSignalEchoes, removeSignalResonance, removeSignalSave, scheduleSignalInteractions } from "./service-interactions.js";
 export { buildStableGalaxyPosition } from "./service-mappers.js";
 export { publishSignalForOwner } from "./service-publishing.js";
+export { withdrawSignalForOwner } from "./service-withdrawal.js";
+export { previewSignalPublicationForOwner } from "./service-publication-confirmation.js";
 export { getMyEchoSummary, getMySignals, getRandomSignal, getSavedSignals, getSignalDetail, getSignalDetailForFrequency, getSignalGalaxy, getSignalHall, getSignalMatches } from "./service-queries.js";

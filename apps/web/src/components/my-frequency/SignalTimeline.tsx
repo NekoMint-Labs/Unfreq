@@ -19,6 +19,7 @@ export function SignalTimeline({ signals }: { signals: MySignalSummary[] }) {
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
               <SignalKindBadge isExtended={signal.parentSignalId !== undefined} />
+              <span>{signal.publicationState === "WITHDRAWN" ? "已撤回 · 私密" : signal.publicationState === "PUBLIC" ? "已公开" : signal.publicationState === "UNCONFIRMED" ? "待确认公开" : signal.status === "DRAFT" ? "私密草稿" : signal.status === "REVIEWING" ? "审核中" : "私密"}</span>
               <time
                 className="font-mono text-[color:var(--text-tertiary)]"
                 dateTime={signal.createdAt}

@@ -6,10 +6,12 @@ import { getCanonicalClientIp } from "../../shared/request-identity.js";
 import { AppError } from "../../shared/errors.js";
 import { sendData } from "../../shared/response.js";
 import {
+  publicationRequestSchema, withdrawalRequestSchema,
   createSignalEchoBodySchema,
   createPublishedSignalBodySchema,
   signalAudioResponseSchema,
   signalAudioSideParamsSchema,
+  signalAudioVersionQuerySchema,
   signalEchoResponseSchema,
   signalEchoesResponseSchema,
   signalGalaxyQuerySchema,
@@ -35,7 +37,7 @@ import {
   getSignalGalaxy,
   getSignalHall,
   getSignalMatches,
-  publishSignalForOwner,
+  publishSignalForOwner, withdrawSignalForOwner, previewSignalPublicationForOwner,
   requestSignalAudio,
   removeSignalSave,
   removeSignalResonance,
@@ -53,6 +55,7 @@ function limitedAudioRequest(rule: "audioReadIp" | "audioRequestIp") {
 }
 
 export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOptions) {
+  app.addHook("onRequest", async (_request, reply) => { reply.header("cache-control", "private, no-store, max-age=0"); });
   app.post("/", async (request, reply) => {
     const parsedBody = createPublishedSignalBodySchema.safeParse(request.body);
 
@@ -155,13 +158,16 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
+    const query = signalAudioVersionQuerySchema.safeParse(request.query);
+    if (!query.success) throw new AppError("VALIDATION_ERROR", "Invalid audio version.");
     const download = await getSignalAudioDownload(
       parsedParams.data.id,
       parsedParams.data.side,
+      query.data.v,
     );
 
     return reply
-      .header("cache-control", "public, max-age=31536000, immutable")
+      .header("cache-control", "private, no-store, max-age=0")
       .header("content-type", "audio/mpeg")
       .send(download.stream);
   });
@@ -258,6 +264,21 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
     return sendData(reply, request, response);
   });
 
+  app.get("/:id/publication-preview", async (request, reply) => {
+    const params = signalIdParamsSchema.safeParse(request.params);
+    if (!params.success) throw new AppError("VALIDATION_ERROR", "Invalid request.");
+    const preview = await previewSignalPublicationForOwner(params.data.id, request.frequency);
+    return sendData(reply.header("cache-control", "private, no-store"), request, { preview });
+  });
+
+  app.post("/:id/withdraw", async (request, reply) => {
+    const params = signalIdParamsSchema.safeParse(request.params);
+    const body = withdrawalRequestSchema.safeParse(request.body);
+    if (!params.success || !body.success) throw new AppError("VALIDATION_ERROR", "Invalid request.");
+    const result = await withdrawSignalForOwner(params.data.id, request.frequency, body.data.expectedVersion);
+    return sendData(reply.header("cache-control", "private, no-store"), request, result);
+  });
+
   app.post("/:id/publish", async (request, reply) => {
     const parsedParams = signalIdParamsSchema.safeParse(request.params);
 
@@ -265,7 +286,9 @@ export async function signalRoutes(app: FastifyInstance, options: SignalRoutesOp
       throw new AppError("VALIDATION_ERROR", "Invalid request.", parsedParams.error.flatten());
     }
 
-    const signal = await publishSignalForOwner(parsedParams.data.id, request.frequency);
+    const body = publicationRequestSchema.safeParse(request.body);
+    if (!body.success) throw new AppError("VALIDATION_ERROR", "A current publication preview is required.");
+    const signal = await publishSignalForOwner(parsedParams.data.id, request.frequency, body.data);
     const response = signalResponseSchema.parse({ signal });
 
     request.log.info(

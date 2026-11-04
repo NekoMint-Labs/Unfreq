@@ -1,7 +1,8 @@
-import type { SignalMatchSummary } from "@unfreq/contracts";
+import Link from "next/link";
+import type { PublicSignalMatchSummary } from "@unfreq/contracts";
 
 type MatchedSignalPanelProps = {
-  matches: SignalMatchSummary[];
+  matches: PublicSignalMatchSummary[];
 };
 
 export function MatchedSignalPanel({ matches }: MatchedSignalPanelProps) {
@@ -15,21 +16,15 @@ export function MatchedSignalPanel({ matches }: MatchedSignalPanelProps) {
           {matches.map((match) => (
             <article className="radio-surface-strong p-4" key={match.id}>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="font-semibold">{match.title}</h3>
+                <h3 className="font-semibold"><Link href={`/result/${match.id}`}>{match.authorFreqCode ?? "Unfreq"}</Link></h3>
                 <span className="font-mono text-xs text-[color:var(--radio-dim)]">
                   {match.source === "SEEDED" ? "SEEDED" : "PUBLISHED"} / {match.score}
                 </span>
               </div>
               <p className="mt-3 text-sm leading-7 text-[color:var(--radio-muted)]">
-                {match.summary}
+                {match.expandedText}
               </p>
-              <p className="mt-3 text-sm leading-7 text-[color:var(--radio-muted)]">
-                也在思考：{match.frequencyProfile.innerConflict}
-              </p>
-              <p className="mt-2 font-mono text-xs text-[color:var(--radio-dim)]">
-                {match.frequencyProfile.displayText} ·{" "}
-                {match.frequencyProfile.resonanceKeywords.slice(0, 3).join(" / ")}
-              </p>
+              <p className="mt-2 text-xs">{match.tags.join(" / ")}</p>
             </article>
           ))}
         </div>

@@ -3,6 +3,7 @@ import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
+import type { ReadOwnedPublicationPreviewResult } from "../../src/modules/signals/publication-repository.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -118,7 +119,7 @@ async function waitForPreview(id: string): Promise<Signal> {
   const response = await request("GET", `/api/signals/${id}`, author.cookie);
   expect(response.statusCode).toBe(200);
   const signal = response.json<Envelope<{ signal: Signal }>>().data.signal;
-  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PREVIEW_OWNER" });
+  expect(signal).toMatchObject({ id, status: "DRAFT", visibility: "PRIVATE_OWNER" });
   expect(signal.expandedText?.length).toBeGreaterThanOrEqual(80);
   return signal;
 }
@@ -129,8 +130,86 @@ async function createDraft(): Promise<string> {
   return id;
 }
 
+async function withCleanup(work: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
+  const errors: unknown[] = [];
+  try { await work(); } catch (error) { errors.push(error); }
+  try { await cleanup(); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "C1 fixture assertion and cleanup both failed.");
+}
+
+async function withSyntheticWithdrawalRows(
+  work: (track: (id: string) => void) => Promise<void>,
+): Promise<void> {
+  const ids = new Set<string>();
+  await withCleanup(() => work((id) => { ids.add(id); }), async () => {
+    // These are only this case's synthetic rows. Retain their content and
+    // withdrawal markers, but keep the existing random-public control isolated.
+    if (ids.size !== 0) await h.sql`update signals set status = 'DRAFT' where id in ${h.sql([...ids])}`;
+  });
+}
+
+async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT") {
+  const [{ createSignalDraft }, { buildMinimalSignalProgram }] = await Promise.all([
+    h.loadModule("repository"), h.loadModule("mappers"),
+  ]);
+  // Explicit synthetic unmanaged shape: no authorship confirmation is created
+  // or inferred, and no public-read policy is exercised by these SQL cases.
+  const signal = await createSignalDraft({
+    authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+    expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
+    galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "COMPLETED", status,
+    program: buildMinimalSignalProgram({
+      expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint, rawInput: fixtureSeed,
+    }),
+  });
+  track(signal.id);
+  return signal;
+}
+
+async function waitForActualGenerationIdle(): Promise<void> {
+  // Observation only: a failed budget does not cancel work or free any slot.
+  // The enclosing finally releases the provider first; h.close still stops and
+  // joins the actual worker if this bounded fixture observation fails.
+  const deadline = Date.now() + 5_000;
+  while (h.generationActiveCount !== 0 || h.provider.inFlight !== 0) {
+    if (Date.now() >= deadline) throw new Error("C1 fixture generation did not actually settle within 5s after release.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function readyPublicationPreview(result: ReadOwnedPublicationPreviewResult) {
+  expect(result.outcome).toBe("READY");
+  if (result.outcome !== "READY") throw new Error("Synthetic publication preview was unavailable.");
+  return result.preview;
+}
+
+async function publicationRowHash(id: string): Promise<string> {
+  const [row] = await h.sql<{ row_hash: string }[]>`
+    select md5(row_to_json(s)::text) as row_hash from signals s where id = ${id}
+  `;
+  if (row === undefined) throw new Error("Synthetic publication row was unavailable.");
+  return row.row_hash;
+}
+
+async function expectPublicationRejection(
+  id: string,
+  outcome: "NOT_FOUND" | "CONFLICT" | "FORBIDDEN",
+  work: () => Promise<unknown>,
+): Promise<void> {
+  const before = await publicationRowHash(id);
+  expect(await work()).toEqual({ outcome });
+  expect(await publicationRowHash(id)).toBe(before);
+}
+
+async function publicationPayload(id: string) {
+  const response = await request("GET", `/api/signals/${id}/publication-preview`, author.cookie);
+  if (response.statusCode !== 200) return { expectedVersion: 0, digest: "0".repeat(64) };
+  const preview = response.json().data.preview as { version: number; digest: string };
+  return { expectedVersion: preview.version, digest: preview.digest };
+}
 async function publish(id: string) {
-  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie);
+  const response = await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id));
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED" } } });
 }
@@ -141,19 +220,16 @@ async function moderate(id: string, status: ModerationStatus) {
   expect(response.json()).toMatchObject({ data: { signal: { id, status } } });
 }
 
-async function expectNotPublic(id: string, reviewing = false) {
+async function expectNotPublic(id: string) {
   for (const cookie of [undefined, reader.cookie]) {
     const detail = await request("GET", `/api/signals/${id}`, cookie);
-    if (reviewing) {
-      expect(detail.statusCode).toBe(200);
-      const signal = detail.json<Envelope<{ signal: Signal }>>().data.signal;
-      expect(signal).toMatchObject({ id, status: "REVIEWING", visibility: "REVIEW_RESTRICTED" });
-      expect(Object.keys(signal).sort()).toEqual([
-        "createdAt", "id", "status", "updatedAt", "visibility",
-      ]);
-    } else {
-      expectError(detail, 404, "NOT_FOUND");
-    }
+    const missing = await request("GET", "/api/signals/00000000-0000-4000-8000-000000000999", cookie);
+    expectError(detail, 404, "NOT_FOUND");
+    expectError(missing, 404, "NOT_FOUND");
+    expect(detail.json()).toEqual({
+      error: missing.json().error,
+      meta: { requestId: expect.any(String) },
+    });
   }
 
   for (const suffix of ["matches", "echoes", "audio", "audio/main", "audio/left", "audio/right"]) {
@@ -386,7 +462,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const pending = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(pending.statusCode).toBe(200);
       expect(pending.json()).toMatchObject({ data: { signal: { id, visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       await expectNotPublic(id);
     } finally {
       hold.release();
@@ -395,12 +471,12 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const id = pendingId;
     await waitForPreview(id);
     await expectNotPublic(id);
-    expectError(await request("POST", `/api/signals/${id}/publish`), 401, "UNAUTHORIZED");
-    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie), 404, "NOT_FOUND");
+    expectError(await request("POST", `/api/signals/${id}/publish`, undefined, await publicationPayload(id)), 401, "UNAUTHORIZED");
+    expectError(await request("POST", `/api/signals/${id}/publish`, reader.cookie, await publicationPayload(id)), 404, "NOT_FOUND");
     await publish(id);
     const publicDetail = await request("GET", `/api/signals/${id}`);
     expect(publicDetail.statusCode).toBe(200);
-    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", seedText: fixtureSeed } } });
+    expect(publicDetail.json()).toMatchObject({ data: { signal: { id, status: "PUBLISHED", visibility: "PUBLIC" } } });
     const [stored] = await h.sql<{ generation_status: string; status: string }[]>`
       select generation_status, status from signals where id = ${id}
     `;
@@ -415,7 +491,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     async (status) => {
       const id = await createDraft();
       if (status !== "DRAFT") await moderate(id, status);
-      await expectNotPublic(id, status === "REVIEWING");
+      await expectNotPublic(id);
       if (status === "DRAFT" || status === "REVIEWING") {
         const own = await request("GET", `/api/signals/${id}`, author.cookie);
         expect(own.statusCode).toBe(200);
@@ -424,7 +500,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
         expectError(await request("GET", `/api/signals/${id}`, author.cookie), 404, "NOT_FOUND");
       }
       if (status === "REVIEWING") {
-        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+        expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
       }
     },
   );
@@ -462,7 +538,7 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       const own = await request("GET", `/api/signals/${id}`, author.cookie);
       expect(own.statusCode).toBe(200);
       expect(own.json()).toMatchObject({ data: { signal: { id, generationStatus: "EXPANDING", visibility: "GENERATION_OWNER" } } });
-      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 409, "CONFLICT");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
     } finally {
       await h.sql`update signals set generation_status = 'COMPLETED', status = 'DRAFT' where id = ${id}`;
     }
@@ -511,9 +587,9 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     const storageKey = `${id}.mp3`;
     const syntheticAudio = Buffer.from("ID3 synthetic integration audio fixture");
     await writeSignalAudio(storageKey, syntheticAudio);
-    const audioUrl = `/api/signals/${id}/audio/main`;
+    const audioUrl = `/api/signals/${id}/audio/main?v=1`;
     await h.sql`
-      update signals set audio_status = 'READY', audio_storage_key = ${storageKey},
+      update signals set audio_status = 'READY', audio_publication_version = publication_version, audio_storage_key = ${storageKey},
         audio_storage_key_left = ${storageKey}, audio_storage_key_right = ${storageKey},
         audio_url = ${audioUrl}, audio_url_left = ${audioUrl}, audio_url_right = ${audioUrl}
       where id = ${id}
@@ -522,6 +598,8 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(audio.statusCode).toBe(200);
     expect(audio.headers["content-type"]).toBe("audio/mpeg");
     expect(audio.rawPayload).toEqual(syntheticAudio);
+    expect(audio.headers["cache-control"]).toContain("no-store");
+    expectError(await request("GET", `/api/signals/${id}/audio/main?v=2`), 404, "NOT_FOUND");
     await moderate(id, "HIDDEN");
     await expectNotPublic(id);
     const [retainedSave] = await h.sql<{ count: number }[]>`
@@ -530,6 +608,491 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     expect(retainedSave.count).toBe(1);
   });
 
-  // C1 will add a real author-withdrawal endpoint. Administrative hiding above
-  // verifies today's visibility contract and is not reported as author withdrawal.
+  it("serializes ten same-author withdrawals into one epoch and enforces nonnegative publication versions", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const attempts = await Promise.allSettled(Array.from({ length: 10 }, () =>
+        withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 })));
+      for (const result of attempts) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status === "fulfilled") {
+          expect(result.value).toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        }
+      }
+      const [once] = await h.sql`
+        select withdrawn_at, publication_version, publication_snapshot,
+          withdrawn_at <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(once).toMatchObject({ publication_version: 1, publication_snapshot: null, database_clock_bounded: true });
+      expect(once.withdrawn_at).not.toBeNull();
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      const [repeated] = await h.sql`select withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(repeated).toEqual({ withdrawn_at: once.withdrawn_at, publication_version: 1 });
+      await expect(h.sql`update signals set publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_publication_version_check" });
+      await expect(h.sql`update signals set audio_publication_version = -1 where id = ${id}`)
+        .rejects.toMatchObject({ code: "23514", constraint_name: "signals_audio_publication_version_check" });
+      const [retained] = await h.sql`select publication_version, audio_publication_version from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_version: 1, audio_publication_version: null });
+    });
+  });
+
+  it("uses authoritative author ownership, uniform not-found results, and a stale-epoch fence", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const wrongOwner = await createWithdrawalFixture(track);
+      const conflictingIds = await createWithdrawalFixture(track);
+      const fallbackOwner = await createWithdrawalFixture(track);
+      const deleted = await createWithdrawalFixture(track, "DELETED");
+      const epoch = await createWithdrawalFixture(track);
+      await h.sql`update signals set frequency_id = ${reader.id} where id = ${conflictingIds.id}`;
+      await h.sql`update signals set author_id = null where id = ${fallbackOwner.id}`;
+      for (const input of [
+        { id: wrongOwner.id, actorId: reader.id, expectedVersion: 0 },
+        { id: conflictingIds.id, actorId: reader.id, expectedVersion: 0 },
+        { id: deleted.id, actorId: author.id, expectedVersion: 0 },
+        { id: randomUUID(), actorId: author.id, expectedVersion: 0 },
+      ]) expect(await withdrawOwnedSignal(input)).toEqual({ outcome: "NOT_FOUND" });
+      const unchanged = await h.sql`
+        select withdrawn_at, publication_version from signals
+        where id in ${h.sql([wrongOwner.id, conflictingIds.id, deleted.id])}
+      `;
+      expect(unchanged).toHaveLength(3);
+      for (const row of unchanged) expect(row).toEqual({ withdrawn_at: null, publication_version: 0 });
+      for (const id of [conflictingIds.id, fallbackOwner.id]) {
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+      }
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 0 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 1 });
+      // Model only a higher epoch as an explicit fixture mutation. This does
+      // not execute or claim verification of any future re-publication flow.
+      await h.sql`update signals set publication_version = 2, withdrawn_at = null where id = ${epoch.id}`;
+      for (const expectedVersion of [0, 1]) {
+        expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion }))
+          .toEqual({ outcome: "CONFLICT" });
+      }
+      const [newEpoch] = await h.sql`select publication_version, withdrawn_at, publication_snapshot from signals where id = ${epoch.id}`;
+      expect(newEpoch).toEqual({ publication_version: 2, withdrawn_at: null, publication_snapshot: null });
+      expect(await withdrawOwnedSignal({ id: epoch.id, actorId: author.id, expectedVersion: 2 }))
+        .toEqual({ outcome: "WITHDRAWN", id: epoch.id, publicationVersion: 3 });
+
+      // Exercise the real PostgreSQL integer boundary without overflow/wrap.
+      const exhausted = await createWithdrawalFixture(track);
+      await h.sql`update signals set publication_version = 2147483647 where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "CONFLICT" });
+      const [unchangedMax] = await h.sql`
+        select publication_version, withdrawn_at from signals where id = ${exhausted.id}
+      `;
+      expect(unchangedMax).toEqual({ publication_version: 2147483647, withdrawn_at: null });
+      await h.sql`update signals set withdrawn_at = clock_timestamp() where id = ${exhausted.id}`;
+      expect(await withdrawOwnedSignal({ id: exhausted.id, actorId: author.id, expectedVersion: 2147483647 }))
+        .toEqual({ outcome: "WITHDRAWN", id: exhausted.id, publicationVersion: 2147483647 });
+    });
+  });
+
+  it("records withdrawal on hidden and reviewing rows without changing moderation, content, counts or consent", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["HIDDEN", "REVIEWING"] as const) {
+        const { id } = await createWithdrawalFixture(track, status);
+        await h.sql`update signals set echo_count = 7, resonance_count = 11, is_kept = true where id = ${id}`;
+        const readRetained = async () => (await h.sql`
+          select status, raw_input, seed_text, expanded_text, fingerprint_json, program_json,
+            echo_count, resonance_count, is_kept, publication_snapshot, generation_status,
+            generation_attempt_count, audio_status, updated_at from signals where id = ${id}
+        `)[0];
+        const before = await readRetained();
+        expect(before).toMatchObject({ status, publication_snapshot: null, echo_count: 7, resonance_count: 11 });
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        expect(await readRetained()).toEqual(before);
+        const [withdrawal] = await h.sql`select withdrawn_at is not null as withdrawn, publication_version from signals where id = ${id}`;
+        expect(withdrawal).toEqual({ withdrawn: true, publication_version: 1 });
+      }
+    });
+  });
+
+  it("supersedes a real held managed generation and waits for its obsolete work to exit", async () => {
+    const { withdrawOwnedSignal } = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const hold = h.provider.holdNextRequest();
+      let id: string | undefined;
+      let withdrawnRow: Record<string, unknown> | undefined;
+      const readAttempt = async (signalId: string) => (await h.sql`
+        select status, generation_status, generation_error, generation_attempt_id,
+          generation_attempt_count, generation_lease_owner, generation_lease_until,
+          generation_next_attempt_at, expanded_text, raw_input, seed_text, program_json,
+          fingerprint_json, publication_snapshot, publication_version, withdrawn_at
+        from signals where id = ${signalId}
+      `)[0];
+      await withCleanup(async () => {
+        id = await createPending();
+        track(id);
+        await hold.received;
+        expect(h.generationActiveCount).toBeGreaterThan(0);
+        const running = await readAttempt(id);
+        expect(running).toMatchObject({ status: "DRAFT", generation_status: "EXPANDING", publication_version: 0,
+          generation_attempt_count: 1, publication_snapshot: null, withdrawn_at: null });
+        expect(running.generation_attempt_id).not.toBeNull();
+        expect(running.generation_lease_owner).not.toBeNull();
+        expect(running.generation_lease_until).not.toBeNull();
+        expect(await withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 0 }))
+          .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 1 });
+        withdrawnRow = await readAttempt(id);
+        expect(withdrawnRow).toMatchObject({ status: "DRAFT", generation_status: "FAILED",
+          generation_error: "GENERATION_SUPERSEDED", generation_lease_owner: null,
+          generation_lease_until: null, generation_next_attempt_at: null,
+          generation_attempt_id: running.generation_attempt_id, generation_attempt_count: 1,
+          expanded_text: running.expanded_text, raw_input: running.raw_input, seed_text: running.seed_text,
+          program_json: running.program_json, fingerprint_json: running.fingerprint_json,
+          publication_snapshot: null, publication_version: 1 });
+        expect(withdrawnRow.withdrawn_at).not.toBeNull();
+      }, async () => { hold.release(); await waitForActualGenerationIdle(); });
+      if (id === undefined || withdrawnRow === undefined) throw new Error("C1 managed generation fixture was not initialized.");
+      expect(await readAttempt(id)).toEqual(withdrawnRow);
+      expect(h.generationActiveCount).toBe(0);
+      expect(h.provider.inFlight).toBe(0);
+    });
+  });
+
+  it("invalidates only the withdrawn pending audio token and retains a real normal ready control", async () => {
+    const [{ withdrawOwnedSignal }, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      // Explicit author confirmation is required before these synthetic audio CAS fixtures are public.
+      const withdrawn = await createWithdrawalFixture(track, "PUBLISHED");
+      const control = await createWithdrawalFixture(track, "PUBLISHED");
+      await publish(withdrawn.id); await publish(control.id);
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${oldToken} where id = ${withdrawn.id}`;
+      await h.sql`update signals set audio_status = 'PENDING', audio_publication_version = publication_version, audio_attempt_id = ${controlToken} where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(withdrawn.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("C1 audio fixtures were not readable by their existing CAS precondition.");
+        expect(await withdrawOwnedSignal({ id: withdrawn.id, actorId: author.id, expectedVersion: 1 }))
+          .toEqual({ outcome: "WITHDRAWN", id: withdrawn.id, publicationVersion: 2 });
+        const oldKey = `${withdrawn.id}-${oldToken}.mp3`;
+        const oldUrl = `/api/signals/${withdrawn.id}/audio/main`;
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const [obsolete] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, publication_snapshot from signals where id = ${withdrawn.id}
+        `;
+        expect(obsolete).toEqual({ audio_status: "FAILED", audio_error: "AUDIO_SUPERSEDED", audio_attempt_id: null,
+          audio_storage_key: null, audio_url: null, publication_version: 2, publication_snapshot: oldSignal.publicationSnapshot });
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        const controlUrl = `/api/signals/${control.id}/audio/main`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey, controlUrl)).toBe(true);
+        const [ready] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_storage_key, audio_url,
+            publication_version, withdrawn_at, publication_snapshot from signals where id = ${control.id}
+        `;
+        expect(ready).toEqual({ audio_status: "READY", audio_error: null, audio_attempt_id: controlToken,
+          audio_storage_key: controlKey, audio_url: controlUrl, publication_version: 1,
+          withdrawn_at: null, publication_snapshot: controlSignal.publicationSnapshot });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  it("reads a whitelisted publication preview without writes and rejects invalid confirmation states unchanged", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const before = await publicationRowHash(id);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(await publicationRowHash(id)).toBe(before);
+      expect(Object.keys(preview).sort()).toEqual(["content", "digest", "version"]);
+      expect(Object.keys(preview.content).sort()).toEqual(["authorFreqCode", "expandedText", "primaryBand", "tags"]);
+      expect(preview).toMatchObject({ version: 0, content: {
+        expandedText: fixtureExpansion.expandedText, authorFreqCode: author.frequencyCode,
+        primaryBand: "self_mirror", tags: ["自我镜像", "练习", "停顿"],
+      } });
+      expect(preview.digest).toMatch(/^[a-f0-9]{64}$/u);
+      const confirm = (overrides: Partial<{ actorId: string; expectedVersion: number; digest: string }> = {}) =>
+        repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: preview.digest, ...overrides });
+      const wrongDigest = `${preview.digest.slice(0, -1)}${preview.digest.endsWith("0") ? "1" : "0"}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ digest: wrongDigest }));
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 1 }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm({ actorId: reader.id }));
+      await expectPublicationRejection(id, "NOT_FOUND", () => repo.readOwnedPublicationPreview({ id, actorId: reader.id }));
+      expect(await repo.readOwnedPublicationPreview({ id: randomUUID(), actorId: author.id })).toEqual({ outcome: "NOT_FOUND" });
+      for (const status of ["HIDDEN", "DELETED", "REVIEWING"] as const) {
+        await h.sql`update signals set status = ${status} where id = ${id}`;
+        const outcome = status === "REVIEWING" ? "CONFLICT" : "NOT_FOUND";
+        await expectPublicationRejection(id, outcome, () => confirm());
+        await expectPublicationRejection(id, outcome, () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      }
+      await h.sql`update signals set status = 'DRAFT', generation_status = 'EXPANDING' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set generation_status = 'COMPLETED', author_id = null where id = ${id}`;
+      // Matching frequency_id is not confirmation authority for a NULL author.
+      await expectPublicationRejection(id, "NOT_FOUND", () => confirm());
+      await h.sql`update signals set author_id = ${author.id}, fingerprint_json = '{"primaryBand":"self_mirror","tags":[1]}'::jsonb where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify(fixtureFingerprint)}::jsonb, expanded_text = '   ' where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm());
+      await h.sql`update signals set expanded_text = ${fixtureExpansion.expandedText} where id = ${id}`;
+      const [account] = await h.sql<{ status: string }[]>`select status from users where id = ${author.id}`;
+      if (account === undefined) throw new Error("Synthetic publication account was unavailable.");
+      await withCleanup(async () => {
+        for (const status of ["MUTED", "BANNED"] as const) {
+          // Leave the frequency mirror/session unchanged to exercise canonical users.
+          await h.sql`update users set status = ${status} where id = ${author.id}`;
+          await expectPublicationRejection(id, "FORBIDDEN", () => confirm());
+          await expectPublicationRejection(id, "FORBIDDEN", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+        }
+      }, async () => { await h.sql`update users set status = ${account.status} where id = ${author.id}`; });
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      await expectPublicationRejection(id, "CONFLICT", () => confirm({ expectedVersion: 2147483647 }));
+      await expectPublicationRejection(id, "CONFLICT", () => repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+    });
+  });
+
+  it("commits one concurrent confirmation epoch, preserves a current no-op, and requires explicit confirmation after withdrawal", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    await withSyntheticWithdrawalRows(async (track) => {
+      const { id } = await createWithdrawalFixture(track);
+      const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: preview.version, digest: preview.digest,
+      })));
+      const published = [];
+      let conflicts = 0;
+      for (const result of results) {
+        expect(result.status).toBe("fulfilled");
+        if (result.status !== "fulfilled") continue;
+        if (result.value.outcome === "PUBLISHED") published.push(result.value);
+        else { expect(result.value).toEqual({ outcome: "CONFLICT" }); conflicts += 1; }
+      }
+      expect(published).toHaveLength(1);
+      expect(conflicts).toBe(5);
+      const first = published[0];
+      expect(first).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: preview.digest, content: preview.content } });
+      const [stored] = await h.sql`
+        select status, publication_version, withdrawn_at, publication_snapshot,
+          (publication_snapshot->>'confirmedAt')::timestamptz <= clock_timestamp() as database_clock_bounded
+        from signals where id = ${id}
+      `;
+      expect(stored).toEqual({ status: "PUBLISHED", publication_version: 1, withdrawn_at: null,
+        publication_snapshot: first.snapshot, database_clock_bounded: true });
+      const beforeNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 1, digest: preview.digest }))
+        .toEqual(first);
+      expect(await publicationRowHash(id)).toBe(beforeNoop);
+      expect(await repo.withdrawOwnedSignal({ id, actorId: author.id, expectedVersion: 1 }))
+        .toEqual({ outcome: "WITHDRAWN", id, publicationVersion: 2 });
+      const [retained] = await h.sql`select publication_snapshot, withdrawn_at is not null as withdrawn from signals where id = ${id}`;
+      expect(retained).toEqual({ publication_snapshot: first.snapshot, withdrawn: true });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 1, digest: preview.digest,
+      }));
+      const refreshed = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      expect(refreshed).toEqual({ ...preview, version: 2 });
+      const republished = await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest });
+      expect(republished).toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 3,
+        snapshot: { kind: "AUTHOR_CONFIRMED", digest: refreshed.digest, content: refreshed.content } });
+      await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+        id, actorId: author.id, expectedVersion: 2, digest: refreshed.digest,
+      }));
+      const [current] = await h.sql`select publication_version, withdrawn_at from signals where id = ${id}`;
+      expect(current).toEqual({ publication_version: 3, withdrawn_at: null });
+      // Explicit synthetic MAX epoch: a genuinely unchanged confirmation may
+      // remain a no-op, while no increment or wrap is permitted.
+      await h.sql`update signals set publication_version = 2147483647 where id = ${id}`;
+      const maxPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: author.id }));
+      const beforeMaxNoop = await publicationRowHash(id);
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id,
+        expectedVersion: maxPreview.version, digest: maxPreview.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 2147483647 });
+      expect(await publicationRowHash(id)).toBe(beforeMaxNoop);
+      // A version-zero snapshot is an intentionally inconsistent fixture, not
+      // inherited confirmation authority; this explicit request must write v1.
+      await h.sql`update signals set publication_version = 0 where id = ${id}`;
+      expect(await repo.confirmOwnedSignalPublication({ id, actorId: author.id, expectedVersion: 0, digest: refreshed.digest }))
+        .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1 });
+    });
+  });
+
+  it("rejects stale digests after body, approved-label or canonical FM changes and restores the fixture account", async () => {
+    const repo = await h.loadModule("publicationRepository");
+    const fixtureAuthor = await register();
+    const [account] = await h.sql<{ freq_code: string }[]>`select freq_code from users where id = ${fixtureAuthor.id}`;
+    if (account === undefined) throw new Error("Synthetic FM account was unavailable.");
+    await withCleanup(async () => {
+      await withSyntheticWithdrawalRows(async (track) => {
+        const { id } = await createWithdrawalFixture(track);
+        await h.sql`update signals set author_id = ${fixtureAuthor.id}, frequency_id = ${fixtureAuthor.id} where id = ${id}`;
+        const read = async () => readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId: fixtureAuthor.id }));
+        let preview = await read();
+        const rejectOld = async () => {
+          await expectPublicationRejection(id, "CONFLICT", () => repo.confirmOwnedSignalPublication({
+            id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest,
+          }));
+          const next = await read();
+          expect(next.digest).not.toBe(preview.digest);
+          preview = next;
+        };
+        await h.sql`update signals set expanded_text = ${`${fixtureExpansion.expandedText} 合成正文修订。`} where id = ${id}`;
+        await rejectOld();
+        await h.sql`update signals set fingerprint_json = jsonb_set(fingerprint_json, '{tags}', '["新的合成标签","窗边"]'::jsonb) where id = ${id}`;
+        await rejectOld();
+        const [unused] = await h.sql<{ freq_code: string }[]>`
+          select candidate.freq_code from (
+            select 'FM ' || lpad((n / 100)::text, 2, '0') || '.' || lpad((n % 100)::text, 2, '0') as freq_code
+            from generate_series(0, 9999) as choices(n)
+          ) candidate where not exists (select 1 from users u where u.freq_code = candidate.freq_code)
+          order by candidate.freq_code limit 1
+        `;
+        if (unused === undefined) throw new Error("No synthetic FM candidate was available.");
+        const [mirrorBefore] = await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`;
+        await h.sql`update users set freq_code = ${unused.freq_code} where id = ${fixtureAuthor.id}`;
+        await rejectOld();
+        expect(preview.content.authorFreqCode).toBe(unused.freq_code);
+        expect((await h.sql`select code from frequencies where id = ${fixtureAuthor.id}`)[0]).toEqual(mirrorBefore);
+        expect(await repo.confirmOwnedSignalPublication({ id, actorId: fixtureAuthor.id, expectedVersion: 0, digest: preview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id, publicationVersion: 1,
+            snapshot: { content: { authorFreqCode: unused.freq_code, tags: ["自我镜像", "新的合成标签", "窗边"] } } });
+      });
+    }, async () => { await h.sql`update users set freq_code = ${account.freq_code} where id = ${fixtureAuthor.id}`; });
+    expect((await h.sql`select freq_code from users where id = ${fixtureAuthor.id}`)[0])
+      .toEqual({ freq_code: account.freq_code });
+  });
+
+  it("invalidates pending audio on a new confirmation epoch while a current no-op preserves a working token", async () => {
+    const [repo, { createSignalAudioRepository }] = await Promise.all([
+      h.loadModule("publicationRepository"), h.loadModule("audioRepository"),
+    ]);
+    await withSyntheticWithdrawalRows(async (track) => {
+      const stale = await createWithdrawalFixture(track);
+      await publish(stale.id);
+      await h.sql`update signals set expanded_text = expanded_text || ' 修订后的合成正文。' where id = ${stale.id}`;
+      const control = await createWithdrawalFixture(track);
+      const stalePreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: stale.id, actorId: author.id }));
+      const controlPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: control.id, actorId: author.id }));
+      const confirmedControl = await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+        expectedVersion: 0, digest: controlPreview.digest });
+      expect(confirmedControl).toMatchObject({ outcome: "PUBLISHED", publicationVersion: 1 });
+      const oldToken = randomUUID();
+      const controlToken = randomUUID();
+      const oldKey = `${stale.id}-${oldToken}.mp3`;
+      const oldUrl = `/api/signals/${stale.id}/audio/main`;
+      await h.sql`
+        update signals set audio_status = 'PENDING', audio_error = 'AUDIO_UNAVAILABLE',
+          audio_attempt_id = ${oldToken}, audio_publication_version = 1,
+          audio_storage_key = ${oldKey}, audio_storage_key_left = ${oldKey}, audio_storage_key_right = ${oldKey},
+          audio_url = ${oldUrl}, audio_url_left = ${oldUrl}, audio_url_right = ${oldUrl} where id = ${stale.id}
+      `;
+      await h.sql`update signals set audio_status = 'PENDING', audio_attempt_id = ${controlToken}, audio_publication_version = 1 where id = ${control.id}`;
+      const audio = createSignalAudioRepository({ statementTimeoutMs: 5_000, lockTimeoutMs: 1_000, maxConnections: 1 });
+      await withCleanup(async () => {
+        const oldSignal = await audio.readPublished(stale.id);
+        const controlSignal = await audio.readPublished(control.id);
+        if (oldSignal === undefined || controlSignal === undefined) throw new Error("Synthetic audio confirmation fixtures were unavailable.");
+        expect(await repo.confirmOwnedSignalPublication({ id: stale.id, actorId: author.id,
+          expectedVersion: stalePreview.version, digest: stalePreview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED", id: stale.id, publicationVersion: 2 });
+        const [reset] = await h.sql`
+          select audio_status, audio_error, audio_attempt_id, audio_publication_version,
+            audio_storage_key, audio_storage_key_left, audio_storage_key_right,
+            audio_url, audio_url_left, audio_url_right from signals where id = ${stale.id}
+        `;
+        expect(reset).toEqual({ audio_status: "NOT_REQUESTED", audio_error: null, audio_attempt_id: null,
+          audio_publication_version: null, audio_storage_key: oldKey, audio_storage_key_left: oldKey,
+          audio_storage_key_right: oldKey, audio_url: null, audio_url_left: null, audio_url_right: null });
+        expect(await audio.ready({ signal: oldSignal, attemptId: oldToken }, oldKey, oldUrl)).toBe(false);
+        const beforeNoop = await publicationRowHash(control.id);
+        expect(await repo.confirmOwnedSignalPublication({ id: control.id, actorId: author.id,
+          expectedVersion: 1, digest: controlPreview.digest })).toEqual(confirmedControl);
+        expect(await publicationRowHash(control.id)).toBe(beforeNoop);
+        const controlKey = `${control.id}-${controlToken}.mp3`;
+        expect(await audio.ready({ signal: controlSignal, attemptId: controlToken }, controlKey,
+          `/api/signals/${control.id}/audio/main`)).toBe(true);
+        const [ready] = await h.sql`select audio_status, audio_attempt_id, audio_publication_version from signals where id = ${control.id}`;
+        expect(ready).toEqual({ audio_status: "READY", audio_attempt_id: controlToken, audio_publication_version: 1 });
+      }, () => audio.close({ timeoutSeconds: 0 }));
+    });
+  });
+
+  it("requires explicit confirmation and fences the full withdraw / republish HTTP lifecycle", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      const id = signal.id;
+      const privateMarker = "PRIVATE-C1-SEED-7f49";
+      await h.sql`update signals set raw_input = ${privateMarker}, seed_text = ${privateMarker} where id = ${id}`;
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie), 400, "VALIDATION_ERROR");
+      const firstConfirmation = await publicationPayload(id);
+      await publish(id);
+      const publicDetail = await request("GET", `/api/signals/${id}`);
+      expect(publicDetail.statusCode).toBe(200);
+      const publicSignal = publicDetail.json().data.signal;
+      expect(publicSignal).toMatchObject({ visibility: "PUBLIC", expandedText: fixtureExpansion.expandedText, publicationVersion: 1 });
+      for (const key of ["rawInput", "seedText", "fingerprint", "frequencyProfile", "program", "frequencyId", "guestKey", "parentSignalId", "matchSignalId"]) expect(publicSignal).not.toHaveProperty(key);
+      expect(publicDetail.headers["cache-control"]).toContain("no-store");
+      expect(publicDetail.body).not.toContain(privateMarker);
+      expect((await request("POST", `/api/signals/${id}/save`, reader.cookie)).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/resonance`, reader.cookie, {})).statusCode).toBe(200);
+      expect((await request("POST", `/api/signals/${id}/echoes`, reader.cookie, { content: "合成的共振回应。" })).statusCode).toBe(201);
+      for (const url of ["/api/signals/hall", "/api/signals/galaxy", "/api/me/saves", `/api/signals/${publicControlId}/matches`]) {
+        const response = await request("GET", url, reader.cookie);
+        expect(response.statusCode).toBe(200);
+        expect(response.body).not.toContain(privateMarker);
+        expect(response.headers["cache-control"]).toContain("no-store");
+      }
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, reader.cookie, { expectedVersion: 1 }), 404, "NOT_FOUND");
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 }), 409, "CONFLICT");
+      const withdrawn = await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 });
+      expect(withdrawn.json()).toMatchObject({ data: { withdrawal: { id, withdrawn: true, publicationVersion: 2 } } });
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 })).json().data).toEqual(withdrawn.json().data);
+      await expectNotPublic(id);
+      const own = await request("GET", `/api/signals/${id}`, author.cookie);
+      expect(own.json()).toMatchObject({ data: { signal: { seedText: privateMarker, visibility: "PRIVATE_OWNER", publication: { state: "WITHDRAWN", version: 2, canPublish: true } } } });
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, firstConfirmation), 409, "CONFLICT");
+      await publish(id);
+      expectError(await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 1 }), 409, "CONFLICT");
+      const restored = await request("GET", `/api/signals/${id}`, reader.cookie);
+      expect(restored.json()).toMatchObject({ data: { signal: { publicationVersion: 3, hasSaved: true, resonanceCount: 1, echoCount: 1 } } });
+      expect((await request("GET", `/api/signals/${id}/echoes`)).json().data.echoes).toHaveLength(1);
+      await moderate(id, "REVIEWING");
+      expectError(await request("POST", `/api/signals/${id}/publish`, author.cookie, await publicationPayload(id)), 409, "CONFLICT");
+      await expectNotPublic(id);
+    });
+  });
+
+  it("keeps legacy and unowned system samples non-public without author confirmation", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track, "PUBLISHED");
+      await expectNotPublic(signal.id);
+      await h.sql`update signals set author_id = null, frequency_id = null, source = 'seed' where id = ${signal.id}`;
+      await expectNotPublic(signal.id);
+      expectError(await request("GET", `/api/signals/${signal.id}/publication-preview`, author.cookie), 404, "NOT_FOUND");
+    });
+  });
+
+  it("prevents in-flight generation from completing or publishing after owner withdrawal", async () => {
+    const hold = h.provider.holdNextRequest();
+    let id: string | undefined;
+    try {
+      id = await createPending();
+      await hold.received;
+      expect((await request("POST", `/api/signals/${id}/withdraw`, author.cookie, { expectedVersion: 0 })).statusCode).toBe(200);
+      hold.release();
+      await waitForActualGenerationIdle();
+      const [row] = await h.sql`select generation_status, withdrawn_at, publication_version from signals where id = ${id}`;
+      expect(row).toMatchObject({ generation_status: "FAILED", publication_version: 1 });
+      expect(row.withdrawn_at).not.toBeNull();
+      await expectNotPublic(id);
+    } finally { hold.release(); await waitForActualGenerationIdle(); }
+  });
 });

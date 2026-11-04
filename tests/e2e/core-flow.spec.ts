@@ -79,7 +79,7 @@ test("first visit can emit a seed and reach the galaxy", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/result\/signal-core-001/);
   await expect(page.locator(".signal-expanded-reading").getByText("PRIVATE PREVIEW")).toBeVisible();
-  await expect(page.getByText("忙碌像一层体面的噪声")).toBeVisible();
+  await expect(page.getByRole("region", { name: "发布预览" }).getByText("忙碌像一层体面的噪声")).toBeVisible();
   await page.getByRole("button", { name: "确认发布" }).click();
   await expect(page.getByText("EXPANDED SIGNAL")).toBeVisible();
   await expect(page.getByText("SAME FREQUENCY")).toBeVisible();

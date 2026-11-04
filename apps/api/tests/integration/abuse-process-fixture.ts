@@ -122,6 +122,7 @@ async function main() {
   await send({ kind: "boot", phase: "db-guard-complete", pid: process.pid, at: Date.now() });
   await send({ kind: "boot", phase: "app-import-start", pid: process.pid, at: Date.now() });
   const { buildApp } = await import("../../src/app.js");
+  await send({ kind: "boot", phase: "app-import-complete", pid: process.pid, at: Date.now() });
   const logs: string[] = [];
   let logBytes = 0;
   let unhandled = 0;
@@ -130,6 +131,7 @@ async function main() {
   const app = await buildApp({ logger: { level: "warn", stream: { write(line: string) {
     logBytes += Buffer.byteLength(line); if (logBytes <= 65_536) logs.push(line);
   } } } });
+  await send({ kind: "boot", phase: "app-build-complete", pid: process.pid, at: Date.now() });
   await send({ kind: "boot", phase: "app-ready-start", pid: process.pid, at: Date.now() });
   await app.ready();
   const fatal = () => { unhandled += 1; void send({ kind: "fatal" }).finally(() => process.exit(1)); };
@@ -196,9 +198,9 @@ async function main() {
         return { ok: true };
       } catch (error) { return { ok: false, limited: error instanceof Error && error.name === "AbuseControlStopped" }; }
     }
-    const allowed = command.method === "GET" ? /^\/api\/signals\/[a-f0-9-]{36}(?:\/audio)?$/u.test(command.url) :
+    const allowed = command.method === "GET" ? /^\/api\/signals\/[a-f0-9-]{36}(?:\/(?:publication-preview|audio(?:\/(?:main|left|right))?))?(?:\?v=\d{1,10})?$/u.test(command.url) :
       ["/api/auth/register", "/api/auth/frequency/login", "/api/auth/login", "/api/auth/login/verify", "/api/frontend-diagnostics/errors", "/api/signals"].includes(command.url) ||
-      /^\/api\/signals\/[a-f0-9-]{36}\/(?:publish|audio)$/u.test(command.url);
+      /^\/api\/signals\/[a-f0-9-]{36}\/(?:publish|withdraw|audio)$/u.test(command.url);
     if (!allowed) throw new Error("B3 route refused.");
     const response = await app.inject({ method: command.method, url: command.url,
       remoteAddress: command.remote ?? "127.0.0.1", headers: { ...(command.cookie ? { cookie: command.cookie } : {}), ...(command.forwarded ? { "x-forwarded-for": command.forwarded } : {}) },

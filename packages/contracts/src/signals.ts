@@ -1,3 +1,20 @@
+import type { OwnerSignalDetail, PublicSignalDetail, PublicSignalMatchSummary, PublicGalaxySignalPoint, PublicSavedSignalSummary } from "./signal-publication.js";
+export { maxSignalPublicationVersion } from "./signal-publication.js";
+export type {
+  PublishSignalRequest,
+  WithdrawSignalRequest,
+  WithdrawSignalResponse,
+  OwnerSignalDetail,
+  PublicGalaxySignalPoint,
+  PublicSavedSignalSummary,
+  PublicSignalDetail,
+  PublicSignalMatchSummary,
+  SignalPublicationActions,
+  SignalPublicationPreview,
+  SignalPublicationSnapshot,
+  SignalPublicContent,
+} from "./signal-publication.js";
+
 export const signalPrimaryBands = [
   "self_mirror",
   "emotional_undercurrent",
@@ -99,19 +116,7 @@ export type SignalGalaxyPosition = {
   z: number;
 };
 
-export type GalaxySignalPoint = {
-  createdAt: string;
-  expandedText: string;
-  frequencyProfile: SignalFrequencyProfile;
-  frequencyCode: string;
-  id: string;
-  isMine: boolean;
-  matchIds: string[];
-  position: SignalGalaxyPosition;
-  resonanceCount: number;
-  source: SignalSource;
-  theme: string;
-};
+export type GalaxySignalPoint = PublicGalaxySignalPoint;
 
 export type GalaxyResponse = {
   bandOptions?: Array<{
@@ -119,7 +124,7 @@ export type GalaxyResponse = {
     value: SignalPrimaryBand;
   }>;
   generatedAt: string;
-  points: GalaxySignalPoint[];
+  points: PublicGalaxySignalPoint[];
   themeOptions?: string[];
 };
 
@@ -129,11 +134,12 @@ export type GalaxyResult = {
     value: SignalPrimaryBand;
   }>;
   generatedAt: string;
-  points: GalaxySignalPoint[];
+  points: PublicGalaxySignalPoint[];
   themeOptions: string[];
 };
 
 export type SignalMatchSummary = {
+  publicationVersion?: number;
   distance?: number;
   expandedText: string;
   frequencyProfile: SignalFrequencyProfile;
@@ -213,21 +219,18 @@ export type SignalGenerationDetail = {
   seedText: string;
   status: SignalStatus;
   updatedAt: string;
+  publication?: import("./signal-publication.js").SignalPublicationActions;
   visibility: "GENERATION_OWNER";
 };
 
-export type SignalResultDetail =
-  | SignalDetail
-  | SignalPreviewDetail
-  | ReviewingSignalRestrictedDetail
-  | SignalGenerationDetail;
+export type SignalResultDetail = OwnerSignalDetail | PublicSignalDetail | SignalGenerationDetail | ReviewingSignalRestrictedDetail;
 
 export type CreateSignalResponse = {
   signal: SignalGenerationDetail;
 };
 
 export type PublishSignalResponse = {
-  signal: SignalDetail;
+  signal: OwnerSignalDetail;
 };
 
 export type SignalAudioDetail = {
@@ -244,7 +247,7 @@ export type SignalAudioResponse = {
 };
 
 export type SignalMatchesResponse = {
-  matches: SignalMatchSummary[];
+  matches: PublicSignalMatchSummary[];
 };
 
 export type SignalEchoStatus = "DELETED" | "HIDDEN" | "PUBLISHED" | "REVIEWING";
@@ -264,7 +267,7 @@ export type SignalResponse = {
 };
 
 export type SignalHallResponse = {
-  signals: SignalDetail[];
+  signals: PublicSignalDetail[];
 };
 
 export type SignalEchoesResponse = {
@@ -293,6 +296,7 @@ export type SignalSaveResponse = {
 };
 
 export type MySignalSummary = {
+  publicationState?: import("./signal-publication.js").SignalPublicationActions["state"];
   createdAt: string;
   expandedText: string;
   frequencyProfile: SignalFrequencyProfile;
@@ -354,7 +358,7 @@ export type SavedSignalSummary = MySignalSummary & {
 };
 
 export type SavedSignalsResult = {
-  signals: SavedSignalSummary[];
+  signals: PublicSavedSignalSummary[];
 };
 
 export type SavedSignalsResponse = SavedSignalsResult;
