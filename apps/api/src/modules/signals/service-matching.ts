@@ -85,6 +85,18 @@ async function findKeywordSameFrequencyMatches(
   return publishedMatches;
 }
 
+// Reads use bounded database candidates and local scoring only. Billable
+// embeddings/reranking belong to the admitted generation path below.
+export async function findPublicSignalMatches(
+  fingerprint: SignalFingerprint,
+  excludeSignalId: string,
+): Promise<SignalMatchSummary[]> {
+  const matches = await findKeywordSameFrequencyMatches(fingerprint, { excludeSignalId });
+  const current = await recheckPublicSignals(matches.flatMap((match) =>
+    match.publicationVersion === undefined ? [] : [{ id: match.id, publicationVersion: match.publicationVersion }]));
+  return matches.filter((match) => current.some((row) => row.id === match.id));
+}
+
 async function rerankSemanticMatches(params: {
   candidates: SignalSemanticMatchRecord[];
   expandedText: string;
@@ -190,7 +202,6 @@ async function findSemanticSameFrequencyMatches(params: {
   fingerprint: SignalFingerprint;
   logger?: EmbeddingLogger;
   rawInput: string;
-  publicQuery?: boolean;
 }): Promise<{ embedding: EmbeddingResult; matches: SignalMatchSummary[] } | undefined> {
   await assertGenerationActive();
   const configured = await isEmbeddingProviderConfigured();
@@ -201,7 +212,7 @@ async function findSemanticSameFrequencyMatches(params: {
 
   try {
     const embedding = await generateEmbedding(
-      params.publicQuery ? params.expandedText : buildSignalEmbeddingText({
+      buildSignalEmbeddingText({
         classification: params.classification,
         expandedText: params.expandedText,
         fingerprint: params.fingerprint,
@@ -259,7 +270,6 @@ export async function findSameFrequencyMatches(params: {
   fingerprint: SignalFingerprint;
   logger?: EmbeddingLogger;
   rawInput: string;
-  publicQuery?: boolean;
 }): Promise<{ embedding?: EmbeddingResult; matches: SignalMatchSummary[] }> {
   await assertGenerationActive();
   const semanticResult = await findSemanticSameFrequencyMatches(params);

@@ -11,6 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = path.join(root, "tests", "integration", "compose.yaml");
 const runId = randomUUID().replaceAll("-", "").slice(0, 12);
 const project = `unfreq-it-${runId}`;
+const browserJourney = process.env.UNFREQ_INTEGRATION_BROWSER === "1";
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => [
   "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
   "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
@@ -139,6 +140,7 @@ try {
     NODE_ENV: "test",
     DOTENV_CONFIG_PATH: envFile,
     UNFREQ_INTEGRATION_MANAGED: "1",
+    UNFREQ_INTEGRATION_BROWSER: browserJourney ? "1" : "0",
     UNFREQ_INTEGRATION_RUN_ID: runId,
     UNFREQ_INTEGRATION_RUNTIME_DIR: runtime.runtimeDirectory,
     UNFREQ_INTEGRATION_RUNTIME_TOKEN: runtime.ownershipToken,

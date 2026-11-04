@@ -7,7 +7,7 @@ import { findPublishedSignalById, findRandomPublishedSignal, findSignalResultByI
   listSignalsForAuthor, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
 import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSignalsLimit, maxMatchCount } from "./service-constants.js";
 import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
-import { findSameFrequencyMatches, scoreSignalMatch } from "./service-matching.js";
+import { findPublicSignalMatches, scoreSignalMatch } from "./service-matching.js";
 import { buildStableGalaxyPosition, isFiniteGalaxyPosition, sumResonanceCount, toMySignalSummary,
   toSignalGenerationDetail, toSignalDetail } from "./service-mappers.js";
 import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
@@ -131,12 +131,10 @@ export async function getMyEchoSummary(
 
 async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency): Promise<PublicSignalDetail> {
   if (!isPublicSignal(signal)) throw notFound();
-  const snapshot = parsePublicationSnapshot(signal.publicationSnapshot)!;
-  const result = await findSameFrequencyMatches({ excludeSignalId: signal.id,
-    publicQuery: true, expandedText: snapshot.content.expandedText, rawInput: snapshot.content.expandedText, fingerprint: signal.fingerprintJson });
+  const result = await findPublicSignalMatches(signal.fingerprintJson, signal.id);
   const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
-  const candidates = result.matches.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
-  // Parent and every match are rechecked together after provider/save awaits.
+  const candidates = result.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
+  // Parent and every match are rechecked together after candidate/save awaits.
   const current = await recheckPublicSignals([signal, ...candidates.map((match) => ({ id: match.id, publicationVersion: match.publicationVersion! }))]);
   const parent = current.find((item) => item.id === signal.id);
   if (parent === undefined) throw notFound();

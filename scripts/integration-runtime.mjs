@@ -67,6 +67,8 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/tests/integration/generation-test-controls.ts",
   "apps/api/tests/integration/fixtures.ts", "apps/api/src/app.ts",
   "apps/api/tests/integration/harness.ts",
+  "apps/api/tests/integration/real-web-journey.ts",
+  "apps/api/tests/integration/core-flow.test.ts",
   "apps/api/src/shared/generation-execution.ts",
   "apps/api/src/modules/signals/generation-worker.ts",
   "apps/api/tests/integration/generation-harness.ts",
