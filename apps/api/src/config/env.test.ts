@@ -148,3 +148,12 @@ describe("API environment validation", () => {
     expect(env.abusePolicy).toMatchObject({ enabled: true, configured: false, namespace: "unfreq-synthetic-development" });
   });
 });
+
+
+describe("durable scheduler configuration", () => {
+  it("rejects unknown calendar zones, invalid times and a count above the daily budget", async () => {
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_TIME_ZONE: "Not/AZone" })).rejects.toThrow();
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_TIME: "25:00" })).rejects.toThrow();
+    await expect(importEnv({ AI_SIGNAL_SCHEDULER_COUNT: "2", AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: "1" })).rejects.toThrow();
+  });
+});

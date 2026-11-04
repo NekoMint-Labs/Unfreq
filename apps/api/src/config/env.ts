@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { isSupportedSchedulerTimeZone } from "../modules/signals/scheduler-time.js";
 import { parseAbusePolicy } from "./abuse.js";
 import { parseTrustedProxyCidrs } from "../shared/request-identity.js";
 
@@ -41,6 +42,14 @@ const envSchema = z.object({
   AI_MODEL: z.string().min(1).default("local-fallback"),
   AI_PROVIDER: z.string().min(1).default("openai-compatible"),
   AI_SIGNAL_SCHEDULER_ENABLED: z.enum(["true", "false"]).default("false"),
+  AI_SIGNAL_SCHEDULER_TIME_ZONE: z.string().trim().min(1).max(80).refine(isSupportedSchedulerTimeZone, "Unsupported business time zone.").default("Asia/Shanghai"),
+  AI_SIGNAL_SCHEDULER_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u).default("03:00"),
+  AI_SIGNAL_SCHEDULER_COUNT: z.coerce.number().int().min(1).max(10).default(1),
+  AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET: z.coerce.number().int().min(1).max(10).default(1),
+  AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET: z.coerce.number().int().min(1).max(500).default(30),
+  AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(60_000),
+  AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(180_000),
+  AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
   EMBEDDING_API_KEY: z.string().default(""),
   EMBEDDING_BASE_URL: z.union([z.string().url(), z.literal("")]).default(""),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().min(1).max(4096).default(1024),
@@ -109,6 +118,11 @@ if (!parsedEnv.success) {
     .join("; ");
 
   throw new Error(`Invalid API environment: ${details}`);
+}
+
+if (!isSupportedSchedulerTimeZone(parsedEnv.data.AI_SIGNAL_SCHEDULER_TIME_ZONE) ||
+    parsedEnv.data.AI_SIGNAL_SCHEDULER_COUNT > parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET) {
+  throw new Error("Invalid AI signal scheduler configuration.");
 }
 
 if (
@@ -199,6 +213,14 @@ export const env = {
   aiModel: parsedEnv.data.AI_MODEL,
   aiProvider: parsedEnv.data.AI_PROVIDER,
   aiSignalSchedulerEnabled: parsedEnv.data.AI_SIGNAL_SCHEDULER_ENABLED === "true",
+  aiSignalSchedulerTimeZone: parsedEnv.data.AI_SIGNAL_SCHEDULER_TIME_ZONE,
+  aiSignalSchedulerTime: parsedEnv.data.AI_SIGNAL_SCHEDULER_TIME,
+  aiSignalSchedulerCount: parsedEnv.data.AI_SIGNAL_SCHEDULER_COUNT,
+  aiSignalSchedulerDailySignalBudget: parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_SIGNAL_BUDGET,
+  aiSignalSchedulerDailyDispatchBudget: parsedEnv.data.AI_SIGNAL_SCHEDULER_DAILY_DISPATCH_BUDGET,
+  aiSignalSchedulerPollIntervalMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_POLL_INTERVAL_MS,
+  aiSignalSchedulerBatchTimeoutMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_BATCH_TIMEOUT_MS,
+  aiSignalSchedulerShutdownGraceMs: parsedEnv.data.AI_SIGNAL_SCHEDULER_SHUTDOWN_GRACE_MS,
   embeddingApiKey: parsedEnv.data.EMBEDDING_API_KEY,
   embeddingBaseUrl: parsedEnv.data.EMBEDDING_BASE_URL,
   embeddingDimensions: parsedEnv.data.EMBEDDING_DIMENSIONS,

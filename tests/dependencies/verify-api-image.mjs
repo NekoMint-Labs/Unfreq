@@ -34,8 +34,8 @@ if (isBaseline) {
   assert.equal(image.Config.Labels["org.opencontainers.image.revision"], fixedMain);
 }
 assert.deepEqual({ ...journal, entries: [] }, { version: "7", dialect: "postgresql", entries: [] });
-assert.equal(journal.entries.length, isBaseline ? 24 : 25,
-  "Only the fixed 24-migration main baseline or the exact 25-migration C1 candidate is supported.");
+assert.equal(journal.entries.length, isBaseline ? 24 : 26,
+  "Only the fixed 24-migration main baseline or the exact 26-migration scheduler candidate is supported.");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 // These pins are from main e5b459c and C1 388bc5c, not the mutable candidate.
 assert.equal(hash(JSON.stringify(journal.entries.slice(0, 24))), "cde2e7f2a9c908009d98c12b5df4e030896ce8e142ab124044b3f2a90e33bd28");
@@ -53,6 +53,12 @@ const migrations = await Promise.all(journal.entries.map(async ({ tag, when }) =
 const sourceManifest = migrations.map(({ tag, when, sourceHash }) => ({ tag, when, hash: sourceHash }));
 assert.equal(hash(JSON.stringify(sourceManifest.slice(0, 24))), "556cec334a4260908800a878a46b1d6470690b329bf4970849e6c59fb785c43e");
 if (!isBaseline) assert.equal(migrations[24].sourceHash, "9405d5d05704875af7e9cdd5df5db9234a8f5c3422ab2661c4da48a0b0e3d021");
+
+if (!isBaseline) {
+  assert.deepEqual(journal.entries[25], { idx: 25, version: "7", when: 1793810572548,
+    tag: "0025_f1_ai_signal_scheduler", breakpoints: true });
+  assert.equal(migrations[25].sourceHash, "95709799272eeaeda66c6fba4d41b0a297080ce5ab6dd5775f94cd4a5a892a86");
+}
 const expectedLedger = migrations.map(({ hash, when }) => ({ hash, createdAt: when }));
 const runId = randomUUID().replaceAll("-", "");
 const label = "unfreq.high-dependency.run";
