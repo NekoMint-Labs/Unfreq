@@ -153,7 +153,7 @@ async function withCase(caseId: CaseId, work: (h: {
       AI_API_KEY: "f1-scheduler-stub-only", AI_BASE_URL: `${readyProvider.origin}/v1`, AI_PROVIDER: "integration-loopback", AI_MODEL: "synthetic-signal-v1",
       AI_FAST_API_KEY: "", AI_FAST_BASE_URL: "", AI_FAST_MODEL: "", AI_FAST_PROVIDER: "", AI_SIGNAL_SCHEDULER_ENABLED: "false",
       EMBEDDING_API_KEY: "", EMBEDDING_BASE_URL: "", EMBEDDING_PROVIDER: "disabled", EMBEDDING_MODEL: "disabled", EMBEDDING_DIMENSIONS: "1024", EMBEDDING_VERSION: "integration-v1",
-      RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_PROVIDER: "disabled", RERANKER_MODEL: "disabled", RERANKER_SCORE_SCALE: "",
+      RERANKER_API_KEY: "", RERANKER_BASE_URL: "", RERANKER_PROVIDER: "disabled", RERANKER_MODEL: "disabled", RERANKER_SCORE_SCALE: "zero_to_one",
       TTS_API_KEY: "", TTS_BASE_URL: "", TTS_PROVIDER: "disabled", TTS_MODEL: "disabled", TTS_VOICE_LEFT: "integration", TTS_VOICE_RIGHT: "integration",
       TTS_STORAGE_DIR: join(directory, "audio"), IMAGE_STORAGE_DIR: join(directory, "images"), IMAGE_MAX_BYTES: "2097152",
       SESSION_SECRET: `f1-scheduler-session-${nonce}`, PROVIDER_CONFIG_SECRET: `f1-scheduler-provider-${nonce}`,
