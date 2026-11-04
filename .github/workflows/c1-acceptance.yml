@@ -83,4 +83,5 @@ jobs:
           path: |
             test-results/integration/run-*/manifest.json
             test-results/integration/run-*/vitest.json
+            test-results/integration/run-*/f2-recovery/recovery-report.json
             test-results/integration/run-*/browser/**
