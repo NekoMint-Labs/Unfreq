@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "admin:promote": "node dist/scripts/promote-admin.js",
+    "matches:evaluate": "node dist/scripts/evaluate-matches.js",
     "ai:signals:evaluate": "node dist/scripts/evaluate-signal-quality.js",
     "dev": "tsx watch src/server.ts",
     "embeddings:backfill": "node dist/scripts/backfill-embeddings.js",

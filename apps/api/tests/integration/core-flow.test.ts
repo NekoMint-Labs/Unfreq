@@ -150,14 +150,14 @@ async function withSyntheticWithdrawalRows(
   });
 }
 
-async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT") {
+async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT", actor = author) {
   const [{ createSignalDraft }, { buildMinimalSignalProgram }] = await Promise.all([
     h.loadModule("repository"), h.loadModule("mappers"),
   ]);
   // Explicit synthetic unmanaged shape: no authorship confirmation is created
   // or inferred, and no public-read policy is exercised by these SQL cases.
   const signal = await createSignalDraft({
-    authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+    authorId: actor.id, frequencyId: actor.id, rawInput: fixtureSeed, seedText: fixtureSeed,
     expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
     galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "COMPLETED", status,
     program: buildMinimalSignalProgram({
@@ -1088,6 +1088,11 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       expect(await h.sql`select id from provider_configs where id in ${h.sql(configIds)} and is_enabled = true`).toHaveLength(2);
       globalThis.fetch = async () => { dispatches += 1; throw new Error("Paid matching is unavailable in this synthetic read test."); };
       await withSyntheticWithdrawalRows(async (track) => {
+        const peer = await createWithdrawalFixture(track, "DRAFT", reader);
+        const repo = await h.loadModule("publicationRepository");
+        const peerPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: peer.id, actorId: reader.id }));
+        expect(await repo.confirmOwnedSignalPublication({ id: peer.id, actorId: reader.id,
+          expectedVersion: peerPreview.version, digest: peerPreview.digest })).toMatchObject({ outcome: "PUBLISHED" });
         const signal = await createWithdrawalFixture(track);
         await publish(signal.id);
         for (let repeat = 0; repeat < 3; repeat += 1) {
@@ -1111,6 +1116,41 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       globalThis.fetch = originalFetch;
       if (configIds.length !== 0) await h.sql`delete from provider_configs where id in ${h.sql(configIds)}`;
     }
+  });
+
+  it("recalls older public rule candidates before LIMIT and excludes source/author/viewer records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const repo = await h.loadModule("publicationRepository");
+      const confirm = async (id: string, actorId: string) => {
+        const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId }));
+        expect(await repo.confirmOwnedSignalPublication({ id, actorId, expectedVersion: preview.version, digest: preview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED" });
+      };
+      const query = await createWithdrawalFixture(track);
+      await confirm(query.id, author.id);
+      const relevant = await createWithdrawalFixture(track, "DRAFT", reader);
+      await confirm(relevant.id, reader.id);
+      await h.sql`update signals set created_at = '2000-01-01T00:00:00Z' where id = ${relevant.id}`;
+      const irrelevant = await createWithdrawalFixture(track, "DRAFT", reader);
+      await h.sql`update signals set fingerprint_json = ${h.sql.json({ ...fixtureFingerprint, primaryBand: "relationship_nebula", tags: ["无关"] })}, primary_band = 'relationship_nebula' where id = ${irrelevant.id}`;
+      await confirm(irrelevant.id, reader.id);
+      const newer = await h.sql<{ id: string }[]>`insert into signals
+        (author_id, frequency_id, raw_input, seed_text, expanded_text, fingerprint_json, program_json, primary_band,
+          source, status, generation_status, publication_snapshot, publication_version)
+        select author_id, frequency_id, raw_input, seed_text, expanded_text, fingerprint_json, program_json, primary_band,
+          source, status, generation_status, publication_snapshot, publication_version
+        from signals cross join generate_series(1, 52) where signals.id = ${irrelevant.id} returning id`;
+      for (const row of newer) track(row.id);
+      const result = await request("GET", `/api/signals/${query.id}/matches`);
+      expect(result.statusCode).toBe(200);
+      expect(result.json().data.matches.map((match: { id: string }) => match.id)).toContain(relevant.id);
+      expect(result.json().data.matches.every((match: { contentSource?: string }) => match.contentSource === "human")).toBe(true);
+      const viewingOwn = await request("GET", `/api/signals/${query.id}`, reader.cookie);
+      expect(viewingOwn.json().data.signal.matches).toEqual([]);
+      expect((await request("GET", `/api/signals/${query.id}/matches`, reader.cookie)).json().data.matches).toEqual([]);
+      await h.sql`update signals set source = 'ai_generated' where id = ${relevant.id}`;
+      expect((await request("GET", `/api/signals/${query.id}/matches`)).json().data.matches).toEqual([]);
+    });
   });
 
   it("keeps legacy and unowned system samples non-public without author confirmation", async () => {

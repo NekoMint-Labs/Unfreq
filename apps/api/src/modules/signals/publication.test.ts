@@ -417,12 +417,12 @@ describe("public whitelist projections", () => {
     expect(projectPublicSignal({ ...base, matches: [{ ...match, program: signal.programJson } as NonNullable<typeof match>] })).toBeUndefined();
   });
 
-  it("preserves existing finite nonnegative match scores without introducing the later scoring contract", () => {
+  it("enforces the explicit relevance range without exposing raw provider scores", () => {
     const base = { signal: signalFixture(), snapshot: confirmedSnapshot(), state: validState() };
-    const match = projectPublicMatch({ ...base, score: 250 });
-    expect(match?.score).toBe(250);
-    expect(projectPublicSignal({ ...base, matches: match ? [match] : [] })?.matches[0]?.score).toBe(250);
-    for (const score of [-1, NaN, Infinity]) expect(projectPublicMatch({ ...base, score })).toBeUndefined();
+    const match = projectPublicMatch({ ...base, score: 100 });
+    expect(match?.score).toBe(100);
+    expect(projectPublicSignal({ ...base, matches: match ? [match] : [] })?.matches[0]?.score).toBe(100);
+    for (const score of [-1, 101, 250, NaN, Infinity]) expect(projectPublicMatch({ ...base, score })).toBeUndefined();
   });
 
   it("keeps Galaxy links only inside the caller's current visible set", () => {

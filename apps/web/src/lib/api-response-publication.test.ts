@@ -8,6 +8,12 @@ const saved = { ...content, id: signal.id, createdAt: signal.createdAt, savedAt:
 const point = { ...content, id: signal.id, createdAt: signal.createdAt, publicationVersion: 1, position: { x: 0, y: 0, z: 0 }, source: "human", isMine: false, matchIds: [], resonanceCount: 0 };
 afterEach(() => vi.unstubAllGlobals());
 describe("public publication contracts", () => {
+  it("accepts current content source metadata while rejecting private fields and unbounded scores", () => {
+    expect(isSignalMatchesResponse({ matches: [{ ...match, contentSource: "human", score: 94 }] })).toBe(true);
+    for (const patch of [{ contentSource: "guessed" }, { score: 101 }, { score: -1 }, { rawScore: 0.94 }, { model: "PRIVATE" }]) {
+      expect(isSignalMatchesResponse({ matches: [{ ...match, ...patch }] })).toBe(false);
+    }
+  });
   it("accepts each whitelist projection", () => {
     expect(isSignalResponse({ signal })).toBe(true);
     expect(isSignalHallResponse({ signals: [signal] })).toBe(true);

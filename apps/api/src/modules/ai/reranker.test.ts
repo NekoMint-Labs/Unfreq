@@ -6,12 +6,24 @@ beforeEach(() => {
 });
 
 describe("reranker adapter", () => {
+  it("normalizes an explicitly declared 0-100 provider without guessing the range", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ results: [{ id: "candidate", score: 90 }] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { queryText: "synthetic", candidates: [{ id: "candidate", distance: 0.1, expandedText: "synthetic" }] };
+    const config = { apiKey: "synthetic", baseUrl: "https://rerank.invalid", model: "synthetic", provider: "generic", scoreScale: "zero_to_hundred" };
+    expect((await rerankCandidates(input, config)).results[0].score).toBe(0.9);
+    fetchMock.mockClear();
+    await expect(rerankCandidates(input, { ...config, scoreScale: "guess" })).rejects.toMatchObject({ code: "AI_UNAVAILABLE" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it("adapts SiliconFlow requests and maps response indexes to candidate ids", async () => {
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
       expect(JSON.parse(init?.body as string)).toEqual({
         documents: ["第一段候选信号", "第二段候选信号"],
         model: "Qwen/Qwen3-Reranker-0.6B",
         query: "测试文本",
+        top_n: 2,
+        return_documents: false,
       });
 
       return Promise.resolve(
