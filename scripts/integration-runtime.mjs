@@ -11,12 +11,41 @@ export const runtimeEntryRelatives = Object.freeze({ generation: runtimeEntryRel
 const criticalSourceModules = ["config/env", "config/abuse", "shared/abuse-control", "shared/abuse-errors",
   "shared/request-identity", "modules/auth/service", "modules/auth/routes", "modules/auth/identity",
   "modules/ai/provider-config", "modules/ai/provider-transport", "modules/ai/provider-health", "modules/ai/embedding", "modules/ai/reranker", "modules/ai/tts",
-  "modules/signals/service-creation", "modules/frontend-diagnostics/routes", "db/schema",
+  "modules/signals/service-creation", "modules/signals/scheduler", "modules/frontend-diagnostics/routes", "db/schema",
   "modules/signals/service-queries", "modules/signals/service-matching", "modules/signals/service-interactions",
   "modules/signals/service-publication-confirmation", "modules/signals/service-withdrawal", "modules/signals/service-publishing",
   "modules/signals/publication-policy", "modules/signals/repository", "modules/signals/generation-repository", "modules/signals/publication-repository", "modules/signals/publication", "modules/signals/schemas", "modules/signals/audio-repository", "modules/signals/audio-worker",
   "modules/signals/service-audio", "modules/signals/routes", "modules/signals/audio-storage", "modules/signals/service-mappers",
-  "shared/shutdown-budget", "shared/log-redaction", "server"];
+  "shared/shutdown-budget", "shared/log-redaction", "shared/log-controller", "scripts/migrate", "server"];
+// Freeze the exact existing SQL payload alongside the compiled migration CLI.
+export const migrationPayloadPaths = Object.freeze([
+  "apps/api/src/db/migrations/meta/_journal.json",
+  "apps/api/src/db/migrations/0000_material_retro_girl.sql",
+  "apps/api/src/db/migrations/0001_famous_the_anarchist.sql",
+  "apps/api/src/db/migrations/0002_natural_omega_sentinel.sql",
+  "apps/api/src/db/migrations/0003_aberrant_thena.sql",
+  "apps/api/src/db/migrations/0004_romantic_proemial_gods.sql",
+  "apps/api/src/db/migrations/0005_milky_karen_page.sql",
+  "apps/api/src/db/migrations/0006_greedy_silver_sable.sql",
+  "apps/api/src/db/migrations/0007_fast_skrulls.sql",
+  "apps/api/src/db/migrations/0008_youthful_living_lightning.sql",
+  "apps/api/src/db/migrations/0009_clean_shadowcat.sql",
+  "apps/api/src/db/migrations/0010_famous_the_anarchist.sql",
+  "apps/api/src/db/migrations/0011_common_black_cat.sql",
+  "apps/api/src/db/migrations/0012_massive_ser_duncan.sql",
+  "apps/api/src/db/migrations/0013_confused_paper_doll.sql",
+  "apps/api/src/db/migrations/0014_calm_siren.sql",
+  "apps/api/src/db/migrations/0015_chunky_raider.sql",
+  "apps/api/src/db/migrations/0016_tricky_mephistopheles.sql",
+  "apps/api/src/db/migrations/0017_amazing_colossus.sql",
+  "apps/api/src/db/migrations/0018_exotic_kabuki.sql",
+  "apps/api/src/db/migrations/0019_acoustic_ultragirl.sql",
+  "apps/api/src/db/migrations/0020_provider_config_fallbacks.sql",
+  "apps/api/src/db/migrations/0021_absurd_firedrake.sql",
+  "apps/api/src/db/migrations/0022_signal_generation_leases.sql",
+  "apps/api/src/db/migrations/0023_b3_audio_attempt.sql",
+  "apps/api/src/db/migrations/0024_c1_publication_foundation.sql"
+]);
 export const runtimeArtifactPaths = Object.freeze([
   "package.json", "scripts/integration-runtime.mjs", runtimeEntryRelative,
   runtimeEntryRelatives.abuse,
@@ -24,9 +53,15 @@ export const runtimeArtifactPaths = Object.freeze([
   "apps/api/tests/integration/fixtures.js", "apps/api/src/app.js",
   "apps/api/src/shared/generation-execution.js",
   "apps/api/src/modules/signals/generation-worker.js",
+  ...migrationPayloadPaths,
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.js`),
 ]);
 export const runtimeSourcePaths = Object.freeze([
+  "package.json", "package-lock.json", "apps/api/package.json",
+  "apps/api/tests/integration/postgres-eof.test.ts",
+  "scripts/apply-postgres-lifecycle-patch.mjs", "patches/postgres-4.0.0-lifecycle.json",
+  "patches/postgres-4.0.0-lifecycle.patch", "tests/integration/postgres-module.test.mjs",
+  "node_modules/postgres/package.json", "node_modules/postgres/src/pool.js", "node_modules/postgres/src/index.js",
   "apps/api/tsconfig.json", "apps/api/tsconfig.integration-runtime.json",
   "apps/api/tests/integration/generation-process-fixture.ts",
   "apps/api/tests/integration/generation-test-controls.ts",
@@ -37,6 +72,8 @@ export const runtimeSourcePaths = Object.freeze([
   "apps/api/tests/integration/generation-harness.ts",
   "apps/api/tests/integration/generation-checkpoints.test.ts",
   "scripts/integration-runtime.mjs",
+  "apps/api/tests/integration/migration-cli.test.ts",
+  ...migrationPayloadPaths,
   "apps/api/tests/integration/abuse-process-fixture.ts",
   ...criticalSourceModules.map((name) => `apps/api/src/${name}.ts`),
 ]);
@@ -82,11 +119,21 @@ export async function prepareIntegrationRuntime({ repositoryRoot, runDirectory, 
   const runtimeDirectory = path.join(run, "runtime");
   // Never adopt an old directory, shared dist output or a partial prior build.
   await mkdir(runtimeDirectory);
+  const journal = JSON.parse((await ordinaryFile(path.join(root, migrationPayloadPaths[0]))).toString("utf8"));
+  if (!Array.isArray(journal.entries) || journal.entries.length !== migrationPayloadPaths.length - 1 ||
+      journal.entries.some((entry, index) => !entry || typeof entry.tag !== "string" ||
+        `apps/api/src/db/migrations/${entry.tag}.sql` !== migrationPayloadPaths[index + 1])) fail();
   const inputs = await hashes(root, sourcePaths);
   await writeFile(path.join(runtimeDirectory, "package.json"), '{"type":"module"}\n', { flag: "wx" });
   await compile(runtimeDirectory);
+  for (const relative of migrationPayloadPaths) {
+    const output = path.join(runtimeDirectory, relative);
+    await mkdir(path.dirname(output), { recursive: true });
+    await writeFile(output, await ordinaryFile(path.join(root, relative)), { flag: "wx" });
+  }
   equalHashes(await hashes(root, sourcePaths), inputs, sourcePaths);
   const files = await hashes(runtimeDirectory, runtimeArtifactPaths);
+  if (migrationPayloadPaths.some((relative) => files[relative] !== inputs[relative])) fail();
   const ownershipToken = randomBytes(32).toString("hex");
   const marker = {
     version: 1, runId, ownerPid: process.pid, sourceRoot: root,

@@ -1,4 +1,5 @@
 import type { FastifyBaseLogger } from "fastify";
+import { env } from "../../config/env.js";
 import { generateAiSignals } from "./service.js";
 
 const dayMs = 24 * 60 * 60 * 1000;
@@ -15,6 +16,10 @@ function msUntilNextThreeAm(now = new Date()): number {
 }
 
 export function startAiSignalScheduler(logger: FastifyBaseLogger) {
+  // The legacy process-local timer has no cross-instance claim. Keep it off
+  // unless an operator explicitly enables one scheduler instance.
+  if (!env.aiSignalSchedulerEnabled) return () => {};
+
   let interval: NodeJS.Timeout | undefined;
 
   const run = () => {

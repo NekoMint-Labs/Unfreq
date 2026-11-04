@@ -1,0 +1,162 @@
+name: High dependency acceptance
+
+on:
+  pull_request:
+    paths:
+      - "package*.json"
+      - "apps/*/package.json"
+      - "apps/api/src/app.ts"
+      - "Dockerfile.*"
+      - "tests/dependencies/**"
+      - "scripts/verify-migration-generate.mjs"
+      - "scripts/check-development-audit.mjs"
+      - ".github/workflows/high-dependency-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: high-dependency-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundaries:
+    name: Security boundaries (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            node: "20.19.0"
+          - os: ubuntu-24.04
+            node: "22.12.0"
+          - os: windows-latest
+            node: "22.12.0"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install the exact lock with lifecycle scripts
+        run: npm ci
+      - name: Preserve full and production audit records and reject high or critical
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/high-dependencies
+          npm audit --registry=https://registry.npmjs.org --audit-level=high --json > test-results/high-dependencies/full-audit.json
+          npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high --json > test-results/high-dependencies/production-audit.json
+          node scripts/check-development-audit.mjs test-results/high-dependencies/full-audit.json | tee test-results/high-dependencies/audit-disposition.json
+      - name: Verify the malicious inputs and legitimate dependency controls
+        run: |
+          set -euo pipefail
+          npm run test:dependency-security | tee test-results/high-dependencies/focused.tap
+      - name: Exercise the real API and Web test toolchains on this platform
+        run: |
+          set -euo pipefail
+          npm run api:test | tee test-results/high-dependencies/api-unit.log
+          npm run web:test | tee test-results/high-dependencies/web-unit.log
+      - name: Verify real development migration generation on this platform
+        run: node scripts/verify-migration-generate.mjs | tee test-results/high-dependencies/migration-generate.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: high-dependencies-${{ matrix.os }}-${{ matrix.node }}
+          path: test-results/high-dependencies/
+          if-no-files-found: warn
+
+  api-image:
+    name: Actual API image and fixed main comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      SECURITY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: e5b459cf0e067fa391befb095bf3e87b9370cc41
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Build the fixed main and candidate with the actual Dockerfile.api
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          docker build --file baseline/Dockerfile.api --label org.opencontainers.image.revision=e5b459cf0e067fa391befb095bf3e87b9370cc41 --iidfile test-results/high-dependency-api-baseline.id baseline
+          docker build --file Dockerfile.api --label org.opencontainers.image.revision="$SECURITY_HEAD" --iidfile test-results/high-dependency-api-image.id .
+      - name: Observe the unchanged main production entrypoint
+        env:
+          EXPECTED_API_REVISION: e5b459cf0e067fa391befb095bf3e87b9370cc41
+          API_IMAGE_SOURCE_ROOT: baseline
+          API_IMAGE_ID_FILE: test-results/high-dependency-api-baseline.id
+          API_IMAGE_REPORT: test-results/high-dependency-api-baseline.json
+        run: node tests/dependencies/verify-api-image.mjs
+      - name: Verify the actual candidate and reject shutdown regressions
+        env:
+          EXPECTED_API_REVISION: ${{ env.SECURITY_HEAD }}
+          API_IMAGE_BASELINE_REPORT: test-results/high-dependency-api-baseline.json
+        run: node tests/dependencies/verify-api-image.mjs
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: high-dependencies-api-images
+          path: test-results/high-dependency-api-*
+          if-no-files-found: warn
+
+  web-image:
+    name: Actual Web image and production browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      API_INTERNAL_BASE_URL: "http://127.0.0.1:4200"
+      NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:4200"
+      EXPECTED_WEB_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      PLAYWRIGHT_JSON_OUTPUT_FILE: "test-results/high-dependency-web-browser.json"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install the exact host browser dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build the actual Linux Web image
+        run: |
+          mkdir -p test-results
+          docker build --file Dockerfile.web --build-arg NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:4200 --label org.opencontainers.image.revision="$EXPECTED_WEB_REVISION" --iidfile test-results/high-dependency-web-image.id .
+      - name: Exercise the unchanged main production browser suite
+        run: npx --no-install playwright test --config tests/dependencies/playwright.web-image.config.ts --reporter=github,json
+      - name: Independently verify the owned browser container cleanup
+        if: always()
+        run: |
+          if test -f test-results/high-dependency-web-image.json; then
+            node tests/dependencies/cleanup-web-image.mjs
+          fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: high-dependencies-web-image
+          path: |
+            test-results/high-dependency-web-*
+            test-results/runtime/**
+          if-no-files-found: warn

@@ -15,7 +15,7 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY scripts/apply-postgres-startup-patch.mjs scripts/apply-postgres-startup-patch.mjs
+COPY scripts/apply-postgres-lifecycle-patch.mjs scripts/apply-postgres-lifecycle-patch.mjs
 COPY patches ./patches
 RUN --mount=type=cache,id=unfreq-npm-cache,target=/root/.npm,sharing=locked npm ci --prefer-offline
 
@@ -24,7 +24,7 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY scripts/apply-postgres-startup-patch.mjs scripts/apply-postgres-startup-patch.mjs
+COPY scripts/apply-postgres-lifecycle-patch.mjs scripts/apply-postgres-lifecycle-patch.mjs
 COPY patches ./patches
 RUN --mount=type=cache,id=unfreq-npm-cache,target=/root/.npm,sharing=locked npm ci --omit=dev --prefer-offline
 
@@ -48,7 +48,6 @@ COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY apps/api/drizzle.config.ts apps/api/drizzle.config.ts
 COPY scripts/api-entrypoint.sh ./scripts/api-entrypoint.sh
 RUN chmod +x ./scripts/api-entrypoint.sh
 EXPOSE 4000

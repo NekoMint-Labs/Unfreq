@@ -1,3 +1,4 @@
+export const migrationPayloadPaths: readonly string[];
 export const runtimeEntryRelative: string;
 export const runtimeArtifactPaths: readonly string[];
 export const runtimeEntryRelatives: Readonly<{ generation: string; abuse: string }>;

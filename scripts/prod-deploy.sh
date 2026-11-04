@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -7,8 +8,20 @@ ENV_FILE="${UNFREQ_API_ENV_FILE:-.env}"
 ENV_EXAMPLE=".env.example"
 SKIP_BACKUP=0
 DOMAIN_ARG=""
+ENV_TEMP_FILE=""
 
 cd "$ROOT_DIR"
+
+cleanup_env_temp() {
+  if [ -n "$ENV_TEMP_FILE" ]; then
+    rm -f -- "$ENV_TEMP_FILE"
+  fi
+}
+
+trap cleanup_env_temp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
   printf 'Usage: %s [--skip-backup] [https://your-domain]\n' "$0" >&2
@@ -47,15 +60,19 @@ resolve_proxy_network() {
 write_env_value() {
   key="$1"
   value="$2"
-  temp_file="${ENV_FILE}.tmp"
+  ENV_TEMP_FILE="$(mktemp -- "${ENV_FILE}.tmp.XXXXXX")"
 
   if grep -q "^${key}=" "$ENV_FILE"; then
-    sed "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" > "$temp_file"
-    mv "$temp_file" "$ENV_FILE"
-    return
+    escaped_value="$(printf '%s' "$value" | sed 's/[\\&|]/\\&/g')"
+    sed "s|^${key}=.*|${key}=${escaped_value}|" "$ENV_FILE" > "$ENV_TEMP_FILE"
+  else
+    cat "$ENV_FILE" > "$ENV_TEMP_FILE"
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_TEMP_FILE"
   fi
 
-  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  chmod 600 "$ENV_TEMP_FILE"
+  mv -f -- "$ENV_TEMP_FILE" "$ENV_FILE"
+  ENV_TEMP_FILE=""
 }
 
 is_placeholder_secret() {
@@ -110,13 +127,25 @@ is_placeholder_origin() {
 }
 
 ensure_env_file() {
-  if [ -f "$ENV_FILE" ]; then
+  if [ -L "$ENV_FILE" ]; then
+    fail "environment file must not be a symbolic link"
+  fi
+  if [ -e "$ENV_FILE" ]; then
+    [ -f "$ENV_FILE" ] || fail "environment path must be a regular file"
+    chmod 600 "$ENV_FILE"
     printf 'Using %s.\n' "$ENV_FILE"
     return
   fi
 
   [ -f "$ENV_EXAMPLE" ] || fail "missing $ENV_EXAMPLE"
-  cp "$ENV_EXAMPLE" "$ENV_FILE"
+  ENV_TEMP_FILE="$(mktemp -- "${ENV_FILE}.tmp.XXXXXX")"
+  cat "$ENV_EXAMPLE" > "$ENV_TEMP_FILE"
+  chmod 600 "$ENV_TEMP_FILE"
+  # Publish complete private bytes without replacing a destination created
+  # after the existence check. The unique temporary file shares its directory.
+  ln -T -- "$ENV_TEMP_FILE" "$ENV_FILE"
+  rm -f -- "$ENV_TEMP_FILE"
+  ENV_TEMP_FILE=""
   printf 'Created %s from %s.\n' "$ENV_FILE" "$ENV_EXAMPLE"
 }
 
@@ -194,6 +223,9 @@ done
 
 require_command docker
 require_command openssl
+require_command mktemp
+require_command chmod
+require_command ln
 
 ensure_env_file
 

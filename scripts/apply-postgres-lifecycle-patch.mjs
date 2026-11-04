@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const metadata = JSON.parse(await readFile(path.join(root, "patches", "postgres-3.4.9-startup.json"), "utf8"));
-const patchText = (await readFile(path.join(root, "patches", "postgres-3.4.9-startup.patch"), "utf8")).replaceAll("\r\n", "\n");
+const metadata = JSON.parse(await readFile(path.join(root, "patches", "postgres-4.0.0-lifecycle.json"), "utf8"));
+const patchText = (await readFile(path.join(root, "patches", "postgres-4.0.0-lifecycle.patch"), "utf8")).replaceAll("\r\n", "\n");
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 function parsePatch(text) {
@@ -19,6 +19,10 @@ function parsePatch(text) {
       if (files.has(file[1])) throw new Error("Duplicate PostgreSQL patch target.");
       files.set(file[1], current);
       hunk = undefined;
+    } else if (current && /^index [0-9a-f]{7,40}\.\.[0-9a-f]{7,40} 100644$/u.test(line)) {
+      // Git object hints are not patch instructions; every input/output byte
+      // is still pinned by the independent metadata SHA-256 guard.
+      continue;
     } else if (line.startsWith("@@ ")) {
       const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
       if (!current || !header) throw new Error("Invalid PostgreSQL patch hunk.");
@@ -57,14 +61,14 @@ function applyHunks(source, changes) {
   return [...output, ...lines.slice(cursor)].join("\n");
 }
 
-export async function applyPostgresStartupPatch(packageDirectory = path.join(root, "node_modules", "postgres")) {
+export async function applyPostgresLifecyclePatch(packageDirectory = path.join(root, "node_modules", "postgres")) {
   const base = path.resolve(packageDirectory);
   const pkg = JSON.parse(await readFile(path.join(base, "package.json"), "utf8"));
   const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
   const locked = lock.packages["node_modules/postgres"];
   if (pkg.name !== metadata.package || pkg.version !== metadata.version ||
       locked?.version !== metadata.version || locked.integrity !== metadata.integrity) {
-    throw new Error("PostgreSQL startup patch requires the exact pinned package and lock integrity; review it before upgrading.");
+    throw new Error("PostgreSQL lifecycle patch requires the exact pinned package and lock integrity; review it before upgrading.");
   }
   const writes = [];
   for (const file of metadata.files) {
@@ -89,5 +93,5 @@ export async function applyPostgresStartupPatch(packageDirectory = path.join(roo
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  console.log(JSON.stringify(await applyPostgresStartupPatch()));
+  console.log(JSON.stringify(await applyPostgresLifecyclePatch()));
 }

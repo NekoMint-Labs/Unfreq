@@ -1,0 +1,39 @@
+name: API migration image
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Linux API migration image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install the exact development lock
+        run: npm ci --no-audit --no-fund
+      - name: Keep development generation and the original SQL intact
+        run: node scripts/verify-migration-generate.mjs
+      - name: Build and verify the actual production API image
+        run: node scripts/verify-api-migration-image.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: api-migration-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/runtime-migration-image/
+          if-no-files-found: warn

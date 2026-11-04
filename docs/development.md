@@ -12,6 +12,9 @@ npm run api:check
 npm run web:check
 npm run web:test
 npm run api:integration
+npm run api:build
+npm run api:migrate
+npm run api:migrate:generate
 npm run deploy:test
 ```
 
@@ -45,7 +48,7 @@ Dockerfile.web  Web 镜像
 
 API/Web 使用与 Docker 镜像一致的 Node.js 22，通过 `npm ci` 按锁文件安装依赖并缓存 npm 下载。同一 PR/分支的新运行会取消旧运行。
 
-这套 CI 不需要仓库 secrets 或真实 AI 服务。集成任务自行创建临时 PostgreSQL / Redis，其他任务不要求这些服务；部署脚本测试使用替身命令，不部署应用。浏览器 E2E 和应用 Docker 镜像构建暂不纳入默认 CI。隔离策略、命令和证据边界见[测试说明](./testing.md)。
+这套 CI 不需要仓库 secrets 或真实 AI 服务。集成任务自行创建临时 PostgreSQL / Redis，其他任务不要求这些服务；部署脚本测试使用替身命令，不部署应用。浏览器 E2E 不在默认四项 CI 中；独立的 `api-migration-image.yml` 工作流构建真实 API 镜像，检查生产迁移、开发 generate 和启动/关停。隔离策略、命令和证据边界见[测试说明](./testing.md)。
 
 ## 质量检查
 
@@ -66,3 +69,5 @@ sh -n scripts/prod-deploy.sh
 ./scripts/deployment-stack.sh server preflight
 UNFREQ_BASE_URL=https://你的域名 ./scripts/deployment-stack.sh server smoke
 ```
+
+生产迁移使用编译后的 ORM migrator，须先执行 `npm run api:build`；`npm run api:migrate -- --help` 只显示帮助。`drizzle-kit` 保留为开发依赖用于 `api:migrate:generate`。生产成品仍先应用原有 SQL 与 journal，成功后以 Node 直接启动 API。

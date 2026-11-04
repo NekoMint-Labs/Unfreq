@@ -4,6 +4,7 @@ import { env } from "../config/env.js";
 import * as schema from "./schema.js";
 
 const queryClient = postgres(env.databaseUrl, {
+    infer: true,
   connect_timeout: Math.ceil(env.healthDependencyTimeoutMs / 1000),
   max: env.dbPoolMax,
   prepare: false,

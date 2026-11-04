@@ -11,7 +11,7 @@
     "embeddings:backfill": "node dist/scripts/backfill-embeddings.js",
     "galaxy:backfill": "node dist/scripts/backfill-galaxy-positions.js",
     "lint": "eslint .",
-    "migrate": "drizzle-kit migrate",
+    "migrate": "node dist/scripts/migrate.js",
     "migrate:generate": "drizzle-kit generate",
     "signals:seed": "node dist/scripts/seed-signals.js",
     "start": "node dist/server.js",
@@ -22,23 +22,23 @@
     "@fastify/cors": "^11.0.0",
     "@unfreq/contracts": "0.1.0",
     "dotenv": "^17.0.0",
-    "drizzle-kit": "^0.31.0",
     "drizzle-orm": "^0.45.0",
-    "fastify": "^5.0.0",
+    "fastify": "5.12.8",
     "fastify-plugin": "^5.0.0",
     "ioredis": "^5.0.0",
-    "postgres": "3.4.9",
+    "postgres": "4.0.0",
     "ws": "8.22.0",
-    "zod": "^4.0.0"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
     "@types/ws": "8.18.2",
+    "drizzle-kit": "^0.31.0",
     "eslint": "^9.0.0",
-    "tsx": "^4.0.0",
+    "tsx": "4.23.15",
     "typescript": "^5.1.0",
     "typescript-eslint": "^8.0.0",
-    "vitest": "^4.0.0"
+    "vitest": "4.1.12"
   }
 }
