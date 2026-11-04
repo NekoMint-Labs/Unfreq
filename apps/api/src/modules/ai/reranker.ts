@@ -10,7 +10,7 @@ import {
   resolveRerankerProviderConfigs,
   type RerankerProviderConfig,
 } from "./provider-config.js";
-import { buildRerankerRequestBody, parseRerankerResponsePayload } from "./reranker-adapter.js";
+import { buildRerankerRequestBody, parseRerankerResponsePayload, normalizeRerankerScore } from "./reranker-adapter.js";
 
 const rerankerTimeoutMs = 5_000;
 
@@ -58,6 +58,7 @@ export async function isRerankerProviderConfigured(
 
   return (
     resolvedConfig.provider !== "disabled" &&
+    normalizeRerankerScore(0, resolvedConfig.scoreScale ?? "zero_to_one") !== undefined &&
     resolvedConfig.apiKey.length > 0 &&
     resolvedConfig.baseUrl.length > 0
   );
@@ -130,6 +131,7 @@ export async function rerankCandidates(
         candidates: input.candidates,
         payload,
         provider: resolvedConfig.provider,
+        scoreScale: resolvedConfig.scoreScale ?? "zero_to_one",
       });
 
       if (results.length === 0) {

@@ -51,6 +51,7 @@ export type SignalPublicationActions = {
 };
 
 export type PublicSignalMatchSummary = SignalPublicContent & {
+  contentSource?: SignalSource;
   id: string;
   score: number;
   source: SignalMatchSource;

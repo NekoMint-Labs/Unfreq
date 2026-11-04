@@ -107,7 +107,10 @@ export async function runRealWebJourney(input: {
       const signal = (await detail.json()).data.signal;
       expect(signal.visibility).toBe("PUBLIC");
       expect(signal).not.toHaveProperty("seedText");
-      expect(signal.matches.length).toBeGreaterThan(0);
+      // All pre-existing public controls here belong to this author, so they
+      // cannot be presented as another person's discovery candidate.
+      expect(signal.matches).toEqual([]);
+      await expect(publicPage.getByText(/暂无合适同频/)).toBeVisible();
       expect((await anonymous.request.get(`${apiOrigin}/api/signals/${id}/matches`)).status()).toBe(200);
     }
     await publicPage.screenshot({ path: join(directory, "anonymous-public.png"), fullPage: true });

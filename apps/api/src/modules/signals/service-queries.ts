@@ -7,7 +7,7 @@ import { findPublishedSignalById, findRandomPublishedSignal, findSignalResultByI
   listSignalsForAuthor, recheckPublicSignals, summarizeSignalResonancesSince, touchFrequencyLastSeenAt } from "./repository.js";
 import { galaxyThemeOptionLimit, galaxyLimit, hallLimit, mySignalsLimit, savedSignalsLimit, maxMatchCount } from "./service-constants.js";
 import { queueSignalGalaxyPositionWrite } from "./service-embedding.js";
-import { findPublicSignalMatches, scoreSignalMatch } from "./service-matching.js";
+import { findPublicSignalMatches, isPublicDiscoveryCandidate, scoreSignalMatch } from "./service-matching.js";
 import { buildStableGalaxyPosition, isFiniteGalaxyPosition, sumResonanceCount, toMySignalSummary,
   toSignalGenerationDetail, toSignalDetail } from "./service-mappers.js";
 import { projectPublicSignal, projectPublicMatch, projectPublicSaved, projectPublicGalaxy, parsePublicationSnapshot } from "./publication.js";
@@ -131,7 +131,9 @@ export async function getMyEchoSummary(
 
 async function toPublishedSignalDetail(signal: SignalRecord, frequency?: AuthenticatedFrequency): Promise<PublicSignalDetail> {
   if (!isPublicSignal(signal)) throw notFound();
-  const result = await findPublicSignalMatches(signal.fingerprintJson, signal.id);
+  const scope = { content: parsePublicationSnapshot(signal.publicationSnapshot)!.content,
+    excludeAuthorIds: [...new Set([signal.authorId ?? signal.frequencyId, frequency?.id].filter((id): id is string => typeof id === "string"))] };
+  const result = await findPublicSignalMatches(signal.id, scope);
   const save = frequency === undefined ? undefined : await findSignalSave({ frequencyId: frequency.id, signalId: signal.id });
   const candidates = result.filter((match) => match.source === "PUBLISHED" && match.publicationVersion !== undefined);
   // Parent and every match are rechecked together after candidate/save awaits.
@@ -140,7 +142,7 @@ async function toPublishedSignalDetail(signal: SignalRecord, frequency?: Authent
   if (parent === undefined) throw notFound();
   const matches = candidates.flatMap((match) => {
     const row = current.find((item) => item.id === match.id);
-    const projected = row === undefined ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score });
+    const projected = row === undefined || !isPublicDiscoveryCandidate(row, scope.excludeAuthorIds) ? undefined : projectPublicMatch({ ...publicationProjection(row, match.publicationVersion), score: match.score });
     return projected === undefined ? [] : [projected];
   });
   const detail = projectPublicSignal({ ...publicationProjection(parent, signal.publicationVersion), matches,
@@ -191,8 +193,10 @@ export async function getSignalDetailForFrequency(id: string, frequency: Authent
   return toPublishedSignalDetail(signal, frequency);
 }
 
-export async function getSignalMatches(id: string): Promise<PublicSignalMatchSummary[]> {
-  return (await getSignalDetail(id)).matches;
+export async function getSignalMatches(id: string, frequency?: AuthenticatedFrequency): Promise<PublicSignalMatchSummary[]> {
+  const signal = await findPublishedSignalById(id);
+  if (signal === undefined) throw notFound();
+  return (await toPublishedSignalDetail(signal, frequency)).matches;
 }
 
 export async function getRandomSignal(frequency: AuthenticatedFrequency | undefined): Promise<PublicSignalDetail> {

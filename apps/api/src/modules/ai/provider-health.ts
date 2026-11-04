@@ -3,7 +3,7 @@ import type {
   AdminProviderConfigKind,
   AdminProviderConfigTestResult,
 } from "@unfreq/contracts/admin";
-import { buildRerankerRequestBody, parseRerankerResponsePayload } from "./reranker-adapter.js";
+import { buildRerankerRequestBody, parseRerankerResponsePayload, normalizeRerankerScore } from "./reranker-adapter.js";
 import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
 import { throwIfAbuseStopped } from "../../shared/abuse-errors.js";
 
@@ -177,6 +177,11 @@ export async function testProviderConfig(
     });
   }
 
+  if (kind === "reranker" && normalizeRerankerScore(0, config.extraJson.scoreScale ?? "zero_to_one") === undefined) {
+    return buildResult({ detail: "重排分数范围配置无效。", durationMs: Date.now() - startedAt,
+      kind, model: config.model, provider: config.provider, reason: "invalid_response", status: "failed" });
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
@@ -268,6 +273,7 @@ export async function testProviderConfig(
               candidates: rerankerTestCandidates,
               payload,
               provider: config.provider,
+              scoreScale: config.extraJson.scoreScale ?? "zero_to_one",
             }).length > 0;
 
     if (!isPayloadValid) {

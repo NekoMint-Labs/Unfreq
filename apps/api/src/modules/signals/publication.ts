@@ -163,7 +163,8 @@ export const publicMatchSchema = z.strictObject({
   tags: z.array(tagSchema).max(3).refine((tags) => new Set(tags).size === tags.length),
   primaryBand: z.enum(signalPrimaryBands).optional(),
   id: idSchema,
-  score: z.number().finite().min(0),
+  score: z.number().finite().min(0).max(100),
+  contentSource: sourceSchema.optional(),
   source: z.enum(["PUBLISHED", "SEEDED", "FALLBACK"]),
   resonanceCount: countSchema,
   publicationVersion: publicVersionSchema,
@@ -240,6 +241,7 @@ export function projectPublicSignal(input: ProjectionInput<PublicMetadata &
       id: match.id,
       score: match.score,
       source: match.source,
+      ...(match.contentSource === undefined ? {} : { contentSource: match.contentSource }),
       resonanceCount: match.resonanceCount,
       publicationVersion: match.publicationVersion,
     })),
@@ -250,12 +252,13 @@ export function projectPublicMatch(
   input: ProjectionInput & { score: number },
 ): PublicSignalMatchSummary | undefined {
   const basis = projectionBasis(input);
-  const score = z.number().finite().min(0).safeParse(input.score);
+  const score = z.number().finite().min(0).max(100).safeParse(input.score);
   if (basis === undefined || !score.success) return undefined;
   return {
     ...publicContent(basis.snapshot.content),
     id: basis.metadata.id,
     score: score.data,
+    contentSource: basis.metadata.source,
     source: "PUBLISHED",
     resonanceCount: basis.metadata.resonanceCount,
     publicationVersion: basis.state.currentPublicationVersion,
