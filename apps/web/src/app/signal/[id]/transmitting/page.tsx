@@ -46,6 +46,7 @@ export default async function SignalTransmittingPage({
 
   return (
     <SignalTransmittingClient
+      key={signal.id}
       initialSignal={signal}
       onboardingStep={onboardingStep}
     />
