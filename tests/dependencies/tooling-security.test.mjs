@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -19,13 +19,21 @@ const loadModule = (loader, name) => import(pathToFileURL(loader.resolve(name)).
 // read, every server binds to loopback on an ephemeral port, and no generated
 // mock code is evaluated. DEPENDENCY_TEST_ROOT also permits old-tree baselines.
 function checkChild(t, caseName) {
-  const fixture = mkdtempSync(join(tmpdir(), "unfreq-tooling-security-"));
-  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  // Vite deliberately rejects '~' paths on Windows to prevent 8.3 aliases
+  // bypassing fs.deny. Use the canonical long path even on short-name TEMP.
+  const temporaryRoot = realpathSync.native(tmpdir());
+  const fixture = realpathSync.native(mkdtempSync(join(temporaryRoot, "unfreq-tooling-security-")));
+  t.after(() => {
+    assert.equal(dirname(fixture), temporaryRoot);
+    assert.ok(basename(fixture).startsWith("unfreq-tooling-security-"));
+    rmSync(fixture, { recursive: true, force: true });
+  });
   const allowed = new Set(["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"]);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => allowed.has(name.toUpperCase())));
   Object.assign(env, {
     DEPENDENCY_TEST_ROOT: dependencyRoot,
     UNFREQ_TOOLING_FIXTURE: fixture,
+    UNFREQ_TOOLING_TEMP_INPUT: tmpdir(),
     NODE_ENV: "test",
     CI: "1",
   });
@@ -91,9 +99,15 @@ async function redirectCase(caseName, fixture) {
         data: { type: "redirect", raw: id, id, url: id, redirect },
       })));
     });
-    const result = await server.transformRequest(id).catch(() => null);
+    let transformError;
+    const result = await server.transformRequest(id).catch((error) => {
+      transformError = { code: error.code, message: String(error.message).slice(0, 1000) };
+      return null;
+    });
     const observed = result?.code ?? null;
-    process.stdout.write(`${JSON.stringify({ caseName, returnedSyntheticContent: observed })}\n`);
+    process.stdout.write(`${JSON.stringify({ caseName, temporaryInput: process.env.UNFREQ_TOOLING_TEMP_INPUT,
+      fixtureRoot: root, configuredRoot: server.config.root,
+      allowedRoots: server.config.server.fs.allow, returnedSyntheticContent: observed, transformError })}\n`);
     if (caseName === "redirect-control") {
       assert.ok(observed?.includes(control), "an ordinary in-root redirect must remain available");
     } else {

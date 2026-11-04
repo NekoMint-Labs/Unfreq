@@ -36,6 +36,8 @@ Vitest 与配套 mocker 升到 4.1.12，Babel core 升到 7.29.6，tsx 升到 4.
 
 `scripts/check-development-audit.mjs` 保留完整原始 JSON，只接受唯一根 3.1.5、副本 SRI/源码指纹、指定公告及其完整传播链；新增公告、不同版本、其他副本或严重度均失败。它没有让 `npm audit` 假装清零：普通完整 audit 仍 exit 1，处置结果单独上传。旧报告因含受影响的 nested 副本被检查拒绝，合法根链才通过。
 
+首轮 Windows Node 22.12 验证保留了一次正常 mock 重定向失败。Vite 的 Windows 文件服务明确拒绝含 `~` 的路径；测试夹具现使用真实长路径，保留全部拒绝断言和普通成功控制，并记录原始临时目录、有效根和转换错误。另对 TypeScript visitor-keys 8.59.2 定向使用官方 eslint-visitor-keys 4.2.1：它与 5.0.1 的 89 组遍历键、顺序、类型声明和实际 API 逻辑相同，却正式支持 22.12；矩阵对全部开发条目逐项核验当前 Node engine。生产树原有 camera-controls 的 Node >=22 声明及特定平台可选包保持原样，不据此扩大本轮开发依赖范围或宣称全树 engine-strict 支持 Node 20。
+
 ## 本候选验收
 
 所有结果须绑定本候选的最终提交和文件树。独立 PR 的既有绿灯、#20 与固定 #19 的临时组合，以及旧维护栈的成绩均不代替此候选。

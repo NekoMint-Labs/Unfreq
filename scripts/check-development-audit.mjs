@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,10 +27,20 @@ try {
   const records = report.vulnerabilities;
   const names = Object.keys(records);
   assert.equal(report.metadata.vulnerabilities.total, names.length, "Audit metadata does not match its records.");
+  const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
+  // Validate this task's development toolchain against the actual matrix Node.
+  // Production/browser optional packages retain their pre-existing contracts.
+  const requireRoot = createRequire(path.join(root, "package.json"));
+  const requireCompiler = createRequire(requireRoot.resolve("@typescript-eslint/typescript-estree/package.json"));
+  const semver = requireCompiler("semver");
+  const unsupported = Object.entries(lock.packages).filter(([, entry]) =>
+    (entry.dev || entry.devOptional) && entry.engines?.node &&
+    !semver.satisfies(process.versions.node, entry.engines.node));
+  assert.deepEqual(unsupported.map(([location, entry]) => ({ location, required: entry.engines.node })), [],
+    "A development dependency does not support this matrix Node version.");
   if (names.length === 0) {
     console.log(JSON.stringify({ rawPackageRecords: 0, nonApplicableRecords: [], unexpectedRecords: [] }));
   } else {
-    const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
     const pinned = lock.packages["node_modules/minimatch"];
     for (const key of ["version", "resolved", "integrity"]) assert.equal(pinned?.[key], knownV3[key], `Legacy minimatch ${key} changed; re-investigate the advisory.`);
     const installed = JSON.parse(await readFile(path.join(root, "node_modules/minimatch/package.json"), "utf8"));
@@ -69,6 +80,7 @@ try {
       nonApplicableVersion: knownV3.version,
       nonApplicableRecords: names.filter((name) => !unexpected.includes(name)),
       unexpectedRecords: unexpected,
+      developmentEnginesCheckedAgainst: process.versions.node,
       rawReportPreserved: true,
     }));
     assert.deepEqual(unexpected, [], "New or still-applicable dependency findings require remediation.");
