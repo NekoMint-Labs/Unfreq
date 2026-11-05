@@ -1,5 +1,6 @@
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
+import { disposeProviderResponse } from "./provider-response-cleanup.js";
 import {
   assertGenerationActive,
   beforeGenerationDispatch,
@@ -114,6 +115,7 @@ export async function isEmbeddingProviderConfigured(
 
 async function requestEmbedding(params: {
   config: EmbeddingProviderConfig;
+  controller: AbortController;
   signal: AbortSignal;
   text: string;
 }): Promise<number[]> {
@@ -131,18 +133,19 @@ async function requestEmbedding(params: {
     method: "POST",
     signal: params.signal,
   });
-  await assertGenerationActive();
-
-  if (!response.ok) {
-    throw new AppError("AI_UNAVAILABLE", "Embedding provider unavailable.", {
-      statusCode: response.status,
-    });
+  try {
+    await assertGenerationActive();
+    if (!response.ok) {
+      throw new AppError("AI_UNAVAILABLE", "Embedding provider unavailable.", {
+        statusCode: response.status,
+      });
+    }
+    const payload = (await response.json()) as EmbeddingPayload;
+    await assertGenerationActive();
+    return validateEmbeddingVector(extractEmbedding(payload), params.config.dimensions);
+  } finally {
+    await disposeProviderResponse(response, params.controller);
   }
-
-  const payload = (await response.json()) as EmbeddingPayload;
-  await assertGenerationActive();
-
-  return validateEmbeddingVector(extractEmbedding(payload), params.config.dimensions);
 }
 
 export async function generateEmbedding(
@@ -199,6 +202,7 @@ export async function generateEmbedding(
         throwIfGenerationStopped();
         const embedding = await requestEmbedding({
           config,
+          controller,
           signal: combined.signal,
           text: compactText,
         });

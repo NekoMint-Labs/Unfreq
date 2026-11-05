@@ -17,6 +17,7 @@ import {
   getChatProviderPrompt,
 } from "./provider-prompts.js";
 import { readProviderJson } from "./provider-response.js";
+import { disposeProviderResponse } from "./provider-response-cleanup.js";
 import {
   getAiProviderTimeoutMs,
   selectChatProviderConfigs,
@@ -57,7 +58,8 @@ export async function callChatProvider<TOutput>(
 
   for (const config of configs) {
     await assertGenerationActive();
-    let response: Response;
+    let response: Response | undefined;
+    const controller = new AbortController();
     let timeout: NodeJS.Timeout | undefined;
     let combined: ReturnType<typeof combineGenerationAbortSignal> | undefined;
 
@@ -85,7 +87,6 @@ export async function callChatProvider<TOutput>(
 
       await authorizeProviderDispatch("chat");
       await beforeGenerationDispatch("chat", type);
-      const controller = new AbortController();
       combined = combineGenerationAbortSignal(controller.signal);
       timeout = setTimeout(() => { controller.abort(); }, timeoutMs);
       throwIfGenerationStopped();
@@ -136,6 +137,7 @@ export async function callChatProvider<TOutput>(
         type,
       });
     } finally {
+      await disposeProviderResponse(response, controller);
       if (timeout !== undefined) clearTimeout(timeout);
       combined?.dispose();
     }

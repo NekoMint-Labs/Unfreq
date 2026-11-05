@@ -6,6 +6,7 @@ import type {
 import { buildRerankerRequestBody, parseRerankerResponsePayload } from "./reranker-adapter.js";
 import { authorizeProviderDispatch } from "../../shared/abuse-control.js";
 import { throwIfAbuseStopped } from "../../shared/abuse-errors.js";
+import { disposeProviderResponse } from "./provider-response-cleanup.js";
 
 type DraftConfig = {
   apiKey: string;
@@ -111,7 +112,7 @@ function readChatPayloadStatus(
 async function requestJson(params: {
   apiKey: string;
   body: Record<string, unknown>;
-  signal: AbortSignal;
+  controller: AbortController;
   url: string;
 }): Promise<{ payload?: unknown; response: Response }> {
   const response = await fetch(params.url, {
@@ -121,14 +122,11 @@ async function requestJson(params: {
       "content-type": "application/json",
     },
     method: "POST",
-    signal: params.signal,
+    signal: params.controller.signal,
   });
 
-  if (!response.ok) {
-    return { response };
-  }
-
   try {
+    if (!response.ok) return { response };
     return {
       payload: await response.json(),
       response,
@@ -138,6 +136,8 @@ async function requestJson(params: {
       payload: undefined,
       response,
     };
+  } finally {
+    await disposeProviderResponse(response, params.controller);
   }
 }
 
@@ -236,7 +236,7 @@ export async function testProviderConfig(
     const { payload, response } = await requestJson({
       apiKey: config.apiKey,
       body: requestBody,
-      signal: controller.signal,
+      controller,
       url: checkedUrl,
     });
     const durationMs = Date.now() - startedAt;
@@ -309,6 +309,7 @@ export async function testProviderConfig(
       status: "failed",
     });
   } finally {
+    controller.abort();
     clearTimeout(timeout);
   }
 }
