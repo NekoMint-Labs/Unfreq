@@ -114,6 +114,39 @@ export async function runRealWebJourney(input: {
       expect((await anonymous.request.get(`${apiOrigin}/api/signals/${id}/matches`)).status()).toBe(200);
     }
     await publicPage.screenshot({ path: join(directory, "anonymous-public.png"), fullPage: true });
+
+    // Exercise the real cross-origin PATCH from the administration UI. Direct
+    // app.inject requests do not enforce the browser's CORS preflight policy.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "举报", exact: true }).click();
+    const reportDialog = page.getByRole("dialog", { name: "举报这条信号" });
+    const reportNote = "SYNTHETIC_BROWSER_PRIVATE_REPORT";
+    await reportDialog.getByRole("textbox").fill(reportNote);
+    const submittedReport = page.waitForResponse((result) => result.url() === `${apiOrigin}/api/reports` && result.request().method() === "POST");
+    await reportDialog.getByRole("button", { name: "提交举报", exact: true }).click();
+    const reportResponse = await submittedReport;
+    expect(reportResponse.status()).toBe(201);
+    const reportId = (await reportResponse.json()).data.report.id as string;
+    await expect(reportDialog.getByText("举报状态：待审核", { exact: true })).toBeVisible();
+    const administrator = await browser.newContext({ baseURL: webOrigin });
+    await administrator.tracing.start({ screenshots: true, snapshots: true });
+    await administrator.addCookies([{ name: "unfreq_session", value: input.adminCookie.slice("unfreq_session=".length),
+      url: webOrigin, httpOnly: true, sameSite: "Lax" }]);
+    const adminPage = await administrator.newPage();
+    await adminPage.goto("/admin");
+    await adminPage.getByRole("button", { name: /^举报队列 / }).click();
+    const reportRow = adminPage.getByRole("row").filter({ hasText: reportNote });
+    const resolvedReport = adminPage.waitForResponse((result) => result.url() === `${apiOrigin}/api/admin/reports/${reportId}` && result.request().method() === "PATCH");
+    await reportRow.getByRole("button", { name: "驳回", exact: true }).click();
+    expect((await resolvedReport).status()).toBe(200);
+    await expect(adminPage.getByText("举报已驳回。", { exact: true })).toBeVisible();
+    await reportDialog.getByRole("button", { name: "刷新处理状态", exact: true }).click();
+    await expect(reportDialog.getByText("举报状态：未予处理", { exact: true })).toBeVisible();
+    expect(await reportDialog.textContent()).not.toContain(reportNote);
+    expect(await reportDialog.textContent()).not.toContain("未采纳这次举报。");
+    await page.screenshot({ path: join(directory, "report-receipt-mobile.png"), fullPage: true });
+    await reportDialog.getByRole("button", { name: "关闭举报", exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 720 });
     page.once("dialog", (dialog) => { void dialog.accept(); });
     await page.getByRole("button", { name: "撤回公开", exact: true }).click();
     await expect(page.getByRole("heading", { name: "已撤回公开", exact: true })).toBeVisible();
@@ -131,7 +164,8 @@ export async function runRealWebJourney(input: {
     const deep = await anonymous.request.get(`${apiOrigin}/health/deep`);
     expect((await deep.json()).data.dependencies).toEqual({ postgres: "ok", redis: "ok" });
     await writeFile(join(directory, "journey.json"), JSON.stringify({ productionWeb: true, realApi: true,
-      postgres: "ok", redis: "ok", syntheticProvider: true, publicationVersion: 3, readDispatches, passed: true }, null, 2));
+      postgres: "ok", redis: "ok", syntheticProvider: true, publicationVersion: 3, readDispatches,
+      browserAdminReportPatch: true, privateReportReceipt: true, passed: true }, null, 2));
   } catch (error) {
     errors.push(error);
   } finally {
