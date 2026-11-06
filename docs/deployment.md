@@ -42,12 +42,14 @@ WEB_ORIGIN                 公网访问地址，生产必须是 https://
 UNFREQ_PROXY_NETWORK       已存在的反代 Docker 网络，默认 npm_default
 SESSION_SECRET             会话签名密钥，生产必须是非占位强随机值
 PROVIDER_CONFIG_SECRET     Provider Key 加密密钥，生产必须是非占位强随机值
-AI_BASE_URL / AI_API_KEY   可选 AI 服务；为空时使用本地 fallback
+AI_BASE_URL / AI_API_KEY   扩写服务配置；未配置有效 Provider 时扩写会失败
 EMBEDDING_API_KEY          可选 embedding；为空时回到关键词/标签匹配
 TTS_API_KEY                可选服务端 TTS；为空时保留浏览器朗读 fallback
 ```
 
 API 容器启动时会先执行数据库迁移。生产模式会拒绝占位 `SESSION_SECRET`、占位 `PROVIDER_CONFIG_SECRET`、占位域名和非 HTTPS `WEB_ORIGIN`。
+
+指纹和部分分析有本地降级，正文扩写会保留 Provider 不可用的失败状态，不会用本地模板补成成功结果。`AI_MODEL=local-fallback` 只是默认配置值，不表示离线扩写可用。所有 Provider 都关闭时，可验收注册、权限和失败恢复；要走完生成、确认公开和撤回的成功路径，应在隔离环境接入只监听本机的合成 Provider，并拦截外部请求。合成结果不代表真实模型质量，也不授权启用付费服务。
 
 `AI_SIGNAL_SCHEDULER_ENABLED` 默认 `false`。当前每日 03:00 调度仍是进程内定时器，不提供跨副本领取或在途调度任务排空；试用和多副本部署保持关闭。仅在已单独验收的单调度实例上显式设为 `true`。此开关不影响用户生成 worker，也不代表 F1 持久调度已完成。
 

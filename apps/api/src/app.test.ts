@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
+import { env } from "./config/env.js";
 
 let app: FastifyInstance | undefined;
 
@@ -8,6 +9,43 @@ afterEach(async () => {
   await app?.close();
   app = undefined;
   vi.restoreAllMocks();
+});
+
+describe("browser administration CORS", () => {
+  it.each(["PATCH", "PUT", "DELETE"])("allows %s from the configured Web origin", async (method) => {
+    app = await buildApp();
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/api/admin/reports/00000000-0000-4000-8000-000000000001",
+      headers: {
+        origin: env.webOrigin,
+        "access-control-request-method": method,
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe(env.webOrigin);
+    expect(response.headers["access-control-allow-credentials"]).toBe("true");
+    expect(String(response.headers["access-control-allow-methods"]).split(/\s*,\s*/)).toContain(method);
+  });
+
+  it("keeps the configured origin and administrator authentication boundary", async () => {
+    app = await buildApp();
+    const preflight = await app.inject({
+      method: "OPTIONS",
+      url: "/api/admin/reports/00000000-0000-4000-8000-000000000001",
+      headers: { origin: "https://untrusted.invalid", "access-control-request-method": "PATCH" },
+    });
+    expect(preflight.headers["access-control-allow-origin"]).toBe(env.webOrigin);
+    const mutation = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/reports/00000000-0000-4000-8000-000000000001",
+      headers: { origin: env.webOrigin },
+      payload: { status: "REJECTED", resolution: "SYNTHETIC_REVIEW_ONLY" },
+    });
+    expect(mutation.statusCode).toBe(401);
+    expect(mutation.json().error.code).toBe("UNAUTHORIZED");
+  });
 });
 
 describe("API app logger", () => {
