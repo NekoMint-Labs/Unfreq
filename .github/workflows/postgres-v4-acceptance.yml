@@ -45,6 +45,15 @@ jobs:
       - run: npm ci
       - name: Real Node module loading and guarded patch installation
         run: node --test tests/integration/postgres-module.test.mjs tests/integration/patch-install.test.mjs
+      - name: Compare official unpatched package with the local lifecycle patch
+        run: node tests/integration/postgres-retirement-probe.mjs
+      - name: Preserve the retirement decision and natural settlement observations
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v7.0.1
+        with:
+          name: postgres-retirement-node-${{ matrix.node }}
+          path: test-results/postgres-retirement.json
+          if-no-files-found: error
 
   docker-dependencies:
     name: PostgreSQL ${{ matrix.component }} ${{ matrix.stage }}
