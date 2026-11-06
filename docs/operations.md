@@ -2,6 +2,8 @@
 
 这份文档记录服务器日常操作。部署入口见 [部署指南](./deployment.md)，迁移入口见 [服务器迁移](./server-migration.md)。
 
+最终 pilot 候选的隔离 Compose 复现、组合策略、费用边界及 C1 回退条件见 [RC 操作准备说明](./implementation/pilot-rc-20261106.md)。
+
 额度调整、未知付费任务及代理链验证见 [B3 pilot 预算与代理链验收边界](./implementation/b3-pilot-boundaries-20261101.md)；该文档是待评审提案，不代表目标环境已验收。
 
 C1 版本上线后的故障处置必须保留作者撤回与发布确认边界。直接恢复 pre-C1 应用或旧数据库备份可能重新公开已撤回内容；先隔离公共入口，再使用保留 C1 权限条件的已验收版本或隔离恢复环境。详见[部署指南中的同步发布与回退条件](./deployment.md)。日常试用保持 `AI_SIGNAL_SCHEDULER_ENABLED=false`；当前进程内定时器不具备多副本持久调度保证。

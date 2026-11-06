@@ -11,6 +11,7 @@ on:
       - "apps/api/package.json"
       - "patches/**"
       - "scripts/apply-postgres-*.mjs"
+      - "scripts/integration-runtime.mjs"
       - "tests/integration/postgres-*.mjs"
       - "tests/integration/patch-install.test.mjs"
   workflow_dispatch:
@@ -34,6 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -56,6 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build the actual Dockerfile dependency stage
         run: docker build --progress plain --target ${{ matrix.stage }} -f Dockerfile.${{ matrix.component }} -t unfreq-postgres-dependencies:check .
@@ -65,7 +68,7 @@ jobs:
           docker run --rm --entrypoint node --mount "type=bind,src=$PWD/tests/integration/postgres-docker-probe.mjs,dst=/tmp/postgres-docker-probe.mjs,readonly" unfreq-postgres-dependencies:check /tmp/postgres-docker-probe.mjs
 
   rollback-main:
-    name: PostgreSQL rollback to current main
+    name: Isolated legacy PostgreSQL driver regression
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
