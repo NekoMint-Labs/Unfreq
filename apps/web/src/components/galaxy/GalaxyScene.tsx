@@ -40,6 +40,7 @@ type GalaxySceneProps = {
   performanceProfile: GalaxyPerformanceProfile;
   points: GalaxySignalPoint[];
   selectedId?: string;
+  reducedMotion: boolean;
 };
 
 export function GalaxyScene({
@@ -53,6 +54,7 @@ export function GalaxyScene({
   sceneScale,
   selectedId,
   selectedPoint,
+  reducedMotion,
 }: GalaxySceneProps & {
   cameraFov: number;
   cameraPosition: ScenePosition;
@@ -164,12 +166,12 @@ export function GalaxyScene({
     }
 
     if (selectedPoint !== undefined) {
-      const alpha = 1 - Math.exp(-delta * 2.05);
+      const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 2.05);
       camera.position.lerp(targetPositionRef.current, alpha);
       controlsRef.current?.target.lerp(focusRef.current, alpha);
     }
 
-    if (!hasDetail && selectedPoint === undefined && isAutoRotating) {
+    if (!reducedMotion && !hasDetail && selectedPoint === undefined && isAutoRotating) {
       groupRef.current.rotation.y += delta * 0.043;
       groupRef.current.rotation.x =
         galaxyBaseTiltX + Math.sin(Date.now() * 0.00008) * 0.052;
@@ -192,7 +194,7 @@ export function GalaxyScene({
       <OrbitControls
         ref={controlsRef}
         dampingFactor={0.08}
-        enableDamping
+        enableDamping={!reducedMotion}
         enablePan={!hasDetail}
         enableRotate={!hasDetail}
         enableZoom={!hasDetail}
@@ -203,7 +205,7 @@ export function GalaxyScene({
         target={[0, 0, 0]}
         zoomSpeed={0.72}
       />
-      <GalaxyNebula isMuted={hasDetail} texture={nebulaTexture} />
+      <GalaxyNebula isMuted={hasDetail} texture={nebulaTexture} reducedMotion={reducedMotion} />
       {performanceProfile.renderDepthMist ? (
         <GalaxyDepthMist isMuted={hasDetail} texture={nebulaTexture} />
       ) : null}
@@ -211,13 +213,14 @@ export function GalaxyScene({
         count={performanceProfile.distantStarCount}
         isMobileHitArea={isMobileHitArea}
         isMuted={hasDetail}
+        reducedMotion={reducedMotion}
       />
       <group
         ref={groupRef}
         rotation={[galaxyBaseTiltX, galaxyBaseTiltY, galaxyBaseTiltZ]}
         scale={sceneScale}
       >
-        <GalaxyDust count={performanceProfile.dustCount} isMuted={hasDetail} />
+        <GalaxyDust count={performanceProfile.dustCount} isMuted={hasDetail} reducedMotion={reducedMotion} />
         <GalaxyLinks
           budget={{
             maxLinks: performanceProfile.maxLinks,
@@ -225,6 +228,7 @@ export function GalaxyScene({
           }}
           isMuted={hasDetail}
           points={points}
+          reducedMotion={reducedMotion}
         />
         {points.map((point) => (
           <GalaxySignalNode
@@ -240,6 +244,7 @@ export function GalaxyScene({
             key={point.id}
             onSelect={onSelect}
             point={point}
+            reducedMotion={reducedMotion}
           />
         ))}
       </group>

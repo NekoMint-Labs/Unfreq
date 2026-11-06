@@ -1,2 +1,5 @@
 # Preserve the Linux container entrypoint across Windows checkouts.
 scripts/api-entrypoint.sh text eol=lf
+
+apps/api/tests/fixtures/e3-matches.v1.json -text
+apps/api/tests/fixtures/e3-matches.v1.sha256 -text

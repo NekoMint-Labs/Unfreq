@@ -112,9 +112,21 @@ try {
   const rules = ["registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite", "passwordFailureIp", "passwordFailureIdentityIp",
     "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite", "generationRequestUser", "generationDailyUser", "generationDailySite",
     "audioReadIp", "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite", "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"];
+  // The immutable baseline predates the new mandatory report budgets.
+  if (!isBaseline) rules.push("reportRequestUser", "reportRequestIp", "reportReadUser");
   const paid = new Set(["chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"]);
   const policy = { namespace: prefix, pendingPerUser: 2, ttsConcurrency: 1, ttsTaskTimeoutMs: 1000,
     budgets: Object.fromEntries(rules.map((rule) => [rule, { limit: paid.has(rule) ? 0 : 20, windowMs: 60_000 }])) };
+  if (!isBaseline) {
+    const template = JSON.parse(await readFile(path.join(source, "deploy/abuse-policy.example.json"), "utf8"));
+    assert.deepEqual(Object.keys(template.budgets).sort(), [...rules].sort());
+    for (const rule of rules) {
+      assert.equal(template.budgets[rule].limit, 0);
+      policy.budgets[rule] = { ...template.budgets[rule], limit: paid.has(rule) ? 0 : 20 };
+    }
+    report.policy = { source: "deploy/abuse-policy.example.json", rules: rules.length,
+      reportBudgets: ["reportRequestUser", "reportRequestIp", "reportReadUser"], paidLimits: 0 };
+  }
   const environment = {
     NODE_ENV: "production", API_HOST: "0.0.0.0", API_PORT: "4000", WEB_ORIGIN: "https://security-image.test",
     DATABASE_URL: `postgres://unfreq_test:${databasePassword}@postgres:5432/unfreq_security`, REDIS_URL: "redis://redis:6379",

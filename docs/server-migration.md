@@ -23,6 +23,7 @@
 ## 旧服务器备份
 
 ```bash
+umask 077
 mkdir -p /srv/unfreq/backups
 UNFREQ_BACKUP_FILE=/srv/unfreq/backups/unfreq-postgres-pre-migration.sql.gz ./scripts/deployment-stack.sh server backup
 docker run --rm -v unfreq_api-image-storage:/data -v /srv/unfreq/backups:/backup alpine tar -czf /backup/unfreq-images-pre-migration.tar.gz -C /data .
@@ -41,10 +42,15 @@ cd Unfreq
 cp /srv/unfreq/backups/unfreq.env .env
 docker network inspect npm_default >/dev/null 2>&1 || docker network create npm_default
 docker compose up -d postgres
-./scripts/deployment-stack.sh server restore /srv/unfreq/backups/unfreq-postgres-pre-migration.sql.gz
+UNFREQ_RESTORE_ISOLATED=true ./scripts/deployment-stack.sh server restore /srv/unfreq/backups/unfreq-postgres-pre-migration.sql.gz
 docker run --rm -v unfreq_api-image-storage:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-images-pre-migration.tar.gz'
 docker run --rm -v unfreq_api-audio-storage:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-audio-pre-migration.tar.gz'
 docker run --rm -v unfreq_redis-data:/data -v /srv/unfreq/backups:/backup alpine sh -c 'cd /data && tar -xzf /backup/unfreq-redis-pre-migration.tar.gz'
+```
+
+保持 API、生成 worker 和公网入口关闭。核对备份之后新增的撤回、删除、封禁和公开版本，以可信的较新记录完成同步；旧备份本身无法提供这些变更。确认 SQL、配置、媒体和可见性一致后，才启动 API 并进行验收：
+
+```bash
 docker compose up --build -d
 ```
 
@@ -73,3 +79,6 @@ docker compose logs --tail 80 api
 - DNS TTL 提前调低，迁移失败时把 DNS 或 Nginx Proxy Manager 转发切回旧服务器。
 - 新服务器如果已经产生新数据，回滚前先在新服务器跑一次 `server backup`，避免丢失迁移窗口内的数据。
 - 如果新服务器迁移失败，不要把失败后的 PostgreSQL 反向恢复到旧服务器。旧服务器继续作为可信数据源。
+
+
+恢复命令只接受受信任的备份和全新隔离数据库；隔离标志由操作人员确认，不会自动停止已有 API 或隔离网络。非空目标会拒绝，SQL 错误会回滚，损坏压缩包会在写库前拒绝。需要恢复时新建目标，不要清空现有数据库。备份目标已存在时会拒绝覆盖，另选文件名保存。恢复后的公网开放还需核对较新的撤回、删除和公开版本。合成演练说明见 [F2 恢复验证](implementation/f2-recovery-main-20261105.md)。

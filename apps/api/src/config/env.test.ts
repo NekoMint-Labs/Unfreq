@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { parse } from "dotenv";
 
 const policyRuleNames = [
   "registerIp", "registerSite", "passwordRequestIp", "passwordRequestSite",
   "passwordFailureIp", "passwordFailureIdentityIp", "emailRequestIp", "emailRequestSite", "emailVerifyIp", "emailVerifySite",
   "generationRequestUser", "generationDailyUser", "generationDailySite", "audioReadIp",
   "audioRequestIp", "audioNewIp", "audioNewDailySite", "diagnosticIp", "diagnosticSite",
-  "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite",
+  "chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite", "reportRequestUser", "reportRequestIp", "reportReadUser",
 ] as const;
 const completePolicy = {
   namespace: "unfreq-env-unit",
@@ -44,6 +46,28 @@ afterEach(() => {
 });
 
 describe("API environment validation", () => {
+  it.each([".env.example", "deploy/prod.env.example", "deploy/demo.env.example"])(
+    "accepts the combined report/matching policy with prepared %s and rejects a missing report budget",
+    async (template) => {
+      const root = new URL("../../../../", import.meta.url);
+      const values = parse(readFileSync(new URL(template, root)));
+      const policy = JSON.parse(readFileSync(new URL("deploy/abuse-policy.example.json", root), "utf8"));
+      const prepared = { ...values, SESSION_SECRET: baseProductionEnv.SESSION_SECRET,
+        PROVIDER_CONFIG_SECRET: baseProductionEnv.PROVIDER_CONFIG_SECRET,
+        WEB_ORIGIN: "https://isolated-pilot.test", ABUSE_LIMITS_JSON: JSON.stringify(policy) };
+      const { env } = await importEnv(prepared);
+      expect(env.isProduction).toBe(true);
+      expect(env.aiSignalSchedulerEnabled).toBe(false);
+      expect(env.rerankerScoreScale).toBe("zero_to_one");
+      expect(Object.keys(env.abusePolicy.budgets).sort()).toEqual([...policyRuleNames].sort());
+      for (const rule of ["chatCallsSite", "embeddingCallsSite", "rerankerCallsSite", "ttsCharactersSite"] as const) {
+        expect(env.abusePolicy.budgets[rule].limit).toBe(0);
+      }
+      delete policy.budgets.reportReadUser;
+      await expect(importEnv({ ...prepared, ABUSE_LIMITS_JSON: JSON.stringify(policy) })).rejects.toThrow("Invalid abuse policy configuration.");
+    },
+  );
+
   it.each(["production", "development", "test"])("disables scheduled AI generation by default in %s", async (mode) => {
     const { env } = await importEnv({ NODE_ENV: mode });
     expect(env.aiSignalSchedulerEnabled).toBe(false);
@@ -70,7 +94,7 @@ describe("API environment validation", () => {
       },
     });
     expect(Object.keys(imported.env.abusePolicy.budgets).sort()).toEqual([...policyRuleNames].sort());
-    expect(Object.keys(imported.env.abusePolicy.budgets)).toHaveLength(23);
+    expect(Object.keys(imported.env.abusePolicy.budgets)).toHaveLength(26);
   });
 
   it("rejects placeholder production secrets", async () => {

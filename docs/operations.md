@@ -2,6 +2,8 @@
 
 这份文档记录服务器日常操作。部署入口见 [部署指南](./deployment.md)，迁移入口见 [服务器迁移](./server-migration.md)。
 
+最终 pilot 候选的隔离 Compose 复现、组合策略、费用边界及 C1 回退条件见 [RC 操作准备说明](./implementation/pilot-rc-20261106.md)。
+
 额度调整、未知付费任务及代理链验证见 [B3 pilot 预算与代理链验收边界](./implementation/b3-pilot-boundaries-20261101.md)；该文档是待评审提案，不代表目标环境已验收。
 
 C1 版本上线后的故障处置必须保留作者撤回与发布确认边界。直接恢复 pre-C1 应用或旧数据库备份可能重新公开已撤回内容；先隔离公共入口，再使用保留 C1 权限条件的已验收版本或隔离恢复环境。详见[部署指南中的同步发布与回退条件](./deployment.md)。日常试用保持 `AI_SIGNAL_SCHEDULER_ENABLED=false`；当前进程内定时器不具备多副本持久调度保证。
@@ -25,7 +27,7 @@ docker compose up --build -d
 ## 恢复 PostgreSQL
 
 ```bash
-./scripts/deployment-stack.sh server restore /srv/unfreq/backups/pre-release.sql.gz
+UNFREQ_RESTORE_ISOLATED=true ./scripts/deployment-stack.sh server restore /srv/unfreq/backups/pre-release.sql.gz
 ```
 
 ## 创建管理员
@@ -46,3 +48,6 @@ docker compose up --build -d
 直接 Compose 是主路径。脚本只是自动化运维入口。
 
 该脚本创建或重写环境文件时使用600权限和同目录唯一临时文件；不会复用固定的 `.env.tmp`。环境文件本身为符号链接或非普通文件时拒绝执行，应先由操作者提供独立的普通文件。可处理的退出会清理本次临时文件；SIGKILL/断电仍可能留下600权限的临时副本，不保证它们已清除。上述措施不为磁盘内容加密，也不能代替生产密钥和数据处置规则。
+
+
+恢复命令只接受受信任的备份和全新隔离数据库；隔离标志由操作人员确认，不会自动停止已有 API 或隔离网络。非空目标会拒绝，SQL 错误会回滚，损坏压缩包会在写库前拒绝。需要恢复时新建目标，不要清空现有数据库。备份目标已存在时会拒绝覆盖，另选文件名保存。恢复后的公网开放还需核对较新的撤回、删除和公开版本。合成演练说明见 [F2 恢复验证](implementation/f2-recovery-main-20261105.md)。

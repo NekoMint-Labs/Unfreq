@@ -27,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -48,6 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -58,6 +60,17 @@ jobs:
         run: npm ci
       - name: Real API with managed PostgreSQL and Redis
         run: npm run api:integration
+      - name: Preserve isolated integration results and cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v7.0.1
+        with:
+          name: api-integration-evidence
+          if-no-files-found: error
+          path: |
+            test-results/integration/run-*/manifest.json
+            test-results/integration/run-*/vitest.json
+            test-results/integration/run-*/f2-recovery/recovery-report.json
+            test-results/f1/scheduler-*.json
 
   deployment-scripts:
     name: Deployment script tests
@@ -66,6 +79,31 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Test deployment scripts
         run: sh scripts/test-deployment-scripts.sh
+
+  pilot-compose:
+    name: Isolated pilot Compose startup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Build and start the actual five-service stack with synthetic configuration
+        run: node scripts/verify-pilot-compose.mjs
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v7.0.1
+        if: always()
+        with:
+          name: isolated-pilot-compose
+          path: |
+            test-results/pilot-compose/*/report.json
+            test-results/pilot-compose/*/build.log
+            test-results/pilot-compose/*/services.log
+          if-no-files-found: error

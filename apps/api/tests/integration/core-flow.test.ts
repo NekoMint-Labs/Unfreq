@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureExpansion, fixtureFingerprint, fixtureSeed } from "./fixtures.js";
 import { createIntegrationHarness, recordCoreSetupPhase } from "./harness.js";
 import type { ReadOwnedPublicationPreviewResult } from "../../src/modules/signals/publication-repository.js";
+import { runRealWebJourney } from "./real-web-journey.js";
 
 type Harness = Awaited<ReturnType<typeof createIntegrationHarness>>;
 type Envelope<T> = { data: T };
@@ -149,14 +150,14 @@ async function withSyntheticWithdrawalRows(
   });
 }
 
-async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT") {
+async function createWithdrawalFixture(track: (id: string) => void, status: ModerationStatus = "DRAFT", actor = author) {
   const [{ createSignalDraft }, { buildMinimalSignalProgram }] = await Promise.all([
     h.loadModule("repository"), h.loadModule("mappers"),
   ]);
   // Explicit synthetic unmanaged shape: no authorship confirmation is created
   // or inferred, and no public-read policy is exercised by these SQL cases.
   const signal = await createSignalDraft({
-    authorId: author.id, frequencyId: author.id, rawInput: fixtureSeed, seedText: fixtureSeed,
+    authorId: actor.id, frequencyId: actor.id, rawInput: fixtureSeed, seedText: fixtureSeed,
     expandedText: fixtureExpansion.expandedText, fingerprint: fixtureFingerprint,
     galaxyPosition: { x: 0, y: 0, z: 0 }, generationStatus: "COMPLETED", status,
     program: buildMinimalSignalProgram({
@@ -1070,6 +1071,88 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
     });
   });
 
+  it("publishes and serves public/owner detail and matches without dispatching configured paid matching", async () => {
+    await waitForActualGenerationIdle();
+    const configIds: string[] = [];
+    const originalFetch = globalThis.fetch;
+    let dispatches = 0;
+    try {
+      for (const kind of ["embedding", "reranker"]) {
+        const response = await request("POST", `/api/admin/provider-configs/${kind}`, admin.cookie, {
+          apiKey: "synthetic-unavailable-matching-only", baseUrl: `${h.provider.origin}/v1`,
+          model: "synthetic-unavailable", provider: "integration-unavailable", isEnabled: true,
+        });
+        expect(response.statusCode).toBe(201);
+        configIds.push(response.json().data.providerConfig.id);
+      }
+      expect(await h.sql`select id from provider_configs where id in ${h.sql(configIds)} and is_enabled = true`).toHaveLength(2);
+      globalThis.fetch = async () => { dispatches += 1; throw new Error("Paid matching is unavailable in this synthetic read test."); };
+      await withSyntheticWithdrawalRows(async (track) => {
+        const peer = await createWithdrawalFixture(track, "DRAFT", reader);
+        const repo = await h.loadModule("publicationRepository");
+        const peerPreview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id: peer.id, actorId: reader.id }));
+        expect(await repo.confirmOwnedSignalPublication({ id: peer.id, actorId: reader.id,
+          expectedVersion: peerPreview.version, digest: peerPreview.digest })).toMatchObject({ outcome: "PUBLISHED" });
+        const signal = await createWithdrawalFixture(track);
+        await publish(signal.id);
+        for (let repeat = 0; repeat < 3; repeat += 1) {
+          for (const cookie of [undefined, reader.cookie, author.cookie]) {
+            const response = await request("GET", `/api/signals/${signal.id}`, cookie);
+            expect(response.statusCode).toBe(200);
+            expect(response.json().data.signal).toMatchObject({ id: signal.id, status: "PUBLISHED" });
+          }
+          const matches = await request("GET", `/api/signals/${signal.id}/matches`);
+          expect(matches.statusCode).toBe(200);
+          expect(matches.json().data.matches.length).toBeGreaterThan(0);
+        }
+        expect(dispatches).toBe(0);
+        const withdrawn = await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 });
+        expect(withdrawn.statusCode).toBe(200);
+        expectError(await request("GET", `/api/signals/${signal.id}`), 404, "NOT_FOUND");
+        await publish(signal.id);
+        expect(dispatches).toBe(0);
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (configIds.length !== 0) await h.sql`delete from provider_configs where id in ${h.sql(configIds)}`;
+    }
+  });
+
+  it("recalls older public rule candidates before LIMIT and excludes source/author/viewer records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const repo = await h.loadModule("publicationRepository");
+      const confirm = async (id: string, actorId: string) => {
+        const preview = readyPublicationPreview(await repo.readOwnedPublicationPreview({ id, actorId }));
+        expect(await repo.confirmOwnedSignalPublication({ id, actorId, expectedVersion: preview.version, digest: preview.digest }))
+          .toMatchObject({ outcome: "PUBLISHED" });
+      };
+      const query = await createWithdrawalFixture(track);
+      await confirm(query.id, author.id);
+      const relevant = await createWithdrawalFixture(track, "DRAFT", reader);
+      await confirm(relevant.id, reader.id);
+      await h.sql`update signals set created_at = '2000-01-01T00:00:00Z' where id = ${relevant.id}`;
+      const irrelevant = await createWithdrawalFixture(track, "DRAFT", reader);
+      await h.sql`update signals set fingerprint_json = ${JSON.stringify({ ...fixtureFingerprint, primaryBand: "relationship_nebula", tags: ["无关"] })}::jsonb, primary_band = 'relationship_nebula' where id = ${irrelevant.id}`;
+      await confirm(irrelevant.id, reader.id);
+      const newer = await h.sql<{ id: string }[]>`insert into signals
+        (author_id, frequency_id, raw_input, seed_text, expanded_text, fingerprint_json, program_json, primary_band,
+          source, status, generation_status, publication_snapshot, publication_version)
+        select author_id, frequency_id, raw_input, seed_text, expanded_text, fingerprint_json, program_json, primary_band,
+          source, status, generation_status, publication_snapshot, publication_version
+        from signals cross join generate_series(1, 52) where signals.id = ${irrelevant.id} returning id`;
+      for (const row of newer) track(row.id);
+      const result = await request("GET", `/api/signals/${query.id}/matches`);
+      expect(result.statusCode).toBe(200);
+      expect(result.json().data.matches.map((match: { id: string }) => match.id)).toContain(relevant.id);
+      expect(result.json().data.matches.every((match: { contentSource?: string }) => match.contentSource === "human")).toBe(true);
+      const viewingOwn = await request("GET", `/api/signals/${query.id}`, reader.cookie);
+      expect(viewingOwn.json().data.signal.matches).toEqual([]);
+      expect((await request("GET", `/api/signals/${query.id}/matches`, reader.cookie)).json().data.matches).toEqual([]);
+      await h.sql`update signals set source = 'ai_generated' where id = ${relevant.id}`;
+      expect((await request("GET", `/api/signals/${query.id}/matches`)).json().data.matches).toEqual([]);
+    });
+  });
+
   it("keeps legacy and unowned system samples non-public without author confirmation", async () => {
     await withSyntheticWithdrawalRows(async (track) => {
       const signal = await createWithdrawalFixture(track, "PUBLISHED");
@@ -1095,4 +1178,67 @@ describe("real API core flow against isolated PostgreSQL and Redis", () => {
       await expectNotPublic(id);
     } finally { hold.release(); await waitForActualGenerationIdle(); }
   });
+  it("keeps concurrent reports private, idempotent and traceable through the existing admin queue", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      const signal = await createWithdrawalFixture(track);
+      await publish(signal.id);
+      const body = { targetType: "SIGNAL", targetId: signal.id, reason: "涉及隐私", note: "SYNTHETIC_PRIVATE_REPORT_NOTE" };
+      expectError(await request("POST", "/api/reports", undefined, body), 401, "UNAUTHORIZED");
+      const submitted = await Promise.all(Array.from({ length: 5 }, () => request("POST", "/api/reports", reader.cookie, body)));
+      for (const response of submitted) {
+        expect(response.statusCode).toBe(201);
+        expect(response.headers["cache-control"]).toContain("no-store");
+        expect(Object.keys(response.json().data.report).sort()).toEqual(["createdAt", "id", "status", "targetId", "targetType"]);
+        expect(response.body).not.toContain(body.note);
+        expect(response.body).not.toContain(reader.frequencyCode);
+      }
+      const receipt = submitted[0].json().data.report as { id: string };
+      expect(new Set(submitted.map((response) => response.json().data.report.id)).size).toBe(1);
+      const [count] = await h.sql`select count(*)::int as n from reports where target_id = ${signal.id} and reporter_id = ${reader.id}`;
+      expect(count.n).toBe(1);
+      const queue = await request("GET", "/api/admin/reports?status=PENDING", admin.cookie);
+      expect(queue.statusCode).toBe(200);
+      expect(queue.json().data.reports).toEqual(expect.arrayContaining([expect.objectContaining({ id: receipt.id, note: body.note, reporterFreqCode: reader.frequencyCode })]));
+      expectError(await request("GET", "/api/admin/reports", author.cookie), 403, "FORBIDDEN");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, author.cookie)).json().data).toEqual({});
+      expectError(await request("GET", `/api/reports/signal/${signal.id}`), 401, "UNAUTHORIZED");
+      const resolved = await request("PATCH", `/api/admin/reports/${receipt.id}`, admin.cookie, { status: "RESOLVED", resolution: "SYNTHETIC_INTERNAL_REVIEW_NOTE" });
+      expect(resolved.statusCode).toBe(200);
+      const ownStatus = await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie);
+      expect(ownStatus.json()).toMatchObject({ data: { report: { id: receipt.id, status: "RESOLVED", targetId: signal.id } } });
+      expect(ownStatus.body).not.toContain("SYNTHETIC_INTERNAL_REVIEW_NOTE");
+      const publicResult = await request("GET", `/api/signals/${signal.id}`);
+      expect(publicResult.statusCode).toBe(200);
+      expect(publicResult.body).not.toContain(body.note);
+      expect(publicResult.body).not.toContain(receipt.id);
+      expect((await request("POST", `/api/signals/${signal.id}/withdraw`, author.cookie, { expectedVersion: 1 })).statusCode).toBe(200);
+      expectError(await request("POST", "/api/reports", reader.cookie, body), 404, "NOT_FOUND");
+      expect((await request("GET", `/api/reports/signal/${signal.id}`, reader.cookie)).json().data.report.status).toBe("RESOLVED");
+      await expectNotPublic(signal.id);
+    });
+  });
+
+  it("rejects reports of private, unconfirmed, unfinished and moderated targets without creating records", async () => {
+    await withSyntheticWithdrawalRows(async (track) => {
+      for (const status of ["DRAFT", "REVIEWING", "PUBLISHED", "HIDDEN", "DELETED"] as const) {
+        const signal = await createWithdrawalFixture(track, status);
+        expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: signal.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+        expect((await h.sql`select id from reports where target_id = ${signal.id}`).length).toBe(0);
+      }
+      const unfinished = await createWithdrawalFixture(track);
+      await publish(unfinished.id);
+      await h.sql`update signals set generation_status = 'WRITING' where id = ${unfinished.id}`;
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: unfinished.id, reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "SIGNAL", targetId: randomUUID(), reason: "垃圾信息" }), 404, "NOT_FOUND");
+      expectError(await request("POST", "/api/reports", reader.cookie, { targetType: "USER", targetId: author.id, reason: "垃圾信息" }), 400, "VALIDATION_ERROR");
+    });
+  });
+
+
+  if (process.env.UNFREQ_INTEGRATION_BROWSER === "1") {
+    it("runs the production browser through real API/PG/Redis generation, publication, withdrawal and republish without paid read dispatches", async () => {
+      await waitForActualGenerationIdle();
+      await runRealWebJourney({ harness: h, author, adminCookie: admin.cookie, waitForGenerationIdle: waitForActualGenerationIdle });
+    }, 90_000);
+  }
 });

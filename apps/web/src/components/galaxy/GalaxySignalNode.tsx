@@ -33,6 +33,7 @@ export function GalaxySignalNode({
   isSelected,
   onSelect,
   point,
+  reducedMotion,
 }: {
   coreTexture?: CanvasTexture;
   detailOpacityScale: number;
@@ -43,6 +44,7 @@ export function GalaxySignalNode({
   isSelected: boolean;
   onSelect: (point: GalaxySignalPoint) => void;
   point: GalaxySignalPoint;
+  reducedMotion: boolean;
 }) {
   const coreMaterialRef = useRef<SpriteMaterial>(null);
   const elapsedRef = useRef(0);
@@ -72,16 +74,16 @@ export function GalaxySignalNode({
   const hoverRingScale = (visibleRadius / signalVisibleRadius) * (isMobileHitArea ? 1.12 : 1);
 
   useFrame(({ camera }, delta) => {
-    elapsedRef.current += delta;
+    if (!reducedMotion) elapsedRef.current += delta;
 
     if (selectedRingRef.current !== null) {
-      const pulse = 1 + Math.sin(elapsedRef.current * 2.8) * 0.08;
+      const pulse = reducedMotion ? 1 : 1 + Math.sin(elapsedRef.current * 2.8) * 0.08;
       selectedRingRef.current.scale.setScalar(pulse * hoverRingScale);
       selectedRingRef.current.quaternion.copy(camera.quaternion);
     }
 
-    const alpha = 1 - Math.exp(-delta * 2.4);
-    const twinkle =
+    const alpha = reducedMotion ? 1 : 1 - Math.exp(-delta * 2.4);
+    const twinkle = reducedMotion ? 1 :
       0.78 +
       Math.sin(
         elapsedRef.current * (1.05 + starProfile.twinkleSeed * 0.006) +

@@ -165,32 +165,91 @@ preflight() {
   printf 'Preflight checks passed for %s mode using %s.\n' "$MODE" "$ENV_FILE"
 }
 
-backup_postgres() {
+validate_postgres_target() {
+  postgres_user="${UNFREQ_PG_USER:-postgres}"
+  postgres_database="${UNFREQ_PG_DATABASE:-unfreq}"
+  for identifier in "$postgres_user" "$postgres_database"; do
+    case "$identifier" in
+      ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*)
+        printf 'PostgreSQL user/database must be simple SQL identifiers.\n' >&2
+        exit 2
+        ;;
+    esac
+    if [ "${#identifier}" -gt 63 ]; then
+      printf 'PostgreSQL user/database identifiers must not exceed 63 characters.\n' >&2
+      exit 2
+    fi
+  done
+}
+
+backup_postgres() (
   require_env_file
+  validate_postgres_target
   require_command dirname
   require_command gzip
+  require_command mktemp
+  require_command ln
+  require_command chmod
+  umask 077
   output_dir="${UNFREQ_BACKUP_DIR:-deploy/backups}"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   output_path="${UNFREQ_BACKUP_FILE:-$output_dir/unfreq-postgres-$timestamp.sql.gz}"
-  plain_output="${output_path%.gz}"
-  backup_dir="$(dirname "$output_path")"
-  temp_output="$plain_output.tmp"
-
-  mkdir -p "$backup_dir"
-  run_compose exec -T postgres pg_dump -U postgres -d unfreq > "$temp_output"
-  mv "$temp_output" "$plain_output"
-
+  case "$output_path" in
+    *.sql|*.sql.gz) ;;
+    *) printf 'Backup filename must end in .sql or .sql.gz.\n' >&2; exit 2 ;;
+  esac
+  if [ -e "$output_path" ] || [ -L "$output_path" ]; then
+    printf 'Refusing to overwrite an existing backup.\n' >&2
+    exit 2
+  fi
+  backup_dir="$(dirname -- "$output_path")"
+  mkdir -p -- "$backup_dir"
+  temp_dir="$(mktemp -d -- "$backup_dir/.unfreq-backup.XXXXXX")"
+  temp_plain="$temp_dir/dump.sql"
+  temp_archive="$temp_dir/dump.sql.gz"
+  temp_error="$temp_dir/error.log"
+  trap 'rm -f -- "$temp_plain" "$temp_archive" "$temp_error"; rmdir -- "$temp_dir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  chmod 700 "$temp_dir"
+  : > "$temp_plain"
+  : > "$temp_archive"
+  : > "$temp_error"
+  chmod 600 "$temp_plain" "$temp_archive" "$temp_error"
+  if ! run_compose exec -T postgres pg_dump -U "$postgres_user" -d "$postgres_database" > "$temp_plain" 2> "$temp_error"; then
+    printf 'PostgreSQL backup failed; no backup was published.\n' >&2
+    exit 1
+  fi
+  if [ ! -s "$temp_plain" ]; then
+    printf 'PostgreSQL backup was empty; no backup was published.\n' >&2
+    exit 1
+  fi
+  temp_final="$temp_plain"
   case "$output_path" in
     *.gz)
-      gzip -f "$plain_output"
+      if ! gzip -c -- "$temp_plain" > "$temp_archive"; then
+        printf 'PostgreSQL backup compression failed; no backup was published.\n' >&2
+        exit 1
+      fi
+      temp_final="$temp_archive"
       ;;
   esac
-
+  # Same-filesystem hard link publishes complete bytes atomically and fails if
+  # another process has already claimed the destination. Never replace a backup.
+  if ! ln -T -- "$temp_final" "$output_path"; then
+    printf 'PostgreSQL backup could not be published without overwriting a file.\n' >&2
+    exit 1
+  fi
   printf 'PostgreSQL backup written: %s\n' "$output_path"
-}
+)
 
-restore_postgres() {
+restore_postgres() (
   require_env_file
+  validate_postgres_target
+  if [ "${UNFREQ_RESTORE_ISOLATED:-false}" != "true" ]; then
+    printf 'Restore requires UNFREQ_RESTORE_ISOLATED=true and a fresh, isolated target.\n' >&2
+    exit 2
+  fi
   backup_file="${UNFREQ_BACKUP_FILE:-$ACTION_ARG}"
 
   if [ -z "$backup_file" ]; then
@@ -203,18 +262,69 @@ restore_postgres() {
     exit 2
   fi
 
+  require_command mktemp
+  require_command chmod
+  umask 077
+  temp_dir="$(mktemp -d -- "${TMPDIR:-/tmp}/unfreq-restore.XXXXXX")"
+  temp_plain="$temp_dir/dump.sql"
+  temp_restore="$temp_dir/restore.sql"
+  temp_error="$temp_dir/error.log"
+  trap 'rm -f -- "$temp_plain" "$temp_restore" "$temp_error"; rmdir -- "$temp_dir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  chmod 700 "$temp_dir"
+  : > "$temp_plain"
+  : > "$temp_restore"
+  : > "$temp_error"
+  chmod 600 "$temp_plain" "$temp_restore" "$temp_error"
+  # Finish and validate decompression before psql can make any changes. A shell
+  # pipeline would otherwise lose gzip's failure when psql exits successfully.
   case "$backup_file" in
     *.gz)
       require_command gzip
-      gzip -dc "$backup_file" | run_compose exec -T postgres psql -U postgres -d unfreq
+      if ! gzip -dc -- "$backup_file" > "$temp_plain" 2> "$temp_error"; then
+        printf 'PostgreSQL restore rejected an invalid compressed backup.\n' >&2
+        exit 1
+      fi
       ;;
     *)
-      run_compose exec -T postgres psql -U postgres -d unfreq < "$backup_file"
+      cat -- "$backup_file" > "$temp_plain"
       ;;
   esac
-
+  if [ ! -s "$temp_plain" ]; then
+    printf 'PostgreSQL restore rejected an empty backup.\n' >&2
+    exit 2
+  fi
+  # The guard is the first statement in the same transaction as the dump. The
+  # isolation flag is an operator declaration, not proof of network isolation.
+  cat > "$temp_restore" <<'SQL'
+DO $unfreq_restore_guard$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_namespace
+    WHERE nspname NOT IN ('public', 'information_schema') AND nspname !~ '^pg_'
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
+  ) OR EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname <> 'plpgsql') THEN
+    RAISE EXCEPTION 'UNFREQ_RESTORE_TARGET_NOT_EMPTY';
+  END IF;
+END
+$unfreq_restore_guard$;
+SQL
+  cat -- "$temp_plain" >> "$temp_restore"
+  if ! run_compose exec -T postgres psql -X -v ON_ERROR_STOP=1 --single-transaction --file=- -U "$postgres_user" -d "$postgres_database" < "$temp_restore" > /dev/null 2> "$temp_error"; then
+    printf 'PostgreSQL restore failed; check target emptiness and backup compatibility.\n' >&2
+    exit 1
+  fi
   printf 'PostgreSQL restore completed from: %s\n' "$backup_file"
-}
+)
 
 release_stack() {
   require_smoke_base_url
