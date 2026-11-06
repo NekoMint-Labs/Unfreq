@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// A fresh project, internal proxy network and loopback-only port. Never load .env.
+// A fresh project and internal networks with no published ports. Never load .env.
 assert.equal(process.platform, "linux", "Use a disposable local Linux Docker runner.");
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runId = randomBytes(8).toString("hex");
@@ -59,9 +59,9 @@ try {
     const key = line.split("=", 1)[0];
     return Object.hasOwn(replacements, key) ? `${key}=${replacements[key]}` : line;
   }).join("\n") + "\n", { flag: "wx", mode: 0o600 });
-  await writeFile(override, JSON.stringify({ services: {
-    proxy: { ports: ["127.0.0.1::80"] },
-  }, networks: { app: { internal: true }, npm_default: { name: network } } }), { flag: "wx" });
+  await writeFile(override, JSON.stringify({ networks: {
+    app: { internal: true }, npm_default: { name: network },
+  } }), { flag: "wx" });
   docker(["network", "create", "--internal", "--label", `${label}=${runId}`, network]);
   networkCreated = true;
   const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
@@ -70,8 +70,8 @@ try {
   assert.equal(apiEnv.ABUSE_PROTECTION_ENABLED, "true");
   for (const name of ["AI_API_KEY", "AI_FAST_API_KEY", "EMBEDDING_API_KEY", "RERANKER_API_KEY", "TTS_API_KEY"]) assert.ok(!apiEnv[name]);
   for (const name of paid) assert.equal(JSON.parse(apiEnv.ABUSE_LIMITS_JSON).budgets[name].limit, 0);
-  assert.equal(config.services.proxy.ports[0].host_ip, "127.0.0.1");
-  check("actual Compose configuration uses the complete 26-rule policy, no paid keys, disabled scheduler and loopback ingress");
+  for (const service of Object.values(config.services)) assert.ok(!service.ports?.length);
+  check("actual Compose configuration uses the complete 26-rule policy, no paid keys, disabled scheduler and no published ports");
   const build = compose(["build"], { timeout: 1_500_000, allowFailure: true });
   await writeFile(path.join(directory, "build.log"), redact((build.stdout ?? "") + (build.stderr ?? "")));
   assert.ok(!build.error && build.status === 0, "Compose image build failed; see build.log.");
@@ -79,17 +79,24 @@ try {
   compose(["up", "--detach", "--wait", "--wait-timeout", "180"], { timeout: 240_000 });
   const services = compose(["ps", "--services", "--status", "running"]).stdout.trim().split(/\s+/u).sort();
   assert.deepEqual(services, ["api", "postgres", "proxy", "redis", "web"]);
-  const endpoint = compose(["port", "proxy", "80"]).stdout.trim();
-  assert.match(endpoint, /^127\.0\.0\.1:\d+$/u);
-  for (const target of ["/health", "/health/deep", "/web-health", "/galaxy"]) {
-    const response = await fetch(`http://${endpoint}${target}`, { signal: AbortSignal.timeout(15_000) });
-    assert.equal(response.status, 200, `${target} failed through the actual Caddy proxy.`);
-    if (target === "/health/deep") assert.deepEqual((await response.json()).data.dependencies, { postgres: "ok", redis: "ok" });
-    else await response.arrayBuffer();
-  }
-  const receipt = await fetch(`http://${endpoint}/api/reports/signal/00000000-0000-4000-8000-000000000001`);
-  assert.equal(receipt.status, 401);
-  assert.equal((await receipt.json()).error.code, "UNAUTHORIZED");
+  // Internal Docker networks intentionally do not publish host ports. Exercise
+  // the actual proxy from an owned container without weakening that isolation.
+  const probe = compose(["exec", "-T", "api", "node", "--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    const statuses = {};
+    for (const target of ['/health', '/health/deep', '/web-health', '/galaxy']) {
+      const response = await fetch('http://proxy' + target, { signal: AbortSignal.timeout(15000) });
+      statuses[target] = response.status;
+      assert.equal(response.status, 200, target + ' failed through actual Caddy');
+      if (target === '/health/deep') assert.deepEqual((await response.json()).data.dependencies, { postgres: 'ok', redis: 'ok' });
+      else await response.arrayBuffer();
+    }
+    const receipt = await fetch('http://proxy/api/reports/signal/00000000-0000-4000-8000-000000000001', { signal: AbortSignal.timeout(5000) });
+    assert.equal(receipt.status, 401);
+    assert.equal((await receipt.json()).error.code, 'UNAUTHORIZED');
+    console.log(JSON.stringify({ statuses, privateReportStatus: receipt.status }));
+  `], { timeout: 90_000 });
+  report.proxy = JSON.parse(probe.stdout);
   const ledger = compose(["exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "unfreq", "-At", "-c",
     "select count(*) from drizzle.__drizzle_migrations"]).stdout.trim();
   assert.equal(ledger, "25");
