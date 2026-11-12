@@ -22,7 +22,7 @@
 | Next 安全组 | Next / eslint-config-next `16.4.3`；React / React DOM `19.2.6` | Next 未出现在本次 outdated；React / DOM latest `19.3.1` | A1 已独立更新 Next，继续成对保留；重新检查 SSR、OG、登录 cookie、私密/撤回页面以及 Windows/Linux SWC 后再升级。Next 的 eslint 传递告警见下文，不能据此把运行时 Next 判为命中同一问题 |
 | API 请求组 | Fastify `5.8.5`、cors `11.2.0`、fastify-plugin `5.1.0`、Zod `4.4.3` | Fastify `5.12.7`、cors `11.3.1`、Zod `4.6.7` | 优先处理同主安全版本。拟实施最小批次 Fastify `5.12.7` + Zod `4.6.7`，cors 无本次直接安全告警，先保留 11.x 并验证。检查负向授权、cookie/CORS、非法 JSON/参数、Provider 结构输出及关闭生命周期；不能只跑 happy path |
 | ORM 与迁移组 | drizzle-orm `0.45.2`、drizzle-kit `0.31.10` | `0.45.4`、`0.31.11` | 后续独立补丁批次；ORM 与 kit 联合验证类型、事务、已有迁移、干净库迁移和备份恢复。不因 npm 建议而降到 kit `0.18.1`；未经审查不生成、重写或应用生产迁移 |
-| PostgreSQL 驱动组 | postgres `3.4.9` + 项目四文件哈希补丁 | latest `4.0.0` | 保留精确固定。上游版本与本地补丁不是可互换产物；须对照上游修复和 EOF/类型加载/预留/Drizzle 事务恢复集，再成组移除或更新补丁。详见[补丁说明](./postgres-startup-patch.md) |
+| PostgreSQL 驱动组 | postgres `3.4.9` + 项目四文件哈希补丁 | 独立候选 `4.0.0` | 按 issue #7 独立准备 v4 与补丁退役组，候选尚待验收；四个生产连接保留 `infer: true`，Node 下界、参数/时区、Drizzle/迁移、FIN/RST/恢复及两 Docker 安装均须实测。主分支在验证通过前保留原组。详见[驱动维护](./postgres-driver.md) |
 | 3D 与 React 渲染组 | three `0.184.0`、types `0.184.1`、fiber `9.6.1`、drei `10.7.7` | `0.187.0`、`0.187.0`、`9.8.2`、`10.7.9` | 暂保留，后续四者联动。three `0.x` 的 minor 可能改变 API；验证星图坐标、命中、相机、图例、键盘列表、WebGL 降级及减少动画，并以实际浏览器检查材质与弃用提示 |
 | 测试工具组 | Vitest `4.1.5`、其 Vite `8.0.11`、Playwright `1.60.0` | Vitest wanted `4.1.12` / latest `5.0.5`，Playwright `1.64.1` | 后续先做 Vitest 4.x 与其允许的 Vite 修复版；重跑 API/Web 单测、运行器及真实隔离。Playwright 单独升级并安装对应浏览器，浏览器结果不能跨版本继承。无需因最新标签直接跨到 Vitest 5 |
 | TypeScript 与 lint 组 | TypeScript `5.9.3`、ESLint `9.39.4`、typescript-eslint `8.59.2` | TS latest `7.0.2`；ESLint wanted `9.39.5` / latest `10.14.0`；typescript-eslint `8.72.1` | 保留 TS 5；跨主升级须先有明确收益和迁移验证。lint 与插件成组审查，包含 glob 传递告警；不采用 audit 给出的 ESLint 4、config-next `0.2.4` 等破坏现有配置的降级 |
@@ -80,7 +80,7 @@
 
 ## 安装、验证与回退规则
 
-每组单独保存 manifest 与 lock，并检查锁变化是否只覆盖预期组和必要传递项。不混入跨主工具、无关字体、数据库迁移或数据处置。干净安装需运行 root `npm ci`，不能忽略 postinstall；随后核对 postgres 四文件哈希和 `npm ls` 的真实问题。Windows SWC 成功不替代 Linux musl 安装，两个生产依赖阶段也需分别确认。
+每组单独保存 manifest 与 lock，并检查锁变化是否只覆盖预期组和必要传递项。不混入跨主工具、无关字体、数据库迁移或数据处置。干净安装运行 root `npm ci`，不跳过依赖安装脚本，并检查 `npm ls` 的真实问题。仅历史 `3.4.9` 补丁组要求 root postinstall 和四文件哈希；v4 候选已移除该接线，改按[驱动维护](./postgres-driver.md)执行真实模块、参数及协议/恢复门禁。Windows SWC 成功不替代 Linux musl 安装，两个生产依赖阶段也需分别确认。
 
 API 组至少运行 `npm run api:check`、共享 contracts 检查及真实隔离套件；API DTO/校验边界受影响时补 Web 类型与单测。Web/3D 组运行完整 `npm run web:check` 并检查生产构建浏览器中的实际交互。脚本/镜像改动另运行部署脚本检查和镜像准备。迁移组使用新建隔离数据库验证，不连接生产、不运行 `push` 改库。[Drizzle 官方说明](https://orm.drizzle.team/docs/kit-overview) 将 generate、migrate、push 和 Studio 明确区分，不能把 CLI 可启动当迁移成功。
 

@@ -16,8 +16,6 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY scripts/apply-postgres-startup-patch.mjs scripts/apply-postgres-startup-patch.mjs
-COPY patches ./patches
 RUN --mount=type=cache,id=unfreq-npm-cache,target=/root/.npm,sharing=locked \
     npm ci --prefer-offline && \
     node -e "require('@next/swc-linux-'+process.arch+'-musl');require('sharp')"
@@ -27,8 +25,6 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY scripts/apply-postgres-startup-patch.mjs scripts/apply-postgres-startup-patch.mjs
-COPY patches ./patches
 RUN --mount=type=cache,id=unfreq-npm-cache,target=/root/.npm,sharing=locked \
     npm ci --omit=dev --prefer-offline && \
     node -e "require('@next/swc-linux-'+process.arch+'-musl');require('sharp')"

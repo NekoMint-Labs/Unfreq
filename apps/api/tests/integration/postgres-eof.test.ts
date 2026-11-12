@@ -3,7 +3,7 @@ import { createConnection, createServer, type AddressInfo, type Socket } from "n
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
-import postgres from "postgres";
+import postgres, { type TransactionSql } from "postgres";
 import { sql as drizzleSql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -11,11 +11,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assertManagedIntegrationEnvironment, configureIsolatedEnvironment, installFetchBoundary } from "./harness.js";
 
 type Driver = ReturnType<typeof postgres>;
-type FaultMode = "startup-fin" | "array-types-fin" | "forward";
+type FaultMode = "startup-fin" | "array-types-fin" | "commit-rollback" | "forward";
 type Operation = "query" | "reserve" | "begin" | "drizzle-transaction";
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const cjsRequire = createRequire(import.meta.url);
-const postgresCjs = cjsRequire("postgres") as typeof postgres;
+// v4 is one ES module; Node's CommonJS interop exposes its default export.
+const postgresCjs = (cjsRequire("postgres") as { default: typeof postgres }).default;
 const driverEntries = [
   { name: "ESM", factory: postgres },
   { name: "CJS", factory: postgresCjs },
@@ -27,6 +28,7 @@ async function createEofProxy(targetPort: number, initialMode: FaultMode) {
   let mode = initialMode;
   let attempts = 0;
   let arrayTypeCuts = 0;
+  let commitRollbacks = 0;
   const sockets = new Set<Socket>();
   const track = (socket: Socket) => {
     sockets.add(socket);
@@ -56,7 +58,7 @@ async function createEofProxy(targetPort: number, initialMode: FaultMode) {
     upstream.on("data", (chunk: Buffer) => {
       // No TLS is used in these guarded loopback connections. Observe complete
       // backend protocol frames without altering or synthesizing their content.
-      if (connectionMode === "array-types-fin" && !sawReady) {
+      if ((connectionMode === "array-types-fin" || connectionMode === "commit-rollback") && !sawReady) {
         serverBuffer = Buffer.concat([serverBuffer, chunk]);
         while (serverBuffer.length >= 5) {
           const length = serverBuffer.readInt32BE(1);
@@ -74,7 +76,7 @@ async function createEofProxy(targetPort: number, initialMode: FaultMode) {
     });
     downstream.on("data", (chunk: Buffer) => {
       if (cut) return;
-      if (connectionMode !== "array-types-fin" || !sawReady) {
+      if ((connectionMode !== "array-types-fin" && connectionMode !== "commit-rollback") || !sawReady) {
         upstream.write(chunk);
         return;
       }
@@ -91,12 +93,25 @@ async function createEofProxy(targetPort: number, initialMode: FaultMode) {
         if (frontendBuffer.length < length + 1) break;
         const message = frontendBuffer.subarray(0, length + 1);
         frontendBuffer = frontendBuffer.subarray(length + 1);
-        if ((message[0] === 80 || message[0] === 81) && message.includes(Buffer.from("pg_catalog.pg_type"))) {
+        if (connectionMode === "array-types-fin" && (message[0] === 80 || message[0] === 81) && message.includes(Buffer.from("pg_catalog.pg_type"))) {
           cut = true;
           arrayTypeCuts += 1;
           upstream.destroy();
           downstream.end(); // FIN during real internal type loading.
           return;
+        }
+        if (connectionMode === "commit-rollback" && message[0] === 81 &&
+            message.subarray(5, -1).toString("utf8").trim().toLowerCase() === "commit") {
+          // Exercise a real PostgreSQL ROLLBACK command/result at the final
+          // COMMIT boundary. Only this owned test connection is altered.
+          const payload = Buffer.from("rollback\0");
+          const replacement = Buffer.alloc(5 + payload.length);
+          replacement[0] = 81;
+          replacement.writeInt32BE(4 + payload.length, 1);
+          payload.copy(replacement, 5);
+          commitRollbacks += 1;
+          upstream.write(replacement);
+          continue;
         }
         upstream.write(message);
       }
@@ -113,6 +128,7 @@ async function createEofProxy(targetPort: number, initialMode: FaultMode) {
     port: (server.address() as AddressInfo).port,
     get attempts() { return attempts; },
     get arrayTypeCuts() { return arrayTypeCuts; },
+    get commitRollbacks() { return commitRollbacks; },
     setMode(next: FaultMode) { mode = next; },
     async close() {
       const closed = new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
@@ -289,6 +305,87 @@ describe("startup EOF settles real driver work and leaves no late registration",
   });
 
   for (const { name, factory } of driverEntries) {
+    it(`${name} rejects a real server ROLLBACK response at COMMIT without reporting or retaining a write`, async () => {
+      const observer = direct!;
+      const table = `postgres_v4_commit_${randomUUID().replaceAll("-", "")}`;
+      await observer`create table ${observer(table)} (id integer primary key)`;
+      const proxy = await createEofProxy(Number(new URL(managed.databaseUrl).port), "commit-rollback");
+      const url = new URL(databaseUrl); url.port = String(proxy.port);
+      const client = factory(url.toString(), { infer: true, max: 1, prepare: false, connect_timeout: 2, ssl: false });
+      try {
+        await expect(client.begin(async (transaction) => {
+          await transaction`insert into ${transaction(table)} values (1)`;
+        })).rejects.toMatchObject({ code: "TRANSACTION_ROLLED_BACK" });
+        expect(proxy.commitRollbacks).toBe(1);
+        expect(await observer`select id from ${observer(table)}`).toHaveLength(0);
+      } finally {
+        try { await client.end({ timeout: 0 }); }
+        finally { try { await proxy.close(); } finally { await observer`drop table ${observer(table)}`; } }
+      }
+    });
+
+    it(`${name} keeps explicit casts and v3-compatible inference across timezone, arrays, JSON and Drizzle`, async () => {
+      const client = factory(databaseUrl, { max: 1, prepare: false, connect_timeout: 2, ssl: false,
+        connection: { TimeZone: "Asia/Shanghai" } });
+      const compatible = factory(databaseUrl, { infer: true, max: 1, prepare: false, connect_timeout: 2, ssl: false,
+        connection: { TimeZone: "Asia/Shanghai" } });
+      try {
+        expect(client.options.infer).toBe(false);
+        const [untyped] = await client<{ value: string }[]>`select ${true} as value`;
+        expect(untyped?.value).toBe("true");
+        const instant = new Date("2026-10-31T16:30:00.000Z");
+        const [cast] = await client<{ flag: boolean; values: number[]; payload: { nested: string[] }; instant: Date; local_date: string }[]>`
+          select ${true}::boolean as flag, ${[1, 2, 3]}::integer[] as values,
+            ${client.json({ nested: ["synthetic", "中文"] })}::jsonb as payload,
+            ${instant}::timestamptz as instant, (${instant}::timestamptz)::date::text as local_date`;
+        expect(cast).toEqual({ flag: true, values: [1, 2, 3], payload: { nested: ["synthetic", "中文"] },
+          instant, local_date: "2026-11-01" });
+        const [legacy] = await compatible<{ flag: boolean; instant: Date }[]>`select ${true} as flag, ${instant} as instant`;
+        expect(legacy).toEqual({ flag: true, instant });
+        const orm = drizzle(compatible);
+        const rows = await orm.execute<{ flag: boolean; values: number[]; payload: { count: number }; instant: string }>(drizzleSql`
+          select ${true}::boolean as flag, array[${2}, ${4}]::integer[] as values,
+            ${JSON.stringify({ count: 2 })}::jsonb as payload, ${instant.toISOString()}::timestamptz as instant`);
+        expect(rows[0]).toMatchObject({ flag: true, values: [2, 4], payload: { count: 2 } });
+        expect(new Date(rows[0]!.instant).toISOString()).toBe(instant.toISOString());
+      } finally {
+        await Promise.all([client.end({ timeout: 0 }), compatible.end({ timeout: 0 })]);
+      }
+    });
+
+    it(`${name} rejects released leases and rolls back caught server errors, while Drizzle nested transactions remain isolated`, async () => {
+      const client = factory(databaseUrl, { infer: true, max: 1, prepare: false, connect_timeout: 2, ssl: false });
+      try {
+        const reserved = await client.reserve();
+        await reserved`select 1`;
+        reserved.release();
+        await expect(Promise.resolve(reserved`select 1`)).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+        let completedTransaction: TransactionSql | undefined;
+        await client.begin(async (transaction) => { completedTransaction = transaction; await transaction`select 1`; });
+        await expect(Promise.resolve(completedTransaction!`select 1`)).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+        await client`create temporary table postgres_v4_rollback (id integer primary key)`;
+        await expect(client.begin(async (transaction) => {
+          await transaction`insert into postgres_v4_rollback values (1)`;
+          // Catching a server error must not turn an aborted transaction into a
+          // reported commit. v4 rejects the scope and rolls back its first write.
+          await transaction`select 1 / 0`.catch(() => undefined);
+        })).rejects.toMatchObject({ code: "22012" });
+        expect(await client`select id from postgres_v4_rollback`).toHaveLength(0);
+        const orm = drizzle(client);
+        await orm.transaction(async (transaction) => {
+          await transaction.execute(drizzleSql`create temporary table postgres_v4_scope (id integer primary key) on commit drop`);
+          await transaction.execute(drizzleSql`insert into postgres_v4_scope values (1)`);
+          await expect(transaction.transaction(async (nested) => {
+            await nested.execute(drizzleSql`insert into postgres_v4_scope values (2)`);
+            throw new Error("SYNTHETIC_NESTED_ROLLBACK");
+          })).rejects.toThrow("SYNTHETIC_NESTED_ROLLBACK");
+          const rows = await transaction.execute<{ id: number }>(drizzleSql`select id from postgres_v4_scope order by id`);
+          expect(Array.from(rows)).toEqual([{ id: 1 }]);
+        });
+        expect((await client<{ value: number }[]>`select 1 as value`)[0]?.value).toBe(1);
+      } finally { await client.end({ timeout: 0 }); }
+    });
+
     for (const mode of ["startup-fin", "array-types-fin"] as const) {
       it.each(["query", "reserve", "begin", "drizzle-transaction"] as const)(
         `${name} ${mode} rejects five cold %s with two pool slots and recovers without late callbacks`,
@@ -296,7 +393,7 @@ describe("startup EOF settles real driver work and leaves no late registration",
           const proxy = await createEofProxy(Number(new URL(managed.databaseUrl).port), mode);
           const url = new URL(databaseUrl);
           url.port = String(proxy.port);
-          const client = factory(url.toString(), { max: 2, prepare: false, connect_timeout: 1, fetch_types: true, ssl: false });
+          const client = factory(url.toString(), { infer: true, max: 2, prepare: false, connect_timeout: 1, fetch_types: true, ssl: false });
           const unhandled: unknown[] = [];
           const observeUnhandled = (error: unknown) => { unhandled.push(error); };
           let businessCalls = 0;
@@ -336,12 +433,12 @@ describe("startup EOF settles real driver work and leaves no late registration",
     }
 
     it(`${name} loads array types on five healthy cold reservations, releases them and reuses its two-slot pool`, async () => {
-      expect(postgresCjs).not.toBe(postgres);
-      expect(cjsRequire.resolve("postgres").replace(/\\/gu, "/")).toMatch(/\/postgres\/cjs\/src\/index\.js$/u);
+      expect(typeof postgresCjs).toBe("function");
+      expect(cjsRequire.resolve("postgres").replace(/\\/gu, "/")).toMatch(/\/postgres\/src\/index\.js$/u);
       const proxy = await createEofProxy(Number(new URL(managed.databaseUrl).port), "forward");
       const url = new URL(databaseUrl);
       url.port = String(proxy.port);
-      const client = factory(url.toString(), { max: 2, prepare: false, connect_timeout: 1, fetch_types: true, ssl: false });
+      const client = factory(url.toString(), { infer: true, max: 2, prepare: false, connect_timeout: 1, fetch_types: true, ssl: false });
       let businessCalls = 0;
       try {
         await settleOrTerminate(Promise.all(Array.from(
